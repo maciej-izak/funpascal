@@ -12,7 +12,8 @@ open np
 
 let inline (!^) (a: 'a list option) = if a.IsSome then a.Value else []
 let inline (!^^) (a: 'a list option option) = if a.IsSome then (if a.Value.IsSome then a.Value.Value else []) else []
-let inline cast f (a, b) = (f a, f b)
+let inline castAs f (a, b) = (f a, f b)
+let inline toList a = [a]
 
 let ws = spaces
 
@@ -70,12 +71,11 @@ let number =
 
 
 let stringLiteral =
-    let normalCharSnippet = manySatisfy (fun c -> c <> ''')
+    let normalCharSnippet = manySatisfy ((<>) ''')
     let escapedChar = pstring "'" >>? (pstring "'" >>% "'") 
-                                    //    <|> ())
     many1Strings ((between (pstring "'") (pstring "'") (stringsSepBy normalCharSnippet escapedChar))
                  <|> ((pstring "#" >>. number) >>= function
-                                                   | Integer i -> preturn (string (char i))
+                                                   | Integer i -> i |> char |> string |> preturn
                                                    | _ -> fail "integer expected"))
 
 let tkIdentifier =
@@ -97,32 +97,32 @@ let identifier : Parser<string, unit> =
 let has_str s = str_wsc s >>. preturn true <|>% false
 
 let constRangeExpression =
-    pipe2 (expr .>> wsc)
-          (str_wsc ".." >>. expr  .>> wsc) 
-          (fun l h -> ConstExprRange(ConstExpr(l), ConstExpr(h)))
+    (expr .>> wsc)
+    .>>. (str_wsc ".." >>. expr  .>> wsc) 
+    |>> (castAs ConstExpr >> ConstExprRange)
  
 let constType =
-    identifier |>> fun s -> DimensionType(s)
+    identifier |>> DimensionType
 
 let arrayIndex =
-    choice[constType;constRangeExpression |>> fun e -> DimensionExpr(e) ]
+    choice[constType;constRangeExpression |>> DimensionExpr ]
 
 let arrayIndexes =
     str_wsc "[" >>. (sepEndBy1 arrayIndex (str_wsc ",")) .>> str_wsc "]"
 
 let designator = 
-    identifier 
-    .>>.(many(choice[ 
-                str_wsc "^" >>% Deref; 
-                (str_wsc "[" >>. (sepEndBy1 expr (str_wsc ",")) .>> str_wsc "]")
-                |>> fun l -> Designator.Array(l);
-                str_wsc "." >>. identifier |>> Designator.Ident
-              ]))
-    |>> ((fun t -> Designator.Ident(fst t)::(snd t)) >> DIdent)
+    pipe2   (identifier |>> Designator.Ident) 
+            (many(choice[ 
+                        str_wsc "^" >>% Deref; 
+                        (str_wsc "[" >>. (sepEndBy1 expr (str_wsc ",")) .>> str_wsc "]")
+                        |>> Designator.Array;
+                        str_wsc "." >>. identifier |>> Designator.Ident
+                      ]))
+            (fun h t -> h::t |> DIdent)
 
 let typeIdentifier =
     choice[
-            designator |>> (Ident);
+            designator |>> Ident;
             str_wsc "string" >>% String;
             str_wsc "file" >>% File  
           ]    
@@ -158,24 +158,22 @@ let arrayType =
     |>> Array
 
 let typeAlias =
-    //opt (str_wsc "type" >>% true) .>>. identifier |>> fun (s, n) -> TypeAlias({strong=s.IsSome; origin=n})
-    has_str "type" .>>. typeIdentifier |>> fun (t, n) -> TypeAlias({strong=t; origin=n})
+    has_str "type" .>>. typeIdentifier 
+    |>> TypeAlias
 
 let formalParam  = 
-        opt ((str_wsc "const" >>. preturn ParamKind.Const) <|> (str_wsc "var" >>. preturn ParamKind.Var))
+        opt ((str_wsc "const" >>. preturn ParamKind.Const) <|> (str_wsc "var" >>. preturn Var))
         .>>. fieldsList1
-        //  IdentList [":" ["array" "of"] TypeIdent] .
         
 let formalParamsList =
     between (str_wsc "(") (str_wsc ")") (sepEndBy formalParam (str_wsc ";"))  
 
-
 let procIntfDecl = 
     (((str_wsc "procedure" >>. preturn Procedure) 
     <|> (str_wsc "function" >>. preturn Function)) .>>. (opt formalParamsList))
-    >>= fun r -> match fst r with
-                 | Function -> (str_wsc ":" >>. designator) |>> fun i -> (Some(i), snd r)
-                 | Procedure -> preturn(None, snd r)
+    >>= fun (k, p) -> match k with
+                      | Function -> (str_wsc ":" >>. designator) |>> fun i -> (Some(i), p)
+                      | Procedure -> preturn(None, p)
         
 let typeProc =
     procIntfDecl |>> ProcType
@@ -184,7 +182,7 @@ let typePtr =
     str_wsc "^" >>. typeIdentifier |>> TypePtr
 
 let typeRange =
-    expr .>>. (str_wsc ".." >>. expr) |>> ((cast ConstExpr) >> SimpleRange)
+    expr .>>. (str_wsc ".." >>. expr) |>> ((castAs ConstExpr) >> SimpleRange)
 
 let typeDeclarations =
     (str_wsc "type" >>.
@@ -242,30 +240,31 @@ opp.AddOperator(PrefixOperator("-", wsc, 4, true, fun x -> UnaryMinus(x)))
 opp.AddOperator(PrefixOperator("+", wsc, 4, true, fun x -> UnaryAdd(x)))
 
 let varDeclarations =
-    (str_wsc "var" >>.
-        many1 (pipe2 ((sepEndBy1 identifier (str_wsc ",")) .>> str_wsc ":")
-            (typeIdentifier .>> str_wsc ";")
-            (fun n t -> {names = n; vtype = t}))) |>> fun v -> Variables(v)
+    str_wsc "var" 
+    >>. many1 (tuple2 ((sepEndBy1 identifier (str_wsc ",")) .>> str_wsc ":")
+              (typeIdentifier .>> str_wsc ";")) 
+    |>> Variables
     
 let constDeclarations =
     (str_wsc "const" >>.
         many1 ( 
-            (identifier .>>. (str_wsc "=" >>. expr .>> str_wsc ";") |>> fun t -> {name = fst t; value = ConstExpr(snd t)} )))
-            |>> fun c -> Const(c)
+            identifier .>>. (str_wsc "=" >>. expr .>> str_wsc ";" |>> ConstExpr)))
+            |>> Const
 
 let expression =
     pint32
 
 let simpleStatement =
-    designator .>>. (str_wsc ":=" >>. expr) |>> AssignStm
+    designator .>>. (str_wsc ":=" >>. expr)
+    |>> AssignStm
 
 let compoundStatement, compoundStatementRef = createParserForwardedToRef()
 
 let ifStatement =
-      pipe3 (str_wsc "if" >>. expr .>> str_wsc "then")
-            (compoundStatement)
-            (opt (str_wsc "else" >>. compoundStatement))
-            (fun e a b -> IfStm(e, a, !^b))
+    tuple3 (str_wsc "if" >>. expr .>> str_wsc "then")
+           (compoundStatement)
+           (opt (str_wsc "else" >>. compoundStatement) |>> (!^))
+    |>> IfStm  
 
 let caseLabel =
     sepBy1 ((attempt(constRangeExpression |>> CaseRange))
@@ -273,29 +272,33 @@ let caseLabel =
             (expr |>> (ConstExpr >> CaseExpr))) (str_wsc ",")
 
 let caseStatement =
-      pipe3 (str_wsc "case" >>. expr .>> str_wsc "of")
+      tuple3 (str_wsc "case" >>. expr .>> str_wsc "of")
             (sepEndBy(caseLabel
                 .>>. (str_wsc ":" >>. (opt compoundStatement |>> (!^)))) (str_wsc ";"))
-            (opt (str_wsc "else" >>. opt compoundStatement) .>> str_wsc "end")
-            (fun ex c el -> CaseStm(ex, c, !^^el))
+            (opt (str_wsc "else" >>. opt compoundStatement) .>> str_wsc "end" |>> (!^^))
+            |>> CaseStm
 
 let forStatement =
-    pipe4 
+    tuple5 
         (str_wsc "for" >>. designator)
         (str_wsc ":=" >>. expr)
-        (((str_wsc "to" >>% 1) <|> (str_wsc "downto" >>% -1)) .>>. expr)
-        (str_wsc "do" >>. opt compoundStatement)
-        (fun i s f b -> ForStm(i, s, fst f, snd f, !^b)) 
+        ((str_wsc "to" >>% 1) <|> (str_wsc "downto" >>% -1))
+        expr
+        (str_wsc "do" >>. opt compoundStatement |>> (!^))
+    |>> ForStm
 
 let repeatStatement =
-    (between (str_wsc "repeat") (str_wsc "until") (sepEndBy compoundStatement (str_wsc ";")))
+    (between 
+        (str_wsc "repeat") 
+        (str_wsc "until") 
+        (sepEndBy compoundStatement (str_wsc ";")) |>> List.concat)
     .>>. expr
-    |>> fun (b, e) -> RepeatStm(List.concat b, e)  
+    |>> RepeatStm  
 
 let whileStatement =
     (str_wsc "while" >>. expr .>> str_wsc "do")
-    .>>. (opt compoundStatement)
-    |>> fun (e, b) -> WhileStm(e, !^b)  
+    .>>. (opt compoundStatement |>> (!^))
+    |>> WhileStm
 
 let statement =
     choice[
@@ -308,7 +311,7 @@ let statement =
           ]
 
 let statementList =
-    (sepEndBy ((statement |>> fun x -> [x]) <|> (compoundStatement)) (str_wsc ";")) 
+    (sepEndBy ((statement |>> toList) <|> (compoundStatement)) (str_wsc ";")) 
     |>> List.concat
     
 let declarations =
@@ -321,7 +324,7 @@ compoundStatementRef :=
     between
         (str_wsc "begin")
         (str_wsc "end")
-        statementList <|> (statement |>> (fun s -> [s]))
+        statementList <|> (statement |>> toList)
 
 let program =
     (opt(str_wsc "program" >>. identifier .>> str_wsc ";"))

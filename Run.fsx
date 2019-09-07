@@ -78,4 +78,4 @@
 
 // testRS "repeat x := 5; begin y := 10; end; begin end; z := 'Heloł' until x = 10"
 
-testWS "while true do begin x := 7; x := 9 end"
+// testWS "while true do begin x := 7; x := 9 end"

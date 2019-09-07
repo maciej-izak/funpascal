@@ -58,23 +58,17 @@ type TypeIdentifier =
     | File
     | Ident of DIdent
 
-type TypeAlias = {strong: bool; origin: TypeIdentifier}
-
 type ParamList = (ParamKind option * (string list * TypeIdentifier)) list option
 
 type TypeDecl =
     | Record of packed: bool * fields: (string list * TypeIdentifier) list
     | Array of dimensions: ArrayDimension list * tname: string
     | TypePtr of TypeIdentifier
-    | TypeAlias of TypeAlias
+    | TypeAlias of strong: bool * origin: TypeIdentifier
     | SimpleRange of ConstExprRange
     | ProcType of result: DIdent option * paramList: ParamList
     
 type Type = (string * TypeDecl)
-
-type Var = {names: string list; vtype: TypeIdentifier}
-
-type Const = {name: string; value: ConstExpr}
 
 type CaseLabel =
     | CaseExpr of ConstExpr
@@ -92,8 +86,8 @@ type ProcKind = Procedure | Function
 
 type Declarations =
     | Types of Type list
-    | Variables of Var list
-    | Const of Const list
+    | Variables of (string list * TypeIdentifier) list
+    | Const of (string * ConstExpr) list
 
 type Program =
     | Unit of Ident
