@@ -8,8 +8,9 @@ open FParsec.CharParsers
 //open FParsec.Pipes
 //open FParsec.Pipes.Precedence
 
-let inline (!^) (a: 'a list option) = if a.IsSome then a.Value else []
-let inline (!^^) (a: 'a list option option) = if a.IsSome then (if a.Value.IsSome then a.Value.Value else []) else []
+let inline (!^) (a: Parser<'a list option,_>) = a |>> Option.defaultValue []
+let inline (!^^) (a: Parser<'a list option option,_>) = 
+    a |>> function Some v -> defaultArg v [] | None -> []
 let inline castAs f (a, b) = (f a, f b)
 let inline toList a = [a]
 let inline (!+) x a = (a, x)
@@ -220,7 +221,7 @@ let compoundStatement, compoundStatementRef = createParserForwardedToRef()
 let ifStatement =
     tuple3 (str_wsc "if" >>. expr .>> str_wsc "then")
            (compoundStatement)
-           (opt (str_wsc "else" >>. compoundStatement) |>> (!^))
+           !^(opt(str_wsc "else" >>. compoundStatement)) 
     |>> IfStm  
 
 let caseLabel =
@@ -231,8 +232,8 @@ let caseLabel =
 let caseStatement =
     tuple3 (str_wsc "case" >>. expr .>> str_wsc "of")
            (sepEndBy(caseLabel
-               .>>. (str_wsc ":" >>. (opt compoundStatement |>> (!^)))) (str_wsc ";"))
-           (opt (str_wsc "else" >>. opt compoundStatement) .>> str_wsc "end" |>> (!^^))
+               .>>. (str_wsc ":" >>. !^(opt compoundStatement))) (str_wsc ";"))
+           !^^(opt (str_wsc "else" >>. opt compoundStatement) .>> str_wsc "end")
            |>> CaseStm
 
 let forStatement =
@@ -241,7 +242,7 @@ let forStatement =
         (str_wsc ":=" >>. expr)
         ((str_wsc "to" >>% 1) <|> (str_wsc "downto" >>% -1))
         expr
-        (str_wsc "do" >>. opt compoundStatement |>> (!^))
+        (str_wsc "do" >>. !^(opt compoundStatement))
     |>> ForStm
 
 let repeatStatement =
@@ -254,7 +255,7 @@ let repeatStatement =
 
 let whileStatement =
     (str_wsc "while" >>. expr .>> str_wsc "do")
-    .>>. (opt compoundStatement |>> (!^))
+    .>>. !^(opt compoundStatement)
     |>> WhileStm
 
 let statement =
