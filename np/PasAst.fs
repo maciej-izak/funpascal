@@ -1,3 +1,4 @@
+[<AutoOpen>]
 module np.PasAst
 
 type Ident = string
@@ -27,7 +28,7 @@ and ExprEl =
     | As of ExprEl * ExprEl
     | Addr of ExprEl
     | Not of ExprEl
-    | UnaryAdd of ExprEl
+    | UnaryPlus of ExprEl
     | UnaryMinus of ExprEl
     | Equal of ExprEl * ExprEl
     | NotEqual of ExprEl * ExprEl

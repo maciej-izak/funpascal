@@ -1,34 +1,18 @@
 module np.ParsePas
 
-open FParsec
+open System.Collections.Generic
+
 open FParsec
 open FParsec.Primitives
 open FParsec.CharParsers
 //open FParsec.Pipes
 //open FParsec.Pipes.Precedence
-open PasAst
-open System.Collections.Generic
-open np
 
 let inline (!^) (a: 'a list option) = if a.IsSome then a.Value else []
 let inline (!^^) (a: 'a list option option) = if a.IsSome then (if a.Value.IsSome then a.Value.Value else []) else []
 let inline castAs f (a, b) = (f a, f b)
 let inline toList a = [a]
-
-let ws = spaces
-
-let commentBlock =
-    skipChar '{' .>> skipManyTill skipAnyChar (skipChar '}')
-        
-let starCommentBlock =
-    skipString "(*" .>> skipManyTill skipAnyChar (skipString "*)")
-    
-    
-//    parse {
-//        stringReturn
-//    } (skipString "{") (skipManyTill (pchar "}")) (fun _ _ -> () )*)
-
-let wsc = skipMany (choice[spaces1; commentBlock; starCommentBlock] <?> "")
+let inline (!+) x a = (a, x)
 
 let str_wsc s =
     pstring s .>> wsc
@@ -36,7 +20,6 @@ let str_wsc s =
 let keywords = ["while"; "for"; "to"; "downto"; "repeat"; "until"; "begin"; "end"; "do"; "if"; "then"; "else"; "type"; "var"; "const"; "procedure"; "function"; "array"; "string"; "file";
     "xor"; "or"; "and"; "div"; "mod"; "shl"; "shr"; "as"; "in"; "is"; "nil"]
 
-let opp = new OperatorPrecedenceParser<_,_,_>()
 let expr = opp.ExpressionParser
 
 let keywordsSet = new HashSet<string>(keywords);
@@ -46,16 +29,13 @@ let isKeyword s = keywordsSet.Contains s
 let numeralOrDecimal : Parser<_, unit> =
     // note: doesn't parse a float exponent suffix
     numberLiteral NumberLiteralOptions.AllowFraction "number" 
-    |>> fun num -> 
-            // raises an exception on overflow
-            if num.IsInteger then Integer(int num.String)
-            else Float(float num.String)
+    |>> function // raises an exception on overflow
+        | v when v.IsInteger -> v.String |> int |> Integer
+        | v -> v.String |> float |> Float
 
 let hexNumber =    
     pstring "$" >>. many1SatisfyL isHex "hex digit"
-    |>> fun hexStr -> 
-            // raises an exception on overflow
-            Integer(System.Convert.ToInt32(hexStr, 16)) 
+    |>> fun s -> System.Convert.ToInt32(s, 16) |> Integer // raises an exception on overflow
 
 // let binaryNumber =    
 //     pstring "#b" >>. many1SatisfyL (fun c -> c = '0' || c = '1') "binary digit"
@@ -214,30 +194,7 @@ let exprExpr =
 let term = (exprAtom <|> exprExpr) .>> wsc
 opp.TermParser <- term
 
-opp.AddOperator(InfixOperator("=", wsc, 1, Associativity.Left, fun x y -> Equal(x, y)))
-opp.AddOperator(InfixOperator("<>", wsc, 1, Associativity.Left, fun x y -> NotEqual(x, y)))
-opp.AddOperator(InfixOperator("<", wsc, 1, Associativity.Left, fun x y -> StrictlyLessThan(x, y)))
-opp.AddOperator(InfixOperator(">", wsc, 1, Associativity.Left, fun x y -> StrictlyGreaterThan(x, y)))
-opp.AddOperator(InfixOperator("<=", wsc, 1, Associativity.Left, fun x y -> LessThanOrEqual(x, y)))
-opp.AddOperator(InfixOperator(">=", wsc, 1, Associativity.Left, fun x y -> GreaterThanOrEqual(x, y)))
-opp.AddOperator(InfixOperator("in", wsc, 1, Associativity.Left, fun x y -> In(x, y)))
-opp.AddOperator(InfixOperator("is", wsc, 1, Associativity.Left, fun x y -> Is(x, y)))
-opp.AddOperator(InfixOperator("+", wsc, 2, Associativity.Left, fun x y -> Add(x, y)))
-opp.AddOperator(InfixOperator("-", wsc, 2, Associativity.Left, fun x y -> Minus(x, y)))
-opp.AddOperator(InfixOperator("or", wsc, 2, Associativity.Left, fun x y -> Or(x, y)))
-opp.AddOperator(InfixOperator("xor", wsc, 2, Associativity.Left, fun x y -> Xor(x, y)))
-opp.AddOperator(InfixOperator("*", wsc, 3, Associativity.Left, fun x y -> Multiply(x, y)))
-opp.AddOperator(InfixOperator("/", wsc, 3, Associativity.Left, fun x y -> Divide(x, y)))
-opp.AddOperator(InfixOperator("div", wsc, 3, Associativity.Left, fun x y -> Div(x, y)))
-opp.AddOperator(InfixOperator("mod", wsc, 3, Associativity.Left, fun x y -> Mod(x, y)))
-opp.AddOperator(InfixOperator("and", wsc, 3, Associativity.Left, fun x y -> And(x, y)))
-opp.AddOperator(InfixOperator("shl", wsc, 3, Associativity.Left, fun x y -> Shl(x, y)))
-opp.AddOperator(InfixOperator("shr", wsc, 3, Associativity.Left, fun x y -> Shr(x, y)))
-opp.AddOperator(InfixOperator("as", wsc, 3, Associativity.Left, fun x y -> As(x, y)))
-opp.AddOperator(PrefixOperator("@", wsc, 4, true, fun x -> Addr(x)))
-opp.AddOperator(PrefixOperator("not", wsc, 4, true, fun x -> Not(x)))
-opp.AddOperator(PrefixOperator("-", wsc, 4, true, fun x -> UnaryMinus(x)))
-opp.AddOperator(PrefixOperator("+", wsc, 4, true, fun x -> UnaryAdd(x)))
+addOperators()
 
 let varDeclarations =
     str_wsc "var" 
@@ -272,11 +229,11 @@ let caseLabel =
             (expr |>> (ConstExpr >> CaseExpr))) (str_wsc ",")
 
 let caseStatement =
-      tuple3 (str_wsc "case" >>. expr .>> str_wsc "of")
-            (sepEndBy(caseLabel
-                .>>. (str_wsc ":" >>. (opt compoundStatement |>> (!^)))) (str_wsc ";"))
-            (opt (str_wsc "else" >>. opt compoundStatement) .>> str_wsc "end" |>> (!^^))
-            |>> CaseStm
+    tuple3 (str_wsc "case" >>. expr .>> str_wsc "of")
+           (sepEndBy(caseLabel
+               .>>. (str_wsc ":" >>. (opt compoundStatement |>> (!^)))) (str_wsc ";"))
+           (opt (str_wsc "else" >>. opt compoundStatement) .>> str_wsc "end" |>> (!^^))
+           |>> CaseStm
 
 let forStatement =
     tuple5 

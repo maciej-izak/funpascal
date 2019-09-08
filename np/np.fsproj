@@ -1,24 +1,23 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
-
-    <PropertyGroup>
-        <OutputType>Exe</OutputType>
-        <TargetFramework>netcoreapp2.2</TargetFramework>
-        <DebugType>portable</DebugType>
-    </PropertyGroup>
-
-    <ItemGroup>
-        <Compile Include="CommandLineHandle.fs" />
-        <Compile Include="PasParser.fs" />
-        <Compile Include="PasAst.fs" />
-        <Compile Include="ParsePas.fs" />
-        <Compile Include="Program.fs" />
-    </ItemGroup>
-
-    <ItemGroup>
-      <ProjectReference Include="..\..\..\Argu\src\Argu\Argu.fsproj" />
-      <ProjectReference Include="..\..\..\FParsec-Pipes\FParsec-Pipes\FParsec-Pipes.fsproj" />
-      <ProjectReference Include="..\..\..\fparsec\FParsecCS\FParsecCS.csproj" />
-      <ProjectReference Include="..\..\..\fparsec\FParsec\FParsec.fsproj" />
-    </ItemGroup>
-
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>netcoreapp2.2</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\Argu\src\Argu\Argu.fsproj" />
+    <ProjectReference Include="..\..\..\FParsec-Pipes\FParsec-Pipes\FParsec-Pipes.fsproj" />
+    <ProjectReference Include="..\..\..\fparsec\FParsecCS\FParsecCS.csproj" />
+    <ProjectReference Include="..\..\..\fparsec\FParsec\FParsec.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="CommandLineHandle.fs" />
+    <Compile Include="PasParser.fs" />
+    <Compile Include="PasAst.fs" />
+    <Compile Include="PasVar.fs" />
+    <Compile Include="BasicParsers.fs" />
+    <Compile Include="PasOperators.fs" />
+    <Compile Include="ParsePas.fs" />
+    <Compile Include="PasVar" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
 </Project>

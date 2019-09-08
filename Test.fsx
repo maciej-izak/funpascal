@@ -7,6 +7,9 @@ module Test
 #r @"np/bin/Debug/netcoreapp2.2/FParsec-Pipes.dll"
 
 #load "np/PasAst.fs"
+#load "np/PasVar.fs"
+#load "np/BasicParsers.fs"
+#load "np/PasOperators.fs"
 #load "np/ParsePas.fs"
 
 
