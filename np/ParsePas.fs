@@ -15,11 +15,9 @@ let inline castAs f (a, b) = (f a, f b)
 let inline toList a = [a]
 let inline (!+) x a = (a, x)
 
-let str_wsc s =
-    pstring s .>> wsc
 
 let keywords = ["while"; "for"; "to"; "downto"; "repeat"; "until"; "begin"; "end"; "do"; "if"; "then"; "else"; "type"; "var"; "const"; "procedure"; "function"; "array"; "string"; "file";
-    "xor"; "or"; "and"; "div"; "mod"; "shl"; "shr"; "as"; "in"; "is"; "nil"]
+    "xor"; "or"; "and"; "div"; "mod"; "shl"; "shr"; "as"; "in"; "is"; "nil"; "program"]
 
 let expr = opp.ExpressionParser
 
@@ -27,7 +25,7 @@ let keywordsSet = new HashSet<string>(keywords);
 
 let isKeyword s = keywordsSet.Contains s
 
-let numeralOrDecimal : Parser<_, unit> =
+let numeralOrDecimal : Parser<_, PasState> =
     // note: doesn't parse a float exponent suffix
     numberLiteral NumberLiteralOptions.AllowFraction "number" 
     |>> function // raises an exception on overflow
@@ -65,7 +63,7 @@ let tkIdentifier =
     many1Satisfy2L isProperFirstChar isProperChar "ident"
     .>> wsc
     
-let identifier : Parser<string, unit> =
+let identifier : Parser<string, PasState> =
     let expectedIdentifier = expected "identifier"
     fun stream ->
         let state = stream.State
@@ -170,7 +168,8 @@ let typeDeclarations =
         many1 (
             (identifier .>> str_wsc "=")
             .>>. ((choice[structType;arrayType;typePtr;typeAlias;typeProc;typeRange]).>> str_wsc ";")
-            |>> Type)) |>> Types
+            |>> Type)) 
+    |>> Types
  
 let exprInt =
     pint32 |>> Integer
@@ -183,11 +182,22 @@ let exprString =
     
 let exprIdent =
     designator |>> Value.Ident
-
-    //|>> List.reduce (+)
     
+let callExpr =
+    let actualParam =
+        (expr |>> function 
+                  | Value v -> match v with Value.Ident i -> ParamIdent(i) | v -> Value(v) |> ParamExpr
+                  | e -> ParamExpr e)
+    let actualParamsList =
+        between (str_wsc "(") (str_wsc ")") (sepEndBy actualParam (str_wsc ","))
+    designator .>>. actualParamsList 
+    |>> CallExpr
+
+let exprCall = 
+    callExpr |>> CallResult
+
 let exprAtom =
-    choice[exprInt; exprFloat; exprIdent; exprString] |>> Value
+    choice[attempt(exprCall); exprInt; exprFloat; exprIdent; exprString] |>> Value
     
 let exprExpr =
     between (str_wsc "(") (str_wsc ")") expr 
@@ -213,8 +223,13 @@ let expression =
     pint32
 
 let simpleStatement =
-    designator .>>. (str_wsc ":=" >>. expr)
-    |>> AssignStm
+    designator .>>.? (str_wsc ":=" >>. expr) |>> AssignStm
+
+let callStatement =
+    callExpr |>> CallStm
+
+let designatorStatement =
+    designator |>> IdentStm
 
 let compoundStatement, compoundStatementRef = createParserForwardedToRef()
 
@@ -261,12 +276,14 @@ let whileStatement =
 let statement =
     choice[
             simpleStatement;
+            attempt(callStatement);
+            designatorStatement;
             ifStatement;
             caseStatement;
             forStatement;
             repeatStatement;
             whileStatement
-          ]
+    ] <?> ""
 
 let statementList =
     (sepEndBy ((statement |>> toList) <|> (compoundStatement)) (str_wsc ";")) 
@@ -276,7 +293,7 @@ let declarations =
     many (choice[typeDeclarations; varDeclarations; constDeclarations]) 
 
 let block =
-    opt declarations .>>. compoundStatement
+    opt declarations .>>. between (str_wsc "begin") (str_wsc "end") statementList
 
 compoundStatementRef := 
     between
@@ -287,10 +304,10 @@ compoundStatementRef :=
 let program =
     (opt(str_wsc "program" >>. identifier .>> str_wsc ";"))
     .>>.
-    (block .>> str_wsc ".")        
+    (block .>> pstring ".")        
 
 let pascalModule =
     wsc >>. program .>> (skipManyTill skipAnyChar eof)
     
-let pGrammar: Parser<_, unit> =  // one type annotation is enough for the whole parser
+let pGrammar: Parser<_, PasState> =  // one type annotation is enough for the whole parser
     pascalModule

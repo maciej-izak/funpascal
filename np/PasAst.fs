@@ -5,11 +5,14 @@ type Ident = string
 
 type DIdent = DIdent of Designator list 
 
+and CallExpr = CallExpr of DIdent * CallParam list
+
 and Value =
     | Float of float
     | Integer of int
     | String of string
     | Ident of DIdent
+    | CallResult of CallExpr
 
 and ExprEl =
     | Value of Value
@@ -43,6 +46,10 @@ and Designator =
     | Ident of string
     | Deref
     | Array of ExprEl list
+
+and CallParam =
+    | ParamExpr of ExprEl
+    | ParamIdent of DIdent
     
 type ConstExpr = ConstExpr of ExprEl
 
@@ -75,8 +82,10 @@ type CaseLabel =
     | CaseExpr of ConstExpr
     | CaseRange of ConstExprRange
 
-type Statement =
+type Statement = 
     | AssignStm of DIdent * ExprEl
+    | CallStm of CallExpr
+    | IdentStm of DIdent
     | IfStm of ExprEl * Statement list * Statement list
     | CaseStm of ExprEl * (CaseLabel list * Statement list) list * Statement list
     | WhileStm of ExprEl * Statement list

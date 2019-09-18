@@ -1,5 +1,6 @@
 #load "Test.fsx"
-
+open np.BasicParsers
+open FParsec
 
 // testAll """
 //     program FsIsTheBest;
@@ -78,4 +79,34 @@
 
 // testRS "repeat x := 5; begin y := 10; end; begin end; z := 'Heloł' until x = 10"
 
-testWS "while (true * 9) - 9 do begin x := 7; x := 9 end"
+// testWS "while (true * 9) - 9 do begin x := 7; x := 9 end"
+
+// testCall "foo(a,b,10*2,1,2,3,4,5,6,7,8,9)"
+// testCall "foo"
+// testCall "foo( )"
+// testCall "foo( 1 + x(y), x(1+2) )"
+
+// testStmt "x;"
+
+// testStmt "x();"
+
+// testStmt "begin x := 999; end"
+
+//testDirective "if {$I foo.inc}"
+
+// run (between (str_wsc "x")(str_wsc "x")((str_wsc "if") .-. (str_wsc "then")) .>> eof) "x if {$I foo.inc}then x"
+
+testAll 
+    @"program foo;
+{.$I foo.inc}
+{$I foo.inc}
+{$I bad.inc}
+  i, f: string;
+begin
+  if x = 0 then
+    WriteLn();
+  {.$I bad.inc}
+end."
+    
+// TO CHECK
+// {$I bad.inc} if 0 then ;
