@@ -90,7 +90,7 @@ let testPas p s =
     use stream1 = new CharStream<PasState>(us.stream, Encoding.Unicode)
     stream1.UserState <- us
     stream1.Name <- "some code"
-    let mutable result = applyParser p stream1
+    let result = applyParser pass1Parser stream1
     match result with
     | Success (_,s,_) -> s.stream.SaveToFile()
     | Failure (_,_,s) -> s.stream.SaveToFile()
@@ -99,8 +99,7 @@ let testPas p s =
     use stream2 = new CharStream<PasState>(us.stream, Encoding.Unicode)
     stream2.UserState <- us
     stream2.Name <- "some code"
-    result <- applyParser p stream2
-    result
+    applyParser p stream2
 
 let testAll s =
     testPas pascalModule s

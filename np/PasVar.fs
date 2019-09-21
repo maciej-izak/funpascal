@@ -58,28 +58,28 @@ and PasStream(s: string) = class
 
     let mutable offsetsMap: string [] = [||]
 
-    override this.get_CanRead() : bool = true
-    override this.get_CanWrite() : bool = false
-    override this.get_CanSeek() : bool = true
-    override this.get_Length() : int64 = stream.Length 
-    override this.get_Position() : int64 = stream.Position
-    override this.set_Position(value: int64) : unit =
+    override __.get_CanRead() : bool = true
+    override __.get_CanWrite() : bool = false
+    override __.get_CanSeek() : bool = true
+    override __.get_Length() : int64 = stream.Length 
+    override __.get_Position() : int64 = stream.Position
+    override __.set_Position(value: int64) : unit =
         stream.Position <- value
 
-    override this.Flush() : unit = stream.Flush()
+    override __.Flush() : unit = stream.Flush()
 
-    override this.Seek(offset: int64, origin: SeekOrigin) : int64 = 
+    override __.Seek(offset: int64, origin: SeekOrigin) : int64 = 
         stream.Seek(offset, origin)
         
-    override this.SetLength(value: int64) : unit = ()
-    override this.Read(buffer: byte [], offset: int, count: int) : int =
+    override __.SetLength(value: int64) : unit = ()
+    override __.Read(buffer: byte [], offset: int, count: int) : int =
         let readed = stream.Read(buffer, offset, count)
         finalStream.Write(buffer, offset, readed)
         readed
 
-    override this.Write(buffer: byte [], offset: int, count: int) : unit = () 
+    override __.Write(buffer: byte [], offset: int, count: int) : unit = () 
 
-    override t.Close() =
+    override __.Close() =
         if stream = mainStream then
             finalStream.WriteByte(0uy)
             finalStream.WriteByte(0uy)
@@ -89,7 +89,7 @@ and PasStream(s: string) = class
         else
             stream.Close()
 
-    member this.AddInc fileName =
+    member __.AddInc fileName =
         let addInc() =    
             let pos = finalStream.Position
             finalStream.Seek(finalStream.Length, SeekOrigin.Begin) |> ignore
@@ -109,14 +109,13 @@ and PasStream(s: string) = class
             ()
         else addInc()
 
-    member t.FindStream s = streams.[s]
+    member __.FindStream s = streams.[s]
 
-    member t.SaveToFile() =
+    member __.SaveToFile() =
         use f = new FileStream("final.pas", FileMode.Create, FileAccess.Write)
         finalStream.WriteTo(f)
 
-    member this.EndInc() =
-        () 
+    member __.EndInc() = () 
   end
 
 let pass1IncludeHandler s =  

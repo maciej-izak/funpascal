@@ -275,13 +275,13 @@ let whileStatement =
 
 let statement =
     choice[
-            simpleStatement;
-            attempt(callStatement);
-            designatorStatement;
-            ifStatement;
-            caseStatement;
-            forStatement;
-            repeatStatement;
+            simpleStatement
+            attempt(callStatement)
+            designatorStatement
+            ifStatement
+            caseStatement
+            forStatement
+            repeatStatement
             whileStatement
     ] <?> ""
 

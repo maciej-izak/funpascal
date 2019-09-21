@@ -98,8 +98,9 @@ open FParsec
 
 testAll 
     @"program foo;
-{.$I foo.inc}
 {$I foo.inc}
+{$APPTYPE CONSOLE}
+(*$I foo.inc*){}
 {$I bad.inc}
   i, f: string;
 begin
