@@ -41,11 +41,11 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
           let r = if inReply.Status = Ok then inReply.Result
                   else Unchecked.defaultof<_>
           match idReply.Result with
-          | "I" -> Some(Include(r))
+          | "I" -> r |> Include |> Some
           | "A" | "APPTYPE" -> 
             match r with
-            | "CONSOLE" -> Some(AppType(Console))
-            | "GUI" -> Some(AppType(GUI))
+            | "CONSOLE" -> Console |> AppType |> Some
+            | "GUI" -> GUI |> AppType |> Some
             | _ -> None
           | _ -> None
           |> function
