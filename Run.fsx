@@ -96,18 +96,33 @@ open FParsec
 
 // run (between (str_wsc "x")(str_wsc "x")((str_wsc "if") .-. (str_wsc "then")) .>> eof) "x if {$I foo.inc}then x"
 
-testAll 
-    @"program foo;
-{$I foo.inc}
-{$APPTYPE CONSOLE}
-(*$I foo.inc*){}
-{$I bad.inc}
-  i, f: string;
-begin
-  if x = 0 then
-    WriteLn();
-  {.$I bad.inc}
-end."
-    
+// testAll 
+//     @"program foo;
+// {$I foo.inc}
+// {$APPTYPE CONSOLE}
+// (*$I foo.inc*){}
+// {$I bad.inc}
+//   i, f: string;
+// begin
+//   if x = 0 then
+//     WriteLn();
+//   with x do begin
+//     ReadLn();
+//   end;
+//   {.$I bad.inc}
+// end."
+
+testAll
+  @"
+  var
+    a, b, c: byte;
+  label
+    my_label, xxx;
+  begin
+  end.
+  
+  "
+
+
 // TO CHECK
 // {$I bad.inc} if 0 then ;

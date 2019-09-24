@@ -15,9 +15,86 @@ let inline castAs f (a, b) = (f a, f b)
 let inline toList a = [a]
 let inline (!+) x a = (a, x)
 
+let hasStr s = str_wsc s >>. preturn true <|>% false
+let inline str_opt s v = opt (str_wsc s >>% Some v )
 
-let keywords = ["while"; "for"; "to"; "downto"; "repeat"; "until"; "begin"; "end"; "do"; "if"; "then"; "else"; "type"; "var"; "const"; "procedure"; "function"; "array"; "string"; "file";
-    "xor"; "or"; "and"; "div"; "mod"; "shl"; "shr"; "as"; "in"; "is"; "nil"; "program"]
+let ``do `` = str_wsc "do"
+let ``if `` = str_wsc "if"
+let ``of `` = str_wsc "of"
+let ``to `` = str_wsc "to"
+let ``end `` = str_wsc "end"
+let ``for `` = str_wsc "for"
+let ``var `` = str_wsc "var"
+let ``case `` = str_wsc "case"
+let ``else `` = str_wsc "else"
+let ``file `` = str_wsc "file"
+let ``then `` = str_wsc "then"
+let ``type `` = str_wsc "type"
+let ``with `` = str_wsc "with"
+let ``array `` = str_wsc "array"
+let ``begin `` = str_wsc "begin"
+let ``const `` = str_wsc "const"
+let ``label `` = str_wsc "label"
+let ``until `` = str_wsc "until"
+let ``while `` = str_wsc "while"
+let ``downto `` = str_wsc "downto"
+let ``record `` = str_wsc "record"
+let ``repeat `` = str_wsc "repeat"
+let ``string `` = str_wsc "string"
+let ``program `` = str_wsc "program"
+let ``function `` = str_wsc "function"
+let ``procedure `` = str_wsc "procedure"
+let ``^ `` = str_wsc "^"
+let ``[ `` = str_wsc "["
+let ``] `` = str_wsc "]"
+let ``( `` = str_wsc "("
+let ``) `` = str_wsc ")"
+let ``. `` = str_wsc "."
+let ``, `` = str_wsc ","
+let ``.. `` = str_wsc ".."
+let ``: `` = str_wsc ":"
+let ``; `` = str_wsc ";"
+let ``= `` = str_wsc "="
+let ``:= `` = str_wsc ":="
+let ``?packed `` = hasStr "packed"
+let ``?type `` = hasStr "type"
+
+let keywords = [
+    "as"
+    "do"
+    "if"
+    "in"
+    "is"
+    "or"
+    "to"
+    "and"
+    "div"
+    "end"
+    "for"
+    "mod"
+    "nil"
+    "shl"
+    "shr"
+    "var"
+    "xor"
+    "else"
+    "file"
+    "then"
+    "type"
+    "with"
+    "array"
+    "begin"
+    "const"
+    "label"
+    "while"
+    "until"
+    "downto"
+    "string"
+    "repeat"
+    "program"
+    "function"
+    "procedure"
+  ]
 
 let expr = opp.ExpressionParser
 
@@ -73,11 +150,9 @@ let identifier : Parser<string, PasState> =
             stream.BacktrackTo(state)
             Reply(Error, expectedIdentifier)
 
-let has_str s = str_wsc s >>. preturn true <|>% false
-
 let constRangeExpression =
     (expr .>> wsc)
-    .>>. (str_wsc ".." >>. expr  .>> wsc) 
+    .>>. (``.. `` >>. expr  .>> wsc) 
     |>> (castAs ConstExpr >> ConstExprRange)
  
 let constType =
@@ -87,87 +162,79 @@ let arrayIndex =
     choice[constType;constRangeExpression |>> DimensionExpr ]
 
 let arrayIndexes =
-    str_wsc "[" >>. (sepEndBy1 arrayIndex (str_wsc ",")) .>> str_wsc "]"
+    ``[ `` >>. (sepEndBy1 arrayIndex ``, ``) .>> ``] ``
 
 let designator = 
     pipe2   (identifier |>> Designator.Ident) 
             (many(choice[ 
-                        str_wsc "^" >>% Deref; 
-                        (str_wsc "[" >>. (sepEndBy1 expr (str_wsc ",")) .>> str_wsc "]")
+                        ``^ `` >>% Deref; 
+                        (``[ `` >>. (sepEndBy1 expr ``, ``) .>> ``] ``)
                         |>> Designator.Array;
-                        str_wsc "." >>. identifier |>> Designator.Ident
+                        ``. `` >>. identifier |>> Designator.Ident
                       ]))
             (fun h t -> h::t |> DIdent)
 
 let typeIdentifier =
     choice[
             designator |>> Ident;
-            str_wsc "string" >>% String;
-            str_wsc "file" >>% File  
+            ``string `` >>% String;
+            ``file `` >>% File  
           ]    
 
 let field =
-    identifier .>>. (str_wsc ":" >>. identifier)
+    identifier .>>. (``: `` >>. identifier)
     
 let fieldListDecl p =
-    p identifier (str_wsc ",") .>>. (str_wsc ":" >>. typeIdentifier)
+    p identifier ``, `` .>>. (``: `` >>. typeIdentifier)
 
 let fieldsList  =
     fieldListDecl sepBy 
 
 let fieldsList1 =
     fieldListDecl sepBy1
-    
-let inline str_opt s v = 
-        opt (str_wsc s >>% Some v )
 
 let recordDef =
-      has_str "packed" // str_opt "packed"
-      .>>. (between
-              (str_wsc "record")
-              (str_wsc "end")
-              (sepEndBy fieldsList (str_wsc ";")))
+      ``?packed `` .>>. (between ``record `` ``end `` (sepEndBy fieldsList ``; ``))
       
 let structType =
     recordDef |>> Record
      
 let arrayType =
-    (str_wsc "array" >>. arrayIndexes)
-    .>>. (str_wsc "of" >>. identifier)
+    (``array `` >>. arrayIndexes) .>>. (``of `` >>. identifier)
     |>> Array
 
 let typeAlias =
-    has_str "type" .>>. typeIdentifier 
+    ``?type `` .>>. typeIdentifier 
     |>> TypeAlias
 
 let formalParam  = 
-        opt ((str_wsc "const" >>. preturn ParamKind.Const) <|> (str_wsc "var" >>. preturn Var))
+        opt ((``const `` >>. preturn ParamKind.Const) <|> (``var `` >>. preturn Var))
         .>>. fieldsList1
         
 let formalParamsList =
-    between (str_wsc "(") (str_wsc ")") (sepEndBy formalParam (str_wsc ";"))  
+    between ``( `` ``) `` (sepEndBy formalParam ``; ``)  
 
 let procIntfDecl = 
-    (((str_wsc "procedure" >>. preturn Procedure) 
-    <|> (str_wsc "function" >>. preturn Function)) .>>. (opt formalParamsList))
+    (((``procedure `` >>. preturn Procedure) 
+    <|> (``function `` >>. preturn Function)) .>>. (opt formalParamsList))
     >>= fun (k, p) -> match k with
-                      | Function -> (str_wsc ":" >>. designator) |>> fun i -> (Some(i), p)
+                      | Function -> (``: `` >>. designator) |>> fun i -> (Some(i), p)
                       | Procedure -> preturn(None, p)
         
 let typeProc =
     procIntfDecl |>> ProcType
     
 let typePtr =
-    str_wsc "^" >>. typeIdentifier |>> TypePtr
+    ``^ `` >>. typeIdentifier |>> TypePtr
 
 let typeRange =
-    expr .>>. (str_wsc ".." >>. expr) |>> ((castAs ConstExpr) >> SimpleRange)
+    expr .>>. (``.. `` >>. expr) |>> ((castAs ConstExpr) >> SimpleRange)
 
 let typeDeclarations =
-    (str_wsc "type" >>.
+    (``type `` >>.
         many1 (
-            (identifier .>> str_wsc "=")
-            .>>. ((choice[structType;arrayType;typePtr;typeAlias;typeProc;typeRange]).>> str_wsc ";")
+            (identifier .>> ``= ``)
+            .>>. ((choice[structType;arrayType;typePtr;typeAlias;typeProc;typeRange]).>> ``; ``)
             |>> Type)) 
     |>> Types
  
@@ -189,7 +256,7 @@ let callExpr =
                   | Value v -> match v with Value.Ident i -> ParamIdent(i) | v -> Value(v) |> ParamExpr
                   | e -> ParamExpr e)
     let actualParamsList =
-        between (str_wsc "(") (str_wsc ")") (sepEndBy actualParam (str_wsc ","))
+        between ``( `` ``) `` (sepEndBy actualParam ``, ``)
     designator .>>. actualParamsList 
     |>> CallExpr
 
@@ -200,7 +267,7 @@ let exprAtom =
     choice[attempt(exprCall); exprInt; exprFloat; exprIdent; exprString] |>> Value
     
 let exprExpr =
-    between (str_wsc "(") (str_wsc ")") expr 
+    between ``( `` ``) `` expr 
 
 let term = (exprAtom <|> exprExpr) .>> wsc
 opp.TermParser <- term
@@ -208,22 +275,27 @@ opp.TermParser <- term
 addOperators()
 
 let varDeclarations =
-    str_wsc "var" 
-    >>. many1 (tuple2 ((sepEndBy1 identifier (str_wsc ",")) .>> str_wsc ":")
-              (typeIdentifier .>> str_wsc ";")) 
+    ``var `` 
+    >>. many1 (tuple2 ((sepEndBy1 identifier ``, ``) .>> ``: ``)
+              (typeIdentifier .>> ``; ``)) 
     |>> Variables
     
 let constDeclarations =
-    (str_wsc "const" >>.
+    (``const `` >>.
         many1 ( 
-            identifier .>>. (str_wsc "=" >>. expr .>> str_wsc ";" |>> ConstExpr)))
+            identifier .>>. (``= `` >>. expr .>> ``; `` |>> ConstExpr)))
             |>> Const
+
+let labelDeclarations =
+    ``label ``
+    >>. sepBy1 identifier ``, `` .>> ``; ``
+    |>> Labels
 
 let expression =
     pint32
 
 let simpleStatement =
-    designator .>>.? (str_wsc ":=" >>. expr) |>> AssignStm
+    designator .>>.? (``:= `` >>. expr) |>> AssignStm
 
 let callStatement =
     callExpr |>> CallStm
@@ -234,44 +306,50 @@ let designatorStatement =
 let compoundStatement, compoundStatementRef = createParserForwardedToRef()
 
 let ifStatement =
-    tuple3 (str_wsc "if" >>. expr .>> str_wsc "then")
+    tuple3 (``if `` >>. expr .>> ``then ``)
            (compoundStatement)
-           !^(opt(str_wsc "else" >>. compoundStatement)) 
+           !^(opt(``else `` >>. compoundStatement)) 
     |>> IfStm  
 
 let caseLabel =
     sepBy1 ((attempt(constRangeExpression |>> CaseRange))
             <|>
-            (expr |>> (ConstExpr >> CaseExpr))) (str_wsc ",")
+            (expr |>> (ConstExpr >> CaseExpr))) ``, ``
 
 let caseStatement =
-    tuple3 (str_wsc "case" >>. expr .>> str_wsc "of")
+    tuple3 (``case `` >>. expr .>> ``of ``)
            (sepEndBy(caseLabel
-               .>>. (str_wsc ":" >>. !^(opt compoundStatement))) (str_wsc ";"))
-           !^^(opt (str_wsc "else" >>. opt compoundStatement) .>> str_wsc "end")
+               .>>. (``: `` >>. !^(opt compoundStatement))) ``; ``)
+           !^^(opt (``else `` >>. opt compoundStatement) .>> ``end ``)
            |>> CaseStm
 
 let forStatement =
     tuple5 
-        (str_wsc "for" >>. designator)
-        (str_wsc ":=" >>. expr)
-        ((str_wsc "to" >>% 1) <|> (str_wsc "downto" >>% -1))
+        (``for `` >>. designator)
+        (``:= `` >>. expr)
+        ((``to `` >>% 1) <|> (``downto `` >>% -1))
         expr
-        (str_wsc "do" >>. !^(opt compoundStatement))
+        (``do `` >>. !^(opt compoundStatement))
     |>> ForStm
 
 let repeatStatement =
     (between 
-        (str_wsc "repeat") 
-        (str_wsc "until") 
-        (sepEndBy compoundStatement (str_wsc ";")) |>> List.concat)
+        ``repeat `` 
+        ``until `` 
+        (sepEndBy compoundStatement ``; ``) |>> List.concat)
     .>>. expr
-    |>> RepeatStm  
+    |>> RepeatStm
 
 let whileStatement =
-    (str_wsc "while" >>. expr .>> str_wsc "do")
+    (``while `` >>. expr .>> ``do ``)
     .>>. !^(opt compoundStatement)
     |>> WhileStm
+
+let withStatement =
+    (``with `` >>. (sepEndBy designator ``, ``) .>> ``do ``)
+    .>>. !^(opt compoundStatement)
+    |>> WithStm
+
 
 let statement =
     choice[
@@ -283,26 +361,27 @@ let statement =
             forStatement
             repeatStatement
             whileStatement
+            withStatement
     ] <?> ""
 
 let statementList =
-    (sepEndBy ((statement |>> toList) <|> (compoundStatement)) (str_wsc ";")) 
+    (sepEndBy ((statement |>> toList) <|> compoundStatement) ``; ``)
     |>> List.concat
     
 let declarations =
-    many (choice[typeDeclarations; varDeclarations; constDeclarations]) 
+    many (choice[typeDeclarations; varDeclarations; constDeclarations; labelDeclarations]) 
 
 let block =
-    opt declarations .>>. between (str_wsc "begin") (str_wsc "end") statementList
+    opt declarations .>>. between ``begin `` ``end `` statementList
 
-compoundStatementRef := 
-    between
-        (str_wsc "begin")
-        (str_wsc "end")
-        statementList <|> (statement |>> toList)
+let stdCompoundStatement =
+    between ``begin `` ``end `` statementList 
+    <|> (statement |>> toList) 
+
+compoundStatementRef := stdCompoundStatement
 
 let program =
-    (opt(str_wsc "program" >>. identifier .>> str_wsc ";"))
+    (opt(``program `` >>. identifier .>> ``; ``))
     .>>.
     (block .>> pstring ".")        
 

@@ -91,6 +91,7 @@ type Statement =
     | WhileStm of ExprEl * Statement list
     | RepeatStm of Statement list * ExprEl
     | ForStm of DIdent * ExprEl * int * ExprEl * Statement list
+    | WithStm of DIdent list * Statement list
 
 type ProcKind = Procedure | Function
 
@@ -98,6 +99,7 @@ type Declarations =
     | Types of Type list
     | Variables of (string list * TypeIdentifier) list
     | Const of (string * ConstExpr) list
+    | Labels of string list
 
 type Program =
     | Unit of Ident
