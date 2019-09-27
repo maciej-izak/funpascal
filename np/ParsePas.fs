@@ -51,13 +51,13 @@ let ``( `` = str_wsc "("
 let ``) `` = str_wsc ")"
 let ``. `` = str_wsc "."
 let ``, `` = str_wsc ","
-let ``.. `` = str_wsc ".."
 let ``: `` = str_wsc ":"
 let ``; `` = str_wsc ";"
 let ``= `` = str_wsc "="
+let ``.. `` = str_wsc ".."
 let ``:= `` = str_wsc ":="
-let ``?packed `` = hasStr "packed"
 let ``?type `` = hasStr "type"
+let ``?packed `` = hasStr "packed"
 
 let keywords = [
     "as"
@@ -281,10 +281,9 @@ let varDeclarations =
     |>> Variables
     
 let constDeclarations =
-    (``const `` >>.
-        many1 ( 
-            identifier .>>. (``= `` >>. expr .>> ``; `` |>> ConstExpr)))
-            |>> Const
+    ``const `` 
+    >>. many1 (identifier .>>. (``= `` >>. expr .>> ``; `` |>> ConstExpr))
+    |>> Consts
 
 let labelDeclarations =
     ``label ``
@@ -307,7 +306,7 @@ let compoundStatement, compoundStatementRef = createParserForwardedToRef()
 
 let ifStatement =
     tuple3 (``if `` >>. expr .>> ``then ``)
-           (compoundStatement)
+           !^(opt compoundStatement)
            !^(opt(``else `` >>. compoundStatement)) 
     |>> IfStm  
 
@@ -350,11 +349,15 @@ let withStatement =
     .>>. !^(opt compoundStatement)
     |>> WithStm
 
-
 let statement =
-    choice[
+    many ``; ``
+    >>.
+    (opt(identifier .>>? (``: ``) |>> LabelStm) .>> many ``; ``) 
+    .>>.?
+    (choice[
             simpleStatement
             attempt(callStatement)
+            attempt((identifier .>>? ``: ``) |>> LabelStm)
             designatorStatement
             ifStatement
             caseStatement
@@ -362,23 +365,57 @@ let statement =
             repeatStatement
             whileStatement
             withStatement
-    ] <?> ""
+        ] <?> "") 
+    |>> function
+        | (None, s) -> [s]
+        | (Some l, s) -> [l ; s]
 
 let statementList =
-    (sepEndBy ((statement |>> toList) <|> compoundStatement) ``; ``)
-    |>> List.concat
+    (sepEndBy (statement <|> compoundStatement) (many1 ``; ``))
+    //.>>. opt((identifier .>>? ``: ``) |>> LabelStm) 
+    //|>> function
+    //    | (s, None) -> s |> List.concat
+    //    | (s, Some l) -> [[l]] |> List.append s |> List.concat
     
 let declarations =
     many (choice[typeDeclarations; varDeclarations; constDeclarations; labelDeclarations]) 
 
-let block =
-    opt declarations .>>. between ``begin `` ``end `` statementList
+let beginEnd = 
+    between ``begin `` ``end `` 
+            (statementList
+             .>>. opt((identifier .>>? ``: ``) |>> LabelStm) 
+             |>> function
+                 | (s, None) -> s |> List.concat
+                 | (s, Some l) -> [[l]] |> List.append s |> List.concat
+             .>> many ``; ``
+            )
+    
 
-let stdCompoundStatement =
-    between ``begin `` ``end `` statementList 
-    <|> (statement |>> toList) 
+let block = 
+    fun(stream: CharStream<PasState>) ->
+        let reply = 
+            ((opt declarations |>> 
+                function
+                | Some s -> 
+                    let us = stream.UserState
+                    for d in s do
+                        match d with
+                        | Types t -> ()
+                        | Variables v -> ()
+                        | Consts c -> ()
+                        | Labels l -> 
+                            for i in l do
+                                (i, Label{name=i; stmtPoint=false})
+                                |> us.moduled.block.symbols.Add
+                | _ -> () 
+            ) 
+            .>>. beginEnd) stream
+        reply
+        
 
-compoundStatementRef := stdCompoundStatement
+let stdCompoundStatement = beginEnd <|> statement
+
+compoundStatementRef := stdCompoundStatement 
 
 let program =
     (opt(``program `` >>. identifier .>> ``; ``))

@@ -92,13 +92,14 @@ type Statement =
     | RepeatStm of Statement list * ExprEl
     | ForStm of DIdent * ExprEl * int * ExprEl * Statement list
     | WithStm of DIdent list * Statement list
+    | LabelStm of string
 
 type ProcKind = Procedure | Function
 
 type Declarations =
     | Types of Type list
     | Variables of (string list * TypeIdentifier) list
-    | Const of (string * ConstExpr) list
+    | Consts of (string * ConstExpr) list
     | Labels of string list
 
 type Program =

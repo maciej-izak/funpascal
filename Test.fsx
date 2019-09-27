@@ -4,7 +4,7 @@ module Test
 #I __SOURCE_DIRECTORY__
 #r @"np/bin/Debug/netcoreapp2.2/FParsecCS.dll"
 #r @"np/bin/Debug/netcoreapp2.2/FParsec.dll"
-#r @"np/bin/Debug/netcoreapp2.2/FParsec-Pipes.dll"
+//#r @"np/bin/Debug/netcoreapp2.2/FParsec-Pipes.dll"
 
 #load "np/PasAst.fs"
 #load "np/PasVar.fs"
@@ -102,7 +102,12 @@ let testPas p s =
     applyParser p stream2
 
 let testAll s =
+    printfn ">%A" s
     testPas pascalModule s
+
+// let testAllFromFile f =
+//     let s = StringBuilder
+//     testPas pascalModule s
 
 (*
 type Expr =
@@ -125,22 +130,22 @@ let ws = spaces
 (*let prog =
     pstring " " >>. anyString .>> pstring " " *)
     
-let floatBetweenBrackets = pfloat .>> pstring ","
+// let floatBetweenBrackets = pfloat .>> pstring ","
 
-let floatList = many floatBetweenBrackets
+// let floatList = many floatBetweenBrackets
 
-let backtrackingSepBy1 p sep = pipe2 p (many (sep >>? p)) (fun hd tl -> hd::tl)
+// let backtrackingSepBy1 p sep = pipe2 p (many (sep >>? p)) (fun hd tl -> hd::tl)
 
-//let ap = sepBy1 (pstring "a") (pstring "b")
-let ap = backtrackingSepBy1 (pstring "a") (pstring "b")
-let bp = tuple2 ap (pstring "bc")
-let test_ab() = run bp "abababc"
+// //let ap = sepBy1 (pstring "a") (pstring "b")
+// let ap = backtrackingSepBy1 (pstring "a") (pstring "b")
+// let bp = tuple2 ap (pstring "bc")
+// let test_ab() = run bp "abababc"
 
-let test_i() = run tkIdentifier "Helllo_9"
-do printfn "%A" (test_i())
-let pGrammarTest: Parser<_, unit> =  // one type annotation is enough for the whole parser
-    floatList
-*)    
+// let test_i() = run tkIdentifier "Helllo_9"
+// do printfn "%A" (test_i())
+// let pGrammarTest: Parser<_, unit> =  // one type annotation is enough for the whole parser
+//     floatList
+// *)    
 (*
 
     

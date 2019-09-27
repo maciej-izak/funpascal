@@ -112,17 +112,52 @@ open FParsec
 //   {.$I bad.inc}
 // end."
 
-testAll
-  @"
+// testAll
+//   """
+//   var
+//     a, b, c: byte;
+//   label
+//     my_label, xxx, z;
+//   begin
+//     my_label:if true then xxx:foo(); z:
+//   end.
+//  """
+
+// testAll
+//   """
+//   var
+//     a, b, c: byte;
+//   label
+//     my_label, xxx, z;
+//   begin
+//     with x,y.z do if x then else writeln()
+//     z() // good error :)
+//   end.
+//  """
+
+// testAll // about ignoring ;
+//   """
+//   var
+//     a, b, c: byte;
+//   label
+//     my_label, xxx, z;
+//   begin
+//     with x,y.z do if x then else begin ;;;;writeln();;end;;;
+//     ;;z:;;;;
+//   end.
+//  """
+
+testAll // about ignoring ;
+  """
   var
     a, b, c: byte;
   label
-    my_label, xxx;
+    my_label, xxx, z;
   begin
+    with x,y.z do if x then else begin ;;;;writeln();;end;;;
+    ;;z:;;;;
   end.
-  
-  "
-
+ """
 
 // TO CHECK
 // {$I bad.inc} if 0 then ;

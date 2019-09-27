@@ -16,10 +16,24 @@ let MinimumByteBufferLength = 128L
 
 type PasSubStream = {index: int; length: int} 
 
+type LabelDef = {name: string; mutable stmtPoint: bool}
+
+type SymbolDef =
+    | Label of LabelDef
+
+type BlockDef() = class
+    member val symbols: Dictionary<string, SymbolDef> = new Dictionary<_,_>() with get, set
+  end
+
+type ModuleDef() = class
+    member val block = BlockDef()
+  end
+
 type PasState = {
   stream: PasStream
   incStack: (int64 * string * CharStreamState<PasState>) Stack
   handleInclude: IncludeHandle ref
+  moduled: ModuleDef
 } 
 
 and IncludeHandle = string -> CharStream<PasState> -> Reply<unit>
@@ -74,7 +88,8 @@ and PasStream(s: string) = class
     override __.SetLength(value: int64) : unit = ()
     override __.Read(buffer: byte [], offset: int, count: int) : int =
         let readed = stream.Read(buffer, offset, count)
-        finalStream.Write(buffer, offset, readed)
+        if finalStream <> stream then
+          finalStream.Write(buffer, offset, readed)
         readed
 
     override __.Write(buffer: byte [], offset: int, count: int) : unit = () 
@@ -83,6 +98,7 @@ and PasStream(s: string) = class
         if stream = mainStream then
             finalStream.WriteByte(0uy)
             finalStream.WriteByte(0uy)
+            finalStream.Flush()
             stream.Close()
             stream <- finalStream
             stream.Seek(0L, SeekOrigin.Begin) |> ignore
@@ -135,7 +151,7 @@ let pass2IncludeHandler s =
                     stream.Name <- s
                     stream.SetLineBegin_WithoutCheckAndWithoutIncrementingTheStateTag 0L
                     stream.SetLine_WithoutCheckAndWithoutIncrementingTheStateTag 0L 
-                    printfn "register new lines %A" (stream.RegisterNewline())
+                    stream.RegisterNewline()
         Reply(())
 
 type PasState with
@@ -144,6 +160,7 @@ type PasState with
             stream = s
             incStack = Stack()
             handleInclude = {contents = pass1IncludeHandler}
+            moduled = ModuleDef()
         }
 
 let opp = new OperatorPrecedenceParser<ExprEl,unit,PasState>()
