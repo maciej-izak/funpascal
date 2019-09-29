@@ -24,10 +24,12 @@ let ``of `` = str_wsc "of"
 let ``to `` = str_wsc "to"
 let ``end `` = str_wsc "end"
 let ``for `` = str_wsc "for"
+let ``set `` = str_wsc "set"
 let ``var `` = str_wsc "var"
 let ``case `` = str_wsc "case"
 let ``else `` = str_wsc "else"
 let ``file `` = str_wsc "file"
+let ``goto `` = str_wsc "goto"
 let ``then `` = str_wsc "then"
 let ``type `` = str_wsc "type"
 let ``with `` = str_wsc "with"
@@ -65,6 +67,7 @@ let keywords = [
     "if"
     "in"
     "is"
+    "of"
     "or"
     "to"
     "and"
@@ -73,12 +76,14 @@ let keywords = [
     "for"
     "mod"
     "nil"
+    "set"
     "shl"
     "shr"
     "var"
     "xor"
     "else"
     "file"
+    "goto"
     "then"
     "type"
     "with"
@@ -89,8 +94,9 @@ let keywords = [
     "while"
     "until"
     "downto"
-    "string"
+    "packed"
     "repeat"
+    "string"
     "program"
     "function"
     "procedure"
@@ -166,12 +172,19 @@ let arrayIndexes =
 
 let designator = 
     pipe2   (identifier |>> Designator.Ident) 
-            (many(choice[ 
+            (manyTill
+                (choice[
                         ``^ `` >>% Deref; 
                         (``[ `` >>. (sepEndBy1 expr ``, ``) .>> ``] ``)
                         |>> Designator.Array;
                         ``. `` >>. identifier |>> Designator.Ident
-                      ]))
+                      ])
+                (lookAhead(followedBy (next2CharsSatisfy 
+                              (fun c1 c2 ->
+                                match (c1, c2) with
+                                | '.', '.' -> true
+                                | '^', _ | '[', _ | '.', _ -> false
+                                | _, _ -> true)))))
             (fun h t -> h::t |> DIdent)
 
 let typeIdentifier =
@@ -194,13 +207,16 @@ let fieldsList1 =
     fieldListDecl sepBy1
 
 let recordDef =
-      ``?packed `` .>>. (between ``record `` ``end `` (sepEndBy fieldsList ``; ``))
+      ``?packed `` .>>.? (between ``record `` ``end `` (sepEndBy fieldsList ``; ``))
       
 let structType =
     recordDef |>> Record
      
 let arrayType =
-    (``array `` >>. arrayIndexes) .>>. (``of `` >>. identifier)
+    tuple3
+        (``?packed ``)
+        (``array `` >>. arrayIndexes)
+        (``of `` >>. identifier)
     |>> Array
 
 let typeAlias =
@@ -230,11 +246,16 @@ let typePtr =
 let typeRange =
     expr .>>. (``.. `` >>. expr) |>> ((castAs ConstExpr) >> SimpleRange)
 
+let typeEnum = between ``( `` ``) `` (sepEndBy1 identifier ``, ``) |>> TypeEnum
+
+let typeSet = 
+  ``?packed `` .>>.? (``set `` >>. ``of `` >>. typeIdentifier) |>> TypeSet
+
 let typeDeclarations =
     (``type `` >>.
         many1 (
             (identifier .>> ``= ``)
-            .>>. ((choice[structType;arrayType;typePtr;typeAlias;typeProc;typeRange]).>> ``; ``)
+            .>>. ((choice[structType;attempt(arrayType);typePtr;attempt(typeRange);typeAlias;typeProc;typeSet;attempt(typeEnum)]).>> ``; ``)
             |>> Type)) 
     |>> Types
  
@@ -249,6 +270,10 @@ let exprString =
     
 let exprIdent =
     designator |>> Value.Ident
+
+let exprSet =
+    ``[ `` >>. (sepEndBy (attempt(expr .>>. (``.. `` >>. expr) |>> SRange) <|> (expr |>> SValue)) ``, ``) .>> ``] `` 
+    |>> Set
     
 let callExpr =
     let actualParam =
@@ -264,7 +289,7 @@ let exprCall =
     callExpr |>> CallResult
 
 let exprAtom =
-    choice[attempt(exprCall); exprInt; exprFloat; exprIdent; exprString] |>> Value
+    choice[attempt(exprCall); exprInt; exprFloat; attempt(exprIdent); exprString; exprSet] |>> Value
     
 let exprExpr =
     between ``( `` ``) `` expr 
@@ -280,10 +305,29 @@ let varDeclarations =
               (typeIdentifier .>> ``; ``)) 
     |>> Variables
     
+let typedConstConstr, typedConstConstrRef = createParserForwardedToRef()
+
+let constConstr =
+    choice[
+        attempt( expr |>> ConstExpr)
+        attempt(``( `` >>. (sepEndBy typedConstConstr ``, ``) .>> ``) `` |>> ConstConstr)
+        attempt(``( `` >>. (sepEndBy ((identifier .>> ``: ``) .>>. typedConstConstr) ``; ``) .>> ``) `` |>> ConstStructConstr)
+    ]
+
+typedConstConstrRef := constConstr
+
 let constDeclarations =
     ``const `` 
-    >>. many1 (identifier .>>. (``= `` >>. expr .>> ``; `` |>> ConstExpr))
+    >>. many1 (
+            tuple3
+                (identifier)
+                (opt(``: `` >>. typeIdentifier))
+                (
+                    ``= `` >>. constConstr .>> ``; ``
+                )
+            )
     |>> Consts
+
 
 let labelDeclarations =
     ``label ``
@@ -349,6 +393,9 @@ let withStatement =
     .>>. !^(opt compoundStatement)
     |>> WithStm
 
+let gotoStatement =
+    ``goto `` >>. identifier |>> GotoStm
+
 let statement =
     many ``; ``
     >>.
@@ -365,17 +412,13 @@ let statement =
             repeatStatement
             whileStatement
             withStatement
+            gotoStatement
         ] <?> "") 
     |>> function
         | (None, s) -> [s]
         | (Some l, s) -> [l ; s]
 
-let statementList =
-    (sepEndBy (statement <|> compoundStatement) (many1 ``; ``))
-    //.>>. opt((identifier .>>? ``: ``) |>> LabelStm) 
-    //|>> function
-    //    | (s, None) -> s |> List.concat
-    //    | (s, Some l) -> [[l]] |> List.append s |> List.concat
+let statementList = (sepEndBy (statement <|> compoundStatement) (many1 ``; ``))
     
 let declarations =
     many (choice[typeDeclarations; varDeclarations; constDeclarations; labelDeclarations]) 
@@ -392,7 +435,8 @@ let beginEnd =
     
 
 let block = 
-    fun(stream: CharStream<PasState>) ->
+    opt declarations .>>. beginEnd
+    (*fun(stream: CharStream<PasState>) ->
         let reply = 
             ((opt declarations |>> 
                 function
@@ -410,7 +454,7 @@ let block =
                 | _ -> () 
             ) 
             .>>. beginEnd) stream
-        reply
+        reply*)
         
 
 let stdCompoundStatement = beginEnd <|> statement

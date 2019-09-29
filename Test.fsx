@@ -2,8 +2,8 @@
 module Test
 
 #I __SOURCE_DIRECTORY__
-#r @"np/bin/Debug/netcoreapp2.2/FParsecCS.dll"
-#r @"np/bin/Debug/netcoreapp2.2/FParsec.dll"
+#r @"np/bin/Debug/netcoreapp3.0/FParsecCS.dll"
+#r @"np/bin/Debug/netcoreapp3.0/FParsec.dll"
 //#r @"np/bin/Debug/netcoreapp2.2/FParsec-Pipes.dll"
 
 #load "np/PasAst.fs"

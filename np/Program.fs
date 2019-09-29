@@ -14,5 +14,5 @@ let main argv =
     let files = results.GetResult(Files, [])
     for f in files do
         printfn "%A" f
-    run commentLine "// foo"
+    //run commentLine "// foo"
     0 // return an integer exit code

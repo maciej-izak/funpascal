@@ -7,12 +7,18 @@ type DIdent = DIdent of Designator list
 
 and CallExpr = CallExpr of DIdent * CallParam list
 
+and SetAtom =
+    | SValue of ExprEl
+    | SRange of ExprEl * ExprEl
+
 and Value =
     | Float of float
     | Integer of int
     | String of string
     | Ident of DIdent
     | CallResult of CallExpr
+    | Nil
+    | Set of SetAtom list
 
 and ExprEl =
     | Value of Value
@@ -51,7 +57,10 @@ and CallParam =
     | ParamExpr of ExprEl
     | ParamIdent of DIdent
     
-type ConstExpr = ConstExpr of ExprEl
+type ConstExpr = 
+    | ConstExpr of ExprEl
+    | ConstConstr of ConstExpr list
+    | ConstStructConstr of (string * ConstExpr) list
 
 type ConstExprRange = (ConstExpr * ConstExpr)
 
@@ -70,9 +79,11 @@ type ParamList = (ParamKind option * (string list * TypeIdentifier)) list option
 
 type TypeDecl =
     | Record of packed: bool * fields: (string list * TypeIdentifier) list
-    | Array of dimensions: ArrayDimension list * tname: string
+    | Array of packed: bool * dimensions: ArrayDimension list * tname: string
     | TypePtr of TypeIdentifier
     | TypeAlias of strong: bool * origin: TypeIdentifier
+    | TypeSet of packed: bool * TypeIdentifier
+    | TypeEnum of string list
     | SimpleRange of ConstExprRange
     | ProcType of result: DIdent option * paramList: ParamList
     
@@ -92,6 +103,7 @@ type Statement =
     | RepeatStm of Statement list * ExprEl
     | ForStm of DIdent * ExprEl * int * ExprEl * Statement list
     | WithStm of DIdent list * Statement list
+    | GotoStm of string
     | LabelStm of string
 
 type ProcKind = Procedure | Function
@@ -99,7 +111,7 @@ type ProcKind = Procedure | Function
 type Declarations =
     | Types of Type list
     | Variables of (string list * TypeIdentifier) list
-    | Consts of (string * ConstExpr) list
+    | Consts of (string * TypeIdentifier option * ConstExpr) list
     | Labels of string list
 
 type Program =
