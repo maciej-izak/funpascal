@@ -351,7 +351,7 @@ let compoundStatement, compoundStatementRef = createParserForwardedToRef()
 let ifStatement =
     tuple3 (``if `` >>. expr .>> ``then ``)
            !^(opt compoundStatement)
-           !^(opt(``else `` >>. compoundStatement)) 
+           !^(opt(``else `` >>. !^(opt(compoundStatement)))) 
     |>> IfStm  
 
 let caseLabel =
@@ -399,9 +399,9 @@ let gotoStatement =
 let statement =
     many ``; ``
     >>.
-    (opt(identifier .>>? (``: ``) |>> LabelStm) .>> many ``; ``) 
-    .>>.?
-    (choice[
+    many((identifier .>>? (lookAhead(notFollowedBy (pstring ":=")) >>. (``: ``) .>> many ``; ``) |>> LabelStm) .>> many ``; ``) 
+    .>>.
+    opt(choice[
             simpleStatement
             attempt(callStatement)
             attempt((identifier .>>? ``: ``) |>> LabelStm)
@@ -415,8 +415,8 @@ let statement =
             gotoStatement
         ] <?> "") 
     |>> function
-        | (None, s) -> [s]
-        | (Some l, s) -> [l ; s]
+        | ([], s) -> Option.toList s
+        | (l, s) -> l @ Option.toList s 
 
 let statementList = (sepEndBy (statement <|> compoundStatement) (many1 ``; ``))
     
@@ -426,14 +426,12 @@ let declarations =
 let beginEnd = 
     between ``begin `` ``end `` 
             (statementList
-             .>>. opt((identifier .>>? ``: ``) |>> LabelStm) 
+             .>>. many(identifier .>>? (``: `` .>> many ``; ``) |>> LabelStm) 
              |>> function
-                 | (s, None) -> s |> List.concat
-                 | (s, Some l) -> [[l]] |> List.append s |> List.concat
-             .>> many ``; ``
+                 | (s, []) -> s |> List.concat
+                 | (s, l) -> [l] |> List.append s |> List.concat
             )
     
-
 let block = 
     opt declarations .>>. beginEnd
     (*fun(stream: CharStream<PasState>) ->

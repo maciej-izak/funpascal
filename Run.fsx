@@ -20,12 +20,34 @@ open FParsec
 //   begin goto x; x:end.
 //  """
 
+// testAll 
+//   """
+//   const A: TArray = (1,2,3);
+//   const R: TRec = (a: 12; b:(c:'aaa'));
+//   type f = a..f;
+//   const S: TS = [aa..bb, cc, dd, ee..ff];
+//   begin 
+//     b:c:;e:a := [1..b];d:e:f:x:=2;d:d:
+//   end.
+//  """
+
 testAll 
   """
-  const A: TArray = (1,2,3);
-  const R: TRec = (a: 12; b:(c:'aaa'));
-  type f = a..f;
-  const S: TS = [aa..bb, cc, dd, ee..ff];
-  begin end.
+  begin 
+    if true then else x:
+  end.
  """
-  //
+
+// testAll // in Delphi the last y is not supported without ; 
+//   """ 
+//   begin 
+//     if true then z: else begin x: end y:
+//   end.
+//  """
+
+testAll // in Delphi the last y is not supported without ; 
+  """ 
+  begin 
+    if true then z: else begin y: foo() z: end
+  end.
+ """
