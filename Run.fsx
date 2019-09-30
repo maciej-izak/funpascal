@@ -31,12 +31,12 @@ open FParsec
 //   end.
 //  """
 
-testAll 
-  """
-  begin 
-    if true then else x:
-  end.
- """
+// testAll 
+//   """
+//   begin 
+//     if true then else x:
+//   end.
+//  """
 
 // testAll // in Delphi the last y is not supported without ; 
 //   """ 
@@ -45,9 +45,27 @@ testAll
 //   end.
 //  """
 
-testAll // in Delphi the last y is not supported without ; 
+// testAll // in Delphi the last y is not supported without ; 
+//   """ 
+//   begin 
+//     if true then z: else begin y: foo() z: end
+//   end.
+//  """
+
+// testAll  
+//   """ 
+//   begin
+//     x := nil + 1 * nil / x + [a(f)..e, g+1] 
+//   end.
+//  """
+
+testAll  
   """ 
-  begin 
-    if true then z: else begin y: foo() z: end
+  begin
+    for X := 10 to 11 do
+    case X of
+      A..B,C: F:;
+    else
+    end;
   end.
  """

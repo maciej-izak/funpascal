@@ -24,6 +24,7 @@ let ``of `` = str_wsc "of"
 let ``to `` = str_wsc "to"
 let ``end `` = str_wsc "end"
 let ``for `` = str_wsc "for"
+let ``nil `` = str_wsc "nil"
 let ``set `` = str_wsc "set"
 let ``var `` = str_wsc "var"
 let ``case `` = str_wsc "case"
@@ -81,6 +82,7 @@ let keywords = [
     "shr"
     "var"
     "xor"
+    "case"
     "else"
     "file"
     "goto"
@@ -271,6 +273,9 @@ let exprString =
 let exprIdent =
     designator |>> Value.Ident
 
+let exprNil =
+    ``nil `` >>% Nil
+
 let exprSet =
     ``[ `` >>. (sepEndBy (attempt(expr .>>. (``.. `` >>. expr) |>> SRange) <|> (expr |>> SValue)) ``, ``) .>> ``] `` 
     |>> Set
@@ -289,7 +294,7 @@ let exprCall =
     callExpr |>> CallResult
 
 let exprAtom =
-    choice[attempt(exprCall); exprInt; exprFloat; attempt(exprIdent); exprString; exprSet] |>> Value
+    choice[attempt(exprCall); exprInt; exprFloat; attempt(exprIdent); exprString; exprSet; exprNil] |>> Value
     
 let exprExpr =
     between ``( `` ``) `` expr 
@@ -404,7 +409,7 @@ let statement =
     opt(choice[
             simpleStatement
             attempt(callStatement)
-            attempt((identifier .>>? ``: ``) |>> LabelStm)
+            //attempt((identifier .>>? ``: ``) |>> LabelStm)
             designatorStatement
             ifStatement
             caseStatement
