@@ -85,7 +85,7 @@ type TypeDecl =
     | TypeSet of packed: bool * TypeIdentifier
     | TypeEnum of string list
     | SimpleRange of ConstExprRange
-    | ProcType of result: DIdent option * paramList: ParamList
+    | ProcType of name: string option * result: DIdent option * paramList: ParamList
     
 type Type = (string * TypeDecl)
 
@@ -113,6 +113,7 @@ type Declarations =
     | Variables of (string list * TypeIdentifier) list
     | Consts of (string * TypeIdentifier option * ConstExpr) list
     | Labels of string list
+    | ProcAndFunc of (string option * DIdent option * ParamList) * (Declarations list option * Statement list)
 
 type Program =
     | Unit of Ident

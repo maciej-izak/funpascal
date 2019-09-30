@@ -232,15 +232,18 @@ let formalParam  =
 let formalParamsList =
     between ``( `` ``) `` (sepEndBy formalParam ``; ``)  
 
-let procIntfDecl = 
-    (((``procedure `` >>. preturn Procedure) 
-    <|> (``function `` >>. preturn Function)) .>>. (opt formalParamsList))
-    >>= fun (k, p) -> match k with
-                      | Function -> (``: `` >>. designator) |>> fun i -> (Some(i), p)
-                      | Procedure -> preturn(None, p)
-        
+let procDecl = 
+    tuple3
+        ((``procedure `` >>. preturn Procedure) 
+         <|> (``function `` >>. preturn Function)) 
+        (opt identifier)
+        (opt formalParamsList)
+    >>= fun (k, n, p) -> match k with
+                         | Function -> (``: `` >>. designator) |>> fun i -> (n, Some(i), p)
+                         | Procedure -> preturn(n, None, p)
+
 let typeProc =
-    procIntfDecl |>> ProcType
+    procDecl |>> ProcType
     
 let typePtr =
     ``^ `` >>. typeIdentifier |>> TypePtr
@@ -409,7 +412,6 @@ let statement =
     opt(choice[
             simpleStatement
             attempt(callStatement)
-            //attempt((identifier .>>? ``: ``) |>> LabelStm)
             designatorStatement
             ifStatement
             caseStatement
@@ -425,8 +427,10 @@ let statement =
 
 let statementList = (sepEndBy (statement <|> compoundStatement) (many1 ``; ``))
     
+let procFuncDeclarations, procFuncDeclarationsRef = createParserForwardedToRef()
+
 let declarations =
-    many (choice[typeDeclarations; varDeclarations; constDeclarations; labelDeclarations]) 
+    many (choice[typeDeclarations; varDeclarations; constDeclarations; labelDeclarations; procFuncDeclarations]) 
 
 let beginEnd = 
     between ``begin `` ``end `` 
@@ -463,6 +467,8 @@ let block =
 let stdCompoundStatement = beginEnd <|> statement
 
 compoundStatementRef := stdCompoundStatement 
+
+procFuncDeclarationsRef := ((procDecl .>> ``; ``) .>>. block) .>> ``; `` |>> ProcAndFunc 
 
 let program =
     (opt(``program `` >>. identifier .>> ``; ``))

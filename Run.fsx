@@ -59,13 +59,32 @@ open FParsec
 //   end.
 //  """
 
+// testAll  
+//   """ 
+//   begin
+//     for X := 10 to 11 do
+//     case X of
+//       A..B,C: F:;
+//     else
+//     end;
+//   end.
+//  """
+
 testAll  
-  """ 
-  begin
-    for X := 10 to 11 do
-    case X of
-      A..B,C: F:;
-    else
+  """
+  procedure foo;
+  var
+    x: integer;
+
+    function boo(var x: string): integer;
+    type TMyPRoc = procedure foo; { foo name is accepted }
+    const X = 9;
+    begin
     end;
+
+  begin
+  end;
+
+  begin
   end.
  """
