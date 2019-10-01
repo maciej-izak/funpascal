@@ -442,7 +442,7 @@ let beginEnd =
             )
     
 let block = 
-    opt declarations .>>. beginEnd
+    declarations .>>. beginEnd
     (*fun(stream: CharStream<PasState>) ->
         let reply = 
             ((opt declarations |>> 

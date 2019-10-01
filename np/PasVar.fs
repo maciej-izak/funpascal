@@ -61,6 +61,11 @@ and PasStream(s: string) = class
     let mutable lastSubStream = {index=0;length=s.Length};
     let mutable stream = mainStream
     let finalStream = new MemoryStream(int mainStream.Length)
+    let mutable read: (byte[] * int * int) -> int = 
+        fun (buffer, offset, count) ->
+            let readed = stream.Read(buffer, offset, count)
+            finalStream.Write(buffer, offset, readed)
+            readed
 
     (*let mutable nextFreeOffset: int64 = calcNextOffset mainStream.Size
     let computeNextFreeOffset (s: Stream) =
@@ -86,11 +91,7 @@ and PasStream(s: string) = class
         stream.Seek(offset, origin)
         
     override __.SetLength(value: int64) : unit = ()
-    override __.Read(buffer: byte [], offset: int, count: int) : int =
-        let readed = stream.Read(buffer, offset, count)
-        if finalStream <> stream then
-          finalStream.Write(buffer, offset, readed)
-        readed
+    override __.Read(buffer: byte [], offset: int, count: int) : int = read(buffer, offset, count)
 
     override __.Write(buffer: byte [], offset: int, count: int) : unit = () 
 
@@ -101,6 +102,7 @@ and PasStream(s: string) = class
             finalStream.Flush()
             stream.Close()
             stream <- finalStream
+            read <- fun (buffer, offset, count) -> stream.Read(buffer, offset, count)
             stream.Seek(0L, SeekOrigin.Begin) |> ignore
         else
             stream.Close()

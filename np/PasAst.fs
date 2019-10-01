@@ -113,7 +113,7 @@ type Declarations =
     | Variables of (string list * TypeIdentifier) list
     | Consts of (string * TypeIdentifier option * ConstExpr) list
     | Labels of string list
-    | ProcAndFunc of (string option * DIdent option * ParamList) * (Declarations list option * Statement list)
+    | ProcAndFunc of (string option * DIdent option * ParamList) * (Declarations list * Statement list)
 
 type Program =
     | Unit of Ident

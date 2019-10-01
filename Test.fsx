@@ -102,7 +102,6 @@ let testPas p s =
     applyParser p stream2
 
 let testAll s =
-    printfn ">%A" s
     testPas pascalModule s
 
 // let testAllFromFile f =
