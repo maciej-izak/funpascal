@@ -70,21 +70,29 @@ open FParsec
 //   end.
 //  """
 
+// testAll  
+//   """
+//   procedure foo;
+//   var
+//     x: integer;
+
+//     function boo(var x: string): integer;
+//     type TMyPRoc = procedure foo; { foo name is accepted }
+//     const X = 9;
+//     begin
+//     end;
+
+//   begin
+//   end;
+
+//   begin
+//   end.
+//  """
+
 testAll  
   """
-  procedure foo;
-  var
-    x: integer;
-
-    function boo(var x: string): integer;
-    type TMyPRoc = procedure foo; { foo name is accepted }
-    const X = 9;
-    begin
-    end;
-
   begin
-  end;
-
-  begin
+    // x := 10;
+    y := 10; // Some stuff
   end.
  """

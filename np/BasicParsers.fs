@@ -114,11 +114,15 @@ let c0 =
       else
         Reply(reply.Status,reply.Error)
 
+let doubleSlashComment =
+    pstring "//" >>. restOfLine true
+
 let comments =
     choice[
       spaces1 >>% Regular
       commentBlock
       starCommentBlock
+      doubleSlashComment >>% Regular
       c0
     ] <?> ""
     >>= function
