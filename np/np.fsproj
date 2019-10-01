@@ -17,6 +17,7 @@
     <Compile Include="ParsePasInit.fs" />
     <Compile Include="PasOperators.fs" />
     <Compile Include="ParsePas.fs" />
+    <Compile Include="PasStreams.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 </Project>

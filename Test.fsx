@@ -11,13 +11,16 @@ module Test
 #load "np/BasicParsers.fs"
 #load "np/PasOperators.fs"
 #load "np/ParsePas.fs"
+#load "np/PasStreams.fs"
 
+open System.IO
 open System.Text
 open System.Runtime
 open np.PasVar
 open np.PasAst
 open np.BasicParsers
 open np.ParsePas
+open np.PasStreams
 open FParsec
 open FParsec.Primitives
 open FParsec.CharParsers
@@ -77,32 +80,7 @@ let testCall s =
 //let testDirective s =
 //    test ((str_wsc "if") -. (str_wsc "then")) s
 
-let applyParser (parser: Parser<'Result,'UserState>) (stream: CharStream<'UserState>) =
-    let reply = parser stream
-    if reply.Status = Ok then
-        Success(reply.Result, stream.UserState, stream.Position)
-    else
-        let error = ParserError(stream.Position, stream.UserState, reply.Error)
-        Failure(error.ToString(stream), error, stream.UserState)
 
-let testPas p s = 
-    let us = PasState.Create(new PasStream(s))
-    use stream1 = new CharStream<PasState>(us.stream, Encoding.Unicode)
-    stream1.UserState <- us
-    stream1.Name <- "some code"
-    let result = applyParser pass1Parser stream1
-    match result with
-    | Success (_,s,_) -> s.stream.SaveToFile()
-    | Failure (_,_,s) -> s.stream.SaveToFile()
-    us.handleInclude := pass2IncludeHandler
-    printfn ">>> SECOND PASS"
-    use stream2 = new CharStream<PasState>(us.stream, Encoding.Unicode)
-    stream2.UserState <- us
-    stream2.Name <- "some code"
-    applyParser p stream2
-
-let testAll s =
-    testPas pascalModule s
 
 // let testAllFromFile f =
 //     let s = StringBuilder

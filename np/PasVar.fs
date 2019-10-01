@@ -31,6 +31,7 @@ type ModuleDef() = class
 
 type PasState = {
   stream: PasStream
+  incPath: string
   incStack: (int64 * string * CharStreamState<PasState>) Stack
   handleInclude: IncludeHandle ref
   moduled: ModuleDef
@@ -49,16 +50,10 @@ and IncludeHandle = string -> CharStream<PasState> -> Reply<unit>
   ) 
 *)
 
-and PasStream(s: string) = class 
+and PasStream(s: Stream) = class 
     inherit Stream()
-    let strToStream (s: string) = s |> Encoding.Unicode.GetBytes |> fun s -> new MemoryStream(s)
-    (*let calcNextOffset size = 
-        if size < DefaultBlockSize then
-            DefaultBlockSize
-        else
-            ((size / DefaultBlockSize) * DefaultBlockSize) + (size % DefaultBlockSize)*)
-    let mainStream = strToStream s
-    let mutable lastSubStream = {index=0;length=s.Length};
+    let mainStream = s
+    let mutable lastSubStream = {index=0;length=int mainStream.Length / 2};
     let mutable stream = mainStream
     let finalStream = new MemoryStream(int mainStream.Length)
     let mutable read: (byte[] * int * int) -> int = 
@@ -66,16 +61,8 @@ and PasStream(s: string) = class
             let readed = stream.Read(buffer, offset, count)
             finalStream.Write(buffer, offset, readed)
             readed
-
-    (*let mutable nextFreeOffset: int64 = calcNextOffset mainStream.Size
-    let computeNextFreeOffset (s: Stream) =
-        let result = nextFreeOffset
-        nextFreeOffset <- nextFreeOffset + calcNextOffset s.Length
-        result*)
-    
+   
     let streams: Dictionary<string, PasSubStream> = new Dictionary<_,_>()
-
-    let mutable offsetsMap: string [] = [||]
 
     override __.get_CanRead() : bool = true
     override __.get_CanWrite() : bool = false
@@ -107,11 +94,13 @@ and PasStream(s: string) = class
         else
             stream.Close()
 
-    member __.AddInc fileName =
+    member __.AddInc fileName searchPath =
+        printfn "AddInc %A %A" fileName searchPath
         let addInc() =    
             let pos = finalStream.Position
             finalStream.Seek(finalStream.Length, SeekOrigin.Begin) |> ignore
-            let str = "\013" + File.ReadAllText(fileName) + "\000"
+            let fn= if File.Exists fileName then fileName else searchPath + string Path.DirectorySeparatorChar + fileName
+            let str = "\013" + File.ReadAllText(fn) + "\000"
             let bytes = Encoding.Unicode.GetBytes(str)
             finalStream.Write(bytes, 0, bytes.Length)
             let subStream = 
@@ -138,7 +127,7 @@ and PasStream(s: string) = class
 
 let pass1IncludeHandler s =  
     fun (stream: CharStream<PasState>) ->
-        stream.UserState.stream.AddInc s
+        stream.UserState.stream.AddInc s stream.UserState.incPath
         Reply(())
 
 let pass2IncludeHandler s =  
@@ -157,9 +146,10 @@ let pass2IncludeHandler s =
         Reply(())
 
 type PasState with
-    static member Create s =
+    static member Create s ip =
         {
             stream = s
+            incPath = ip
             incStack = Stack()
             handleInclude = {contents = pass1IncludeHandler}
             moduled = ModuleDef()

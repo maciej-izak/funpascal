@@ -117,6 +117,12 @@ let numeralOrDecimal : Parser<_, PasState> =
         | v when v.IsInteger -> v.String |> int |> Integer
         | v -> v.String |> float |> Float
 
+let numeral : Parser<_, PasState> =
+    // note: doesn't parse a float exponent suffix
+    numberLiteral NumberLiteralOptions.None "integer" 
+    |>> fun v ->  // raises an exception on overflow
+          v.String |> int |> Integer
+
 let hexNumber =    
     pstring "$" >>. many1SatisfyL isHex "hex digit"
     |>> fun s -> System.Convert.ToInt32(s, 16) |> Integer // raises an exception on overflow
@@ -129,6 +135,11 @@ let hexNumber =
 
 
 let number =
+    choiceL [numeral
+             hexNumber]
+            "number literal"
+
+let numberOrDecimal =
     choiceL [numeralOrDecimal
              hexNumber]
             "number literal"
@@ -189,12 +200,29 @@ let designator =
                                 | _, _ -> true)))))
             (fun h t -> h::t |> DIdent)
 
-let typeIdentifier =
+let typeIdentifier, typeIdentifierRef = createParserForwardedToRef()
+
+let typePtrDef =
+    many1(``^ ``) .>>. typeIdentifier |>> fun (r, t) -> (r.Length, t)
+
+let arrayDecl =
+    tuple3
+        (``?packed ``)
+        (``array `` >>. arrayIndexes)
+        (``of `` >>. typeIdentifier)
+
+let typeSetDef = 
+  ``?packed `` .>>.? (``set `` >>. ``of `` >>. typeIdentifier)
+
+typeIdentifierRef :=
     choice[
-            designator |>> Ident;
-            ``string `` >>% String;
+            typePtrDef |>> TypeIdentifier.TypePtr
+            designator |>> Ident
+            ``string `` >>% String
             ``file `` >>% File  
-          ]    
+            arrayDecl |>> (ArrayDef >> TypeIdentifier.Array)
+            typeSetDef |>> TypeIdentifier.TypeSet
+          ]
 
 let field =
     identifier .>>. (``: `` >>. identifier)
@@ -214,13 +242,6 @@ let recordDef =
 let structType =
     recordDef |>> Record
      
-let arrayType =
-    tuple3
-        (``?packed ``)
-        (``array `` >>. arrayIndexes)
-        (``of `` >>. identifier)
-    |>> Array
-
 let typeAlias =
     ``?type `` .>>. typeIdentifier 
     |>> TypeAlias
@@ -238,23 +259,23 @@ let procDecl =
          <|> (``function `` >>. preturn Function)) 
         (opt identifier)
         (opt formalParamsList)
-    >>= fun (k, n, p) -> match k with
-                         | Function -> (``: `` >>. designator) |>> fun i -> (n, Some(i), p)
-                         | Procedure -> preturn(n, None, p)
-
+     >>= fun (k, n, p) -> match k with
+                          | Function -> (``: `` >>. designator) |>> fun i -> (n, Some(i), p)
+                          | Procedure -> preturn(n, None, p)
+                          
 let typeProc =
     procDecl |>> ProcType
     
-let typePtr =
-    ``^ `` >>. typeIdentifier |>> TypePtr
-
 let typeRange =
     expr .>>. (``.. `` >>. expr) |>> ((castAs ConstExpr) >> SimpleRange)
 
 let typeEnum = between ``( `` ``) `` (sepEndBy1 identifier ``, ``) |>> TypeEnum
 
-let typeSet = 
-  ``?packed `` .>>.? (``set `` >>. ``of `` >>. typeIdentifier) |>> TypeSet
+let typeSet = typeSetDef |>> TypeSet
+
+let arrayType = arrayDecl |>> (ArrayDef >> Array)
+
+let typePtr = typePtrDef |>> TypePtr
 
 let typeDeclarations =
     (``type `` >>.
@@ -265,10 +286,19 @@ let typeDeclarations =
     |>> Types
  
 let exprInt =
-    pint32 |>> Integer
-    
+    pint32 .>> wsc .>> lookAhead(followedBy (next2CharsSatisfy 
+                                  (fun c1 c2 ->
+                                    match (c1, c2) with
+                                    | '.', '.' -> true
+                                    | '.', _ -> false
+                                    | _, _ -> true))) 
+    |>> Integer
+    // 
+
 let exprFloat =
-    pfloat |>> Float
+    //lookAhead(pint32 .>> wsc .>> notFollowedBy (pstring "..")) >>. 
+    //pfloat |>> Float
+    numberOrDecimal
 
 let exprString = 
     stringLiteral |>> Value.String
@@ -297,7 +327,7 @@ let exprCall =
     callExpr |>> CallResult
 
 let exprAtom =
-    choice[attempt(exprCall); exprInt; exprFloat; attempt(exprIdent); exprString; exprSet; exprNil] |>> Value
+    choice[attempt(exprCall); attempt(exprInt); exprFloat; attempt(exprIdent); exprString; exprSet; exprNil] |>> Value
     
 let exprExpr =
     between ``( `` ``) `` expr 
@@ -367,11 +397,21 @@ let caseLabel =
             <|>
             (expr |>> (ConstExpr >> CaseExpr))) ``, ``
 
+let statementList, statementListRef = createParserForwardedToRef()
+
+let innerStatementList = 
+        (statementList
+         .>>. many(identifier .>>? (``: `` .>> many ``; ``) |>> LabelStm) 
+         |>> function
+             | (s, []) -> s |> List.concat
+             | (s, l) -> [l] |> List.append s |> List.concat
+        )
+
 let caseStatement =
     tuple3 (``case `` >>. expr .>> ``of ``)
            (sepEndBy(caseLabel
                .>>. (``: `` >>. !^(opt compoundStatement))) ``; ``)
-           !^^(opt (``else `` >>. opt compoundStatement) .>> ``end ``)
+           !^(opt (``else `` >>. innerStatementList) .>> ``end ``)
            |>> CaseStm
 
 let forStatement =
@@ -424,8 +464,6 @@ let statement =
     |>> function
         | ([], s) -> Option.toList s
         | (l, s) -> l @ Option.toList s 
-
-let statementList = (sepEndBy (statement <|> compoundStatement) (many1 ``; ``))
     
 let procFuncDeclarations, procFuncDeclarationsRef = createParserForwardedToRef()
 
@@ -440,6 +478,8 @@ let beginEnd =
                  | (s, []) -> s |> List.concat
                  | (s, l) -> [l] |> List.append s |> List.concat
             )
+
+statementListRef := (sepEndBy (statement <|> compoundStatement) (many1 ``; ``))
     
 let block = 
     declarations .>>. beginEnd
@@ -468,7 +508,15 @@ let stdCompoundStatement = beginEnd <|> statement
 
 compoundStatementRef := stdCompoundStatement 
 
-procFuncDeclarationsRef := ((procDecl .>> ``; ``) .>>. block) .>> ``; `` |>> ProcAndFunc 
+procFuncDeclarationsRef := 
+    ((procDecl .>>. (``; `` >>. (opt(str_wsc "forward" .>> ``; `` >>% ()))))
+        >>= fun (d, f) ->
+              if f.IsSome then
+                preturn(d, None)
+              else
+                ((block .>> ``; ``) |>> fun b -> (d, Some(b)))
+    )        
+    |>> ProcAndFunc 
 
 let program =
     (opt(``program `` >>. identifier .>> ``; ``))

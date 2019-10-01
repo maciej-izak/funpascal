@@ -70,22 +70,28 @@ type ArrayDimension =
 
 type ParamKind = Var | Const
 
-type TypeIdentifier =
+type ArrayDef = ArrayDef of packed: bool * dimensions: ArrayDimension list * tname: TypeIdentifier
+
+and TypeIdentifier =
     | String
     | File
+    | TypePtr of int * TypeIdentifier
+    | TypeSet of packed: bool * TypeIdentifier
     | Ident of DIdent
+    | Array of ArrayDef
 
 type ParamList = (ParamKind option * (string list * TypeIdentifier)) list option
+type ProcHeader = string option * DIdent option * ParamList
 
 type TypeDecl =
     | Record of packed: bool * fields: (string list * TypeIdentifier) list
-    | Array of packed: bool * dimensions: ArrayDimension list * tname: string
-    | TypePtr of TypeIdentifier
+    | Array of ArrayDef
+    | TypePtr of int * TypeIdentifier
     | TypeAlias of strong: bool * origin: TypeIdentifier
     | TypeSet of packed: bool * TypeIdentifier
     | TypeEnum of string list
     | SimpleRange of ConstExprRange
-    | ProcType of name: string option * result: DIdent option * paramList: ParamList
+    | ProcType of ProcHeader
     
 type Type = (string * TypeDecl)
 
@@ -113,10 +119,11 @@ type Declarations =
     | Variables of (string list * TypeIdentifier) list
     | Consts of (string * TypeIdentifier option * ConstExpr) list
     | Labels of string list
-    | ProcAndFunc of (string option * DIdent option * ParamList) * (Declarations list * Statement list)
+    | ProcAndFunc of ProcHeader * (Declarations list * Statement list) option
 
 type Program =
     | Unit of Ident
     | Program of Ident
     | Library of Ident
     
+type ProgramAst = (string option * (Declarations list * Statement list))
