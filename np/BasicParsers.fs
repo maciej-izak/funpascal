@@ -141,7 +141,7 @@ let pass1Parser =
                 next2CharsSatisfy (
                   fun c1 c2 ->
                     match (c1, c2) with
-                    | '{', _ | '(', '*' | '\000', _ -> true
+                    | '{', _ | '(', '*' | '/', '/' | '\000', _ -> true
                     | _, _ -> false
           ))))
 
