@@ -1,5 +1,6 @@
 module np.PasStreams
 
+open System
 open System.Text
 open System.IO
 open System.Runtime
@@ -12,6 +13,9 @@ open np.ParsePas
 open FParsec
 open FParsec.Primitives
 open FParsec.CharParsers
+open Microsoft.FSharp.Reflection
+open System.Runtime.Serialization
+open System.Runtime.Serialization.Json
 
 let applyParser (parser: Parser<'Result,'UserState>) (stream: CharStream<'UserState>) =
     let reply = parser stream
@@ -41,8 +45,17 @@ let testAll s =
     let strToStream (s: string) = s |> Encoding.Unicode.GetBytes |> fun s -> new MemoryStream(s)
     testPas pascalModule (strToStream s) ""
 
+let toString (x:'a) = 
+    match FSharpValue.GetUnionFields(x, typeof<'a>) with
+    | case, _ -> case.Name
+
 let testFile f =
     let s = File.ReadAllText(f)
     let strToStream (s: string) = s |> Encoding.Unicode.GetBytes |> fun s -> new MemoryStream(s)
-    let result = testPas pascalModule (strToStream s) (Path.GetDirectoryName f)
-    File.WriteAllText(Path.GetDirectoryName f + string Path.DirectorySeparatorChar + "out.ast", (sprintf "%A" result))
+    let dir = Path.GetDirectoryName f
+    //let result = 
+    testPas pascalModule (strToStream s) dir
+    // use sw = new StreamWriter(path=dir + string Path.DirectorySeparatorChar + "out.ast")
+    // let b = StringBuilder()
+    // bprintf b "%O" result
+    // sw.Close()

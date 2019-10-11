@@ -16,7 +16,7 @@ open System.Text.Json;
 
 testFile @"C:\_projects\newpascal\xdpw\source\XDPW.pas"
 
-// testAll // ! really bad error !  
+// testAll // ! really bad error msg !  -> now is good :D
 //   """
 //   begin
 //     Gen(Byte(w and $FF));

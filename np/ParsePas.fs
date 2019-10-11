@@ -320,19 +320,19 @@ let callExpr =
                   | e -> ParamExpr e)
     let actualParamsList =
         between ``( `` ``) `` (sepEndBy actualParam ``, ``)
-    designator .>>. actualParamsList 
+    designator .>>.? actualParamsList 
     |>> CallExpr
 
 let exprCall = 
     callExpr |>> CallResult
 
 let exprAtom =
-    choice[attempt(exprCall); attempt(exprInt); exprFloat; attempt(exprIdent); exprString; exprSet; exprNil] |>> Value
+    choice[exprCall; exprIdent; attempt(exprInt); exprFloat; exprString; exprSet; exprNil] |>> Value
     
 let exprExpr =
     between ``( `` ``) `` expr 
 
-let term = (exprAtom <|> exprExpr) .>> wsc
+let term = (exprExpr <|> exprAtom) .>> wsc
 opp.TermParser <- term
 
 addOperators()
@@ -449,9 +449,9 @@ let statement =
     >>.
     many((identifier .>>? (lookAhead(notFollowedBy (pstring ":=")) >>. (``: ``) .>> many ``; ``) |>> LabelStm) .>> many ``; ``) 
     .>>.
-    opt(choice[
+    choice[
             simpleStatement
-            attempt(callStatement)
+            callStatement
             designatorStatement
             ifStatement
             caseStatement
@@ -460,10 +460,10 @@ let statement =
             whileStatement
             withStatement
             gotoStatement
-        ] <?> "") 
+        ] 
     |>> function
-        | ([], s) -> Option.toList s
-        | (l, s) -> l @ Option.toList s 
+        | ([], s) -> [s]
+        | (l, s) -> l @ [s]
     
 let procFuncDeclarations, procFuncDeclarationsRef = createParserForwardedToRef()
 
