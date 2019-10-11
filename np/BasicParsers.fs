@@ -10,6 +10,8 @@ type AppType = | Console | GUI
 
 type Directive =
      | Include of string
+     | IOCheck of bool
+     | LongString of bool
      | AppType of AppType
 
 type Comment =
@@ -28,7 +30,7 @@ let directiveIdentifier =
     let isProperFirstChar c = isLetter c || c = '_'
     let isProperChar c = isLetter c || c = '_' || isDigit c
     many1Satisfy2L isProperFirstChar isProperChar "directive ident"
-    .>> mws
+    .>>. (pchar '+' <|> pchar '-' <|> (mws >>% ' '))
 
 // TODE escape for ~ in inc files ?
 
@@ -41,8 +43,10 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
           let r = if inReply.Status = Ok then inReply.Result
                   else Unchecked.defaultof<_>
           match idReply.Result with
-          | "I" -> r |> Include |> Some
-          | "A" | "APPTYPE" -> 
+          | "I", ' ' -> r |> Include |> Some
+          | "I", c when c = '+' || c = '-' -> c = '+' |> IOCheck |> Some
+          | "H", c when c = '+' || c = '-' -> c = '+' |> LongString |> Some
+          | "APPTYPE", ' ' -> 
             match r with
             | "CONSOLE" -> Console |> AppType |> Some
             | "GUI" -> GUI |> AppType |> Some
@@ -51,7 +55,7 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
           |> function
              | Some d -> Reply(inReply.Status, Directive(d), inReply.Error)
              | _ -> 
-               let e = sprintf "Invalid '%s' directive declaration" idReply.Result
+               let e = sprintf "Invalid '%s' directive declaration" (fst idReply.Result)
                        |> messageError 
                        |> mergeErrors inReply.Error
                Reply(Error, e)
@@ -130,6 +134,8 @@ let comments =
           match d with
           | Include f -> fun stream -> !stream.UserState.handleInclude f stream
           | AppType _ -> preturn()
+          | IOCheck _ -> preturn()
+          | LongString _ -> preturn()
         | _ -> preturn()
     
 let wsc: Parser<unit, PasState> = skipMany comments
