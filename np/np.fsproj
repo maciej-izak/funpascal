@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>netcoreapp3.0</TargetFramework>
@@ -7,6 +7,7 @@
     <ProjectReference Include="..\..\..\Argu\src\Argu\Argu.fsproj" />
     <ProjectReference Include="..\..\..\fparsec\FParsecCS\FParsecCS.csproj" />
     <ProjectReference Include="..\..\..\fparsec\FParsec\FParsec.fsproj" />
+    <ProjectReference Include="..\..\..\FsPickler\src\FsPickler\FsPickler.fsproj" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="CommandLineHandle.fs" />

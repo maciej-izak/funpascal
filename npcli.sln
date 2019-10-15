@@ -14,6 +14,8 @@ Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "Argu.Samples.LS", "..\..\Ar
 EndProject
 Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "FParsec-Pipes", "..\..\FParsec-Pipes\FParsec-Pipes\FParsec-Pipes.fsproj", "{06B899C3-DC95-4D34-816D-8A57C7E36E1A}"
 EndProject
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "FsPickler", "..\..\FsPickler\src\FsPickler\FsPickler.fsproj", "{60671092-4161-4353-84D1-0E1276F0CAA9}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -48,5 +50,9 @@ Global
 		{06B899C3-DC95-4D34-816D-8A57C7E36E1A}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{06B899C3-DC95-4D34-816D-8A57C7E36E1A}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{06B899C3-DC95-4D34-816D-8A57C7E36E1A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{60671092-4161-4353-84D1-0E1276F0CAA9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{60671092-4161-4353-84D1-0E1276F0CAA9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{60671092-4161-4353-84D1-0E1276F0CAA9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{60671092-4161-4353-84D1-0E1276F0CAA9}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

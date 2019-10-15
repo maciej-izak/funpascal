@@ -16,6 +16,7 @@ open FParsec.CharParsers
 open Microsoft.FSharp.Reflection
 open System.Runtime.Serialization
 open System.Runtime.Serialization.Json
+open MBrace.FsPickler
 
 let applyParser (parser: Parser<'Result,'UserState>) (stream: CharStream<'UserState>) =
     let reply = parser stream
@@ -53,8 +54,14 @@ let testFile f =
     let s = File.ReadAllText(f)
     let strToStream (s: string) = s |> Encoding.Unicode.GetBytes |> fun s -> new MemoryStream(s)
     let dir = Path.GetDirectoryName f
-    //let result = 
-    testPas pascalModule (strToStream s) dir
+    let result = testPas pascalModule (strToStream s) dir
+    let xmlSerializer = FsPickler.CreateXmlSerializer(indent = true)
+    use sw = new StreamWriter(path=dir + string Path.DirectorySeparatorChar + "out.ast")
+    match result with
+    | Success (r,_,_) -> xmlSerializer.Serialize(sw, r)
+    | _ -> ()
+    sw.Close()
+    ()
     // use sw = new StreamWriter(path=dir + string Path.DirectorySeparatorChar + "out.ast")
     // let b = StringBuilder()
     // bprintf b "%O" result

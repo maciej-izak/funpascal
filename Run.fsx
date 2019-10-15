@@ -3,8 +3,8 @@
 open np.BasicParsers
 open FParsec
 open np.PasStreams
-open System.Reflection;
-open System.Text.Json;
+open System.Reflection
+open System.Text.Json
 
 // testAll  
 //   """
@@ -14,11 +14,11 @@ open System.Text.Json;
 //   end.
 //  """
 
-testFile @"C:\_projects\newpascal\xdpw\source\XDPW.pas"
-
 // testAll // ! really bad error msg !  -> now is good :D
 //   """
 //   begin
-//     Gen(Byte(w and $FF));
+//     Gen(Byte(w a nd $F + F));
 //   end.
 //  """
+
+//testFile @"C:\_projects\newpascal\xdpw\source\XDPW.pas"
