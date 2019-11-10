@@ -5,6 +5,7 @@ module Test
 #r @"np/bin/Debug/netcoreapp3.0/FParsecCS.dll"
 #r @"np/bin/Debug/netcoreapp3.0/FParsec.dll"
 #r @"np/bin/Debug/netcoreapp3.0/FsPickler.dll"
+#r @"np/bin/Debug/netcoreapp3.0/Mono.Cecil.dll"
 //#r @"np/bin/Debug/netcoreapp2.2/FParsec-Pipes.dll"
 
 #load "np/PasAst.fs"
@@ -12,16 +13,17 @@ module Test
 #load "np/BasicParsers.fs"
 #load "np/PasOperators.fs"
 #load "np/ParsePas.fs"
+#load "np/PasIl.fs"
 #load "np/PasStreams.fs"
 
 open System.IO
 open System.Text
 open System.Runtime
-open np.PasVar
-open np.PasAst
-open np.BasicParsers
-open np.ParsePas
-open np.PasStreams
+open NP.PasVar
+open NP.PasAst
+open NP.BasicParsers
+open NP.ParsePas
+open NP.PasStreams
 open FParsec
 open FParsec.Primitives
 open FParsec.CharParsers

@@ -1,4 +1,4 @@
-module np.ParsePas
+module NP.ParsePas
 
 open System.Collections.Generic
 
@@ -114,18 +114,18 @@ let numeralOrDecimal : Parser<_, PasState> =
     // note: doesn't parse a float exponent suffix
     numberLiteral NumberLiteralOptions.AllowFraction "number" 
     |>> function // raises an exception on overflow
-        | v when v.IsInteger -> v.String |> int |> Integer
-        | v -> v.String |> float |> Float
+        | v when v.IsInteger -> v.String |> int |> VInteger
+        | v -> v.String |> float |> VFloat
 
 let numeral : Parser<_, PasState> =
     // note: doesn't parse a float exponent suffix
     numberLiteral NumberLiteralOptions.None "integer" 
     |>> fun v ->  // raises an exception on overflow
-          v.String |> int |> Integer
+          v.String |> int |> VInteger
 
 let hexNumber =    
     pstring "$" >>. many1SatisfyL isHex "hex digit"
-    |>> fun s -> System.Convert.ToInt32(s, 16) |> Integer // raises an exception on overflow
+    |>> fun s -> System.Convert.ToInt32(s, 16) |> VInteger // raises an exception on overflow
 
 // let binaryNumber =    
 //     pstring "#b" >>. many1SatisfyL (fun c -> c = '0' || c = '1') "binary digit"
@@ -150,7 +150,7 @@ let stringLiteral =
     let escapedChar = pstring "'" >>? (pstring "'" >>% "'") 
     many1Strings ((between (pstring "'") (pstring "'") (stringsSepBy normalCharSnippet escapedChar))
                  <|> ((pstring "#" >>. number) >>= function
-                                                   | Integer i -> i |> char |> string |> preturn
+                                                   | VInteger i -> i |> char |> string |> preturn
                                                    | _ -> fail "integer expected"))
 
 let tkIdentifier =
@@ -184,13 +184,13 @@ let arrayIndexes =
     ``[ `` >>. (sepEndBy1 arrayIndex ``, ``) .>> ``] ``
 
 let designator = 
-    pipe2   (identifier |>> Designator.Ident) 
+    pipe2   (getPosition .>>. identifier |>> PINameCreate) 
             (manyTill
                 (choice[
                         ``^ `` >>% Deref; 
                         (``[ `` >>. (sepEndBy1 expr ``, ``) .>> ``] ``)
                         |>> Designator.Array;
-                        ``. `` >>. identifier |>> Designator.Ident
+                        ``. `` >>. getPosition .>>. identifier |>> PINameCreate
                       ])
                 (lookAhead(followedBy (next2CharsSatisfy 
                               (fun c1 c2 ->
@@ -216,12 +216,12 @@ let typeSetDef =
 
 typeIdentifierRef :=
     choice[
-            typePtrDef |>> TypeIdentifier.TypePtr
-            designator |>> Ident
-            ``string `` >>% String
-            ``file `` >>% File  
-            arrayDecl |>> (ArrayDef >> TypeIdentifier.Array)
-            typeSetDef |>> TypeIdentifier.TypeSet
+            typePtrDef |>> TIdPointer
+            designator |>> TIdIdent
+            ``string `` >>% TIdString
+            ``file `` >>% TIdFile
+            arrayDecl |>> (ArrayDef >> TIdArray)
+            typeSetDef |>> TIdSet
           ]
 
 let field =
@@ -292,7 +292,7 @@ let exprInt =
                                     | '.', '.' -> true
                                     | '.', _ -> false
                                     | _, _ -> true))) 
-    |>> Integer
+    |>> VInteger
     // 
 
 let exprFloat =
@@ -301,22 +301,22 @@ let exprFloat =
     numberOrDecimal
 
 let exprString = 
-    stringLiteral |>> Value.String
+    stringLiteral |>> VString
     
 let exprIdent =
-    designator |>> Value.Ident
+    designator |>> VIdent
 
 let exprNil =
-    ``nil `` >>% Nil
+    ``nil `` >>% VNil
 
 let exprSet =
     ``[ `` >>. (sepEndBy (attempt(expr .>>. (``.. `` >>. expr) |>> SRange) <|> (expr |>> SValue)) ``, ``) .>> ``] `` 
-    |>> Set
+    |>> VSet
     
 let callExpr =
     let actualParam =
         (expr |>> function 
-                  | Value v -> match v with Value.Ident i -> ParamIdent(i) | v -> Value(v) |> ParamExpr
+                  | Value v -> match v with VIdent i -> ParamIdent(i) | v -> Value(v) |> ParamExpr
                   | e -> ParamExpr e)
     let actualParamsList =
         between ``( `` ``) `` (sepEndBy actualParam ``, ``)
@@ -324,7 +324,7 @@ let callExpr =
     |>> CallExpr
 
 let exprCall = 
-    callExpr |>> CallResult
+    callExpr |>> VCallResult
 
 let exprAtom =
     choice[exprCall; exprIdent; attempt(exprInt); exprFloat; exprString; exprSet; exprNil] |>> Value

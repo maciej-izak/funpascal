@@ -1,5 +1,5 @@
 [<AutoOpen>]
-module np.ParsePasInit
+module NP.ParsePasInit
 
 open System.IO
 open System.Text

@@ -1,5 +1,5 @@
 [<AutoOpen>]
-module np.PasOperators
+module NP.PasOperators
 
 open FParsec
 open PasAst

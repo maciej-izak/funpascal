@@ -1,5 +1,5 @@
 [<AutoOpen>]
-module np.BasicParsers
+module NP.BasicParsers
 
 open System.Text
 open System.IO

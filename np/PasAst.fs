@@ -1,7 +1,37 @@
 [<AutoOpen>]
-module np.PasAst
+module NP.PasAst
 
-type Ident = string
+open FParsec
+
+let equalsOn f x (yobj:obj) =
+    match yobj with
+    | :? 'T as y -> (f x = f y)
+    | _ -> false
+
+let hashOn f x =  hash (f x)
+
+let compareOn f x (yobj: obj) =
+    match yobj with
+    | :? 'T as y -> compare (f x) (f y)
+    | _ -> invalidArg "yobj" "cannot compare values of different types"
+
+[<CustomEquality; CustomComparison>]
+type PIdent = 
+    | PIdent of pos: Position * name: string
+
+    static member Name(PIdent(name=n)) = n
+
+    override self.Equals(a) =
+        match a with
+        | :? PIdent as i -> equalsOn PIdent.Name self i
+        | _ -> false
+
+    override self.GetHashCode() = hashOn PIdent.Name self
+
+    interface System.IComparable with
+      member self.CompareTo o = match o with
+                                | :? PIdent as i -> compareOn PIdent.Name self i 
+                                | _ -> invalidArg "o" "cannot compare values of different types"    
 
 type DIdent = DIdent of Designator list 
 
@@ -12,13 +42,13 @@ and SetAtom =
     | SRange of ExprEl * ExprEl
 
 and Value =
-    | Float of float
-    | Integer of int
-    | String of string
-    | Ident of DIdent
-    | CallResult of CallExpr
-    | Nil
-    | Set of SetAtom list
+    | VFloat of float
+    | VInteger of int
+    | VString of string
+    | VIdent of DIdent
+    | VCallResult of CallExpr
+    | VNil
+    | VSet of SetAtom list
 
 and ExprEl =
     | Value of Value
@@ -34,8 +64,6 @@ and ExprEl =
     | Div of ExprEl * ExprEl
     | Shl of ExprEl * ExprEl
     | Shr of ExprEl * ExprEl
-    | As of ExprEl * ExprEl
-    | Addr of ExprEl
     | Not of ExprEl
     | UnaryPlus of ExprEl
     | UnaryMinus of ExprEl
@@ -45,11 +73,13 @@ and ExprEl =
     | StrictlyGreaterThan of ExprEl * ExprEl
     | LessThanOrEqual of ExprEl * ExprEl
     | GreaterThanOrEqual of ExprEl * ExprEl
+    | As of ExprEl * ExprEl
+    | Addr of ExprEl
     | Is of ExprEl * ExprEl
     | In of ExprEl * ExprEl
 
-and Designator =
-    | Ident of string
+and Designator = 
+    | Ident of PIdent
     | Deref
     | Array of ExprEl list
 
@@ -73,12 +103,12 @@ type ParamKind = Var | Const
 type ArrayDef = ArrayDef of packed: bool * dimensions: ArrayDimension list * tname: TypeIdentifier
 
 and TypeIdentifier =
-    | String
-    | File
-    | TypePtr of int * TypeIdentifier
-    | TypeSet of packed: bool * TypeIdentifier
-    | Ident of DIdent
-    | Array of ArrayDef
+    | TIdString
+    | TIdFile
+    | TIdPointer of int * TypeIdentifier
+    | TIdSet of packed: bool * TypeIdentifier
+    | TIdIdent of DIdent
+    | TIdArray of ArrayDef
 
 type ParamList = (ParamKind option * (string list * TypeIdentifier)) list option
 type ProcHeader = string option * DIdent option * ParamList
@@ -122,8 +152,22 @@ type Declarations =
     | ProcAndFunc of ProcHeader * (Declarations list * Statement list) option
 
 type Program =
-    | Unit of Ident
-    | Program of Ident
-    | Library of Ident
+    | Unit of string
+    | Program of string
+    | Library of string
     
-type ProgramAst = (string option * (Declarations list * Statement list))
+type Block = {decl: Declarations list; stmt: Statement list}
+     with 
+       static member Create (decl: Declarations list, stmt: Statement list) = 
+           {
+               decl = decl
+               stmt = stmt
+           }
+
+type ProgramAst = ProgramAst of name: string option * block: Block
+
+let (|PIName|) = function
+    | Ident(PIdent(name=n)) -> n
+    | _ -> ""
+
+let PINameCreate = PIdent >> Ident

@@ -1,5 +1,5 @@
 [<AutoOpen>]
-module np.PasVar
+module NP.PasVar
 
 open System.IO
 open System.Text
@@ -64,12 +64,12 @@ and PasStream(s: Stream) = class
    
     let streams: Dictionary<string, PasSubStream> = new Dictionary<_,_>()
 
-    override __.get_CanRead() : bool = true
-    override __.get_CanWrite() : bool = false
-    override __.get_CanSeek() : bool = true
-    override __.get_Length() : int64 = stream.Length 
-    override __.get_Position() : int64 = stream.Position
-    override __.set_Position(value: int64) : unit =
+    override _.get_CanRead() : bool = true
+    override _.get_CanWrite() : bool = false
+    override _.get_CanSeek() : bool = true
+    override _.get_Length() : int64 = stream.Length 
+    override _.get_Position() : int64 = stream.Position
+    override _.set_Position(value: int64) : unit =
         stream.Position <- value
 
     override __.Flush() : unit = stream.Flush()
@@ -77,12 +77,12 @@ and PasStream(s: Stream) = class
     override __.Seek(offset: int64, origin: SeekOrigin) : int64 = 
         stream.Seek(offset, origin)
         
-    override __.SetLength(value: int64) : unit = ()
-    override __.Read(buffer: byte [], offset: int, count: int) : int = read(buffer, offset, count)
+    override _.SetLength(value: int64) : unit = ()
+    override _.Read(buffer: byte [], offset: int, count: int) : int = read(buffer, offset, count)
 
-    override __.Write(buffer: byte [], offset: int, count: int) : unit = () 
+    override _.Write(buffer: byte [], offset: int, count: int) : unit = () 
 
-    override __.Close() =
+    override _.Close() =
         if stream = mainStream then
             finalStream.WriteByte(0uy)
             finalStream.WriteByte(0uy)
@@ -94,7 +94,7 @@ and PasStream(s: Stream) = class
         else
             stream.Close()
 
-    member __.AddInc fileName searchPath =
+    member _.AddInc fileName searchPath =
         printfn "AddInc %A %A" fileName searchPath
         let addInc() =    
             let pos = finalStream.Position
@@ -116,13 +116,13 @@ and PasStream(s: Stream) = class
             ()
         else addInc()
 
-    member __.FindStream s = streams.[s]
+    member _.FindStream s = streams.[s]
 
-    member __.SaveToFile() =
+    member _.SaveToFile() =
         use f = new FileStream("final.pas", FileMode.Create, FileAccess.Write)
         finalStream.WriteTo(f)
 
-    member __.EndInc() = () 
+    member _.EndInc() = () 
   end
 
 let pass1IncludeHandler s =  

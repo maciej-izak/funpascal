@@ -1,8 +1,8 @@
 ﻿// Learn more about F# at http://fsharp.org
 
 open System
-open np.CommandLineHandle
-open np.ParsePas
+open NP.CommandLineHandle
+open NP.ParsePas
 open Argu
 open FParsec
 

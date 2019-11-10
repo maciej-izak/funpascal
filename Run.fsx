@@ -1,8 +1,8 @@
 #load "Test.fsx"
 
-open np.BasicParsers
+open NP.BasicParsers
 open FParsec
-open np.PasStreams
+open NP.PasStreams
 open System.Reflection
 open System.Text.Json
 
@@ -22,3 +22,28 @@ open System.Text.Json
 //  """
 
 //testFile @"C:\_projects\newpascal\xdpw\source\XDPW.pas"
+
+// testAll 
+//     """program wow;
+//     var
+//       y: Byte;
+//       x: Integer;
+//     begin
+//       y := 10;
+//       x := (1+1)*y / 7;
+//       y := x;
+//       WriteLn(x+8+y-12);
+//       WriteLn(3 mod 2 shl 4);
+//     end.
+//     """
+
+testAll 
+    """program wow;
+    var
+      x: Integer;
+    begin
+      x := 1*8;
+      if x = 8 then 
+        WriteLn(1)
+    end.
+    """

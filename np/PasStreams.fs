@@ -1,4 +1,4 @@
-module np.PasStreams
+module NP.PasStreams
 
 open System
 open System.Text
@@ -6,10 +6,11 @@ open System.IO
 open System.Runtime
 open System.Text.Json
 open System.Text.Json.Serialization
-open np.PasVar
-open np.PasAst
-open np.BasicParsers
-open np.ParsePas
+open NP.PasVar
+open NP.PasAst
+open NP.BasicParsers
+open NP.ParsePas
+open NP.PasIl
 open FParsec
 open FParsec.Primitives
 open FParsec.CharParsers
@@ -17,6 +18,8 @@ open Microsoft.FSharp.Reflection
 open System.Runtime.Serialization
 open System.Runtime.Serialization.Json
 open MBrace.FsPickler
+open Mono.Cecil
+open Mono.Cecil.Cil
 
 let applyParser (parser: Parser<'Result,'UserState>) (stream: CharStream<'UserState>) =
     let reply = parser stream
@@ -42,9 +45,60 @@ let testPas p s i =
     stream2.Name <- "some code"
     applyParser p stream2
 
+let private compileModule (ProgramAst(name, block)) = //, methods: Method list) =
+    let moduleName = match name with | Some n -> n | None -> "Program"
+    let moduleNameWithoutExtension = System.IO.Path.GetFileNameWithoutExtension moduleName
+    let assemblyBuilder =
+        let assemblyName = AssemblyNameDefinition(moduleName, Version(0,0,0,0))
+        AssemblyDefinition.CreateAssembly(assemblyName, moduleNameWithoutExtension, ModuleKind.Console)
+    let moduleBuilder = assemblyBuilder.MainModule
+
+    let typeBuilder =
+        let className = moduleName
+        let typeAttributes =
+                TypeAttributes.Public
+                ||| TypeAttributes.Abstract
+                ||| TypeAttributes.Sealed
+                ||| TypeAttributes.AutoLayout
+                ||| TypeAttributes.AnsiClass
+                ||| TypeAttributes.BeforeFieldInit
+        TypeDefinition(moduleName, className, typeAttributes, moduleBuilder.TypeSystem.Object)
+    moduleBuilder.Types.Add(typeBuilder)
+    let methodBuilder = 
+        let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static 
+        let methodName = "Main"
+        MethodDefinition(methodName, methodAttributes, moduleBuilder.TypeSystem.Void)
+    let ilBuilder = IlBuilder(moduleBuilder)
+    let bb = ilBuilder.BuildIl block
+    printfn "%A" bb
+    let mainBlock = compileBlock methodBuilder typeBuilder bb
+    mainBlock.Body.InitLocals <- true
+    assemblyBuilder.EntryPoint <- mainBlock
+    //printfn "%A" 
+    (*let methodBuilders = 
+        methods 
+        |> List.map (compileMethod typeBuilder)
+        |> Map.ofList
+    let entryPoint = compileEntryPoint moduleBuilder typeBuilder methodBuilders.["main"]
+    assemblyBuilder.EntryPoint <- entryPoint
+    let v = moduleBuilder.ImportReference(typeof<TargetFrameworkAttribute>.GetConstructor([|typeof<string>|]));
+    let c = CustomAttribute(v);
+    let sr = moduleBuilder.ImportReference(typeof<string>)
+    let ca = CustomAttributeArgument(sr, box ".NETCoreApp,Version=v3.0")
+    c.ConstructorArguments.Add(ca)
+    assemblyBuilder.CustomAttributes.Add(c)*)
+    assemblyBuilder
+
 let testAll s =
     let strToStream (s: string) = s |> Encoding.Unicode.GetBytes |> fun s -> new MemoryStream(s)
-    testPas pascalModule (strToStream s) ""
+    let ast = testPas pascalModule (strToStream s) ""
+    match ast with
+    | Success (r,_,_) -> 
+                        let ad = compileModule(ProgramAst(fst r, Block.Create(snd r)))
+                        ad.Write("test.dll")
+                        Some(r)
+    | _ -> None
+
 
 let toString (x:'a) = 
     match FSharpValue.GetUnionFields(x, typeof<'a>) with
