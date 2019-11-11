@@ -42,8 +42,8 @@ testAll
     var
       x: Integer;
     begin
-      x := 1*8;
+      x := 8;
       if x = 8 then 
-        WriteLn(1)
+        WriteLn(x)
     end.
     """

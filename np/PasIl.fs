@@ -4,10 +4,9 @@ open System.Collections.Generic
 open Mono.Cecil
 open Mono.Cecil.Cil
 
-type Instruction =
+type IlInstruction =
      | Unknown
      | Call of MethodReference
-     | DeclareLocal of TypeReference
      | Ldc_I4 of int
      | Ldloc of int
      | Stloc of int
@@ -25,47 +24,63 @@ type Instruction =
      | NegInst
      | Ret
      | Ceq
+     | Brfalse of (int * Instruction)
+     | Nop
+
+type MetaInstruction =
+     | DeclareLocal of TypeReference
+     | InstructionSingleton of IlInstruction
+     | InstructionList of IlInstruction list
+     | IlInstructionList of Instruction list
 
 type Ctx = Map<string,(int*TypeReference)>
 
+let private instr = function
+                    | AddInst        -> Instruction.Create(OpCodes.Add)
+                    | MultiplyInst   -> Instruction.Create(OpCodes.Mul)
+                    | MinusInst      -> Instruction.Create(OpCodes.Sub)
+                    | DivideInst     -> Instruction.Create(OpCodes.Div)
+                    | AndInst        -> Instruction.Create(OpCodes.And)
+                    | OrInst         -> Instruction.Create(OpCodes.Or)
+                    | XorInst        -> Instruction.Create(OpCodes.Xor)
+                    | Rem            -> Instruction.Create(OpCodes.Rem)
+                    | ShlInst        -> Instruction.Create(OpCodes.Shl)
+                    | ShrInst        -> Instruction.Create(OpCodes.Shr)
+                    | NotInst        -> Instruction.Create(OpCodes.Not)
+                    | NegInst        -> Instruction.Create(OpCodes.Neg)
+                    | Call mi        -> Instruction.Create(OpCodes.Call, mi)
+                    | Ldc_I4 n       -> Instruction.Create(OpCodes.Ldc_I4, n)
+                    | Ldloc i when i <= 3 -> 
+                        match i with 
+                        | 0 -> Instruction.Create(OpCodes.Ldloc_0)
+                        | 1 -> Instruction.Create(OpCodes.Ldloc_1)
+                        | 2 -> Instruction.Create(OpCodes.Ldloc_2)
+                        | 3 -> Instruction.Create(OpCodes.Ldloc_3)
+                        | _ -> null
+                    | Ldloc i when i <= 255 -> Instruction.Create(OpCodes.Ldloc_S, byte i) 
+                    | Ldloc i -> Instruction.Create(OpCodes.Ldloc, i)
+                    | Stloc i when i <= 3 -> 
+                        match i with 
+                        | 0 -> Instruction.Create(OpCodes.Stloc_0)
+                        | 1 -> Instruction.Create(OpCodes.Stloc_1)
+                        | 2 -> Instruction.Create(OpCodes.Stloc_2)
+                        | 3 -> Instruction.Create(OpCodes.Stloc_3)
+                        | _ -> null
+                    | Stloc i when i <= 255 -> Instruction.Create(OpCodes.Stloc_S, byte i) 
+                    | Stloc i -> Instruction.Create(OpCodes.Stloc, i)
+                    | Ret            -> Instruction.Create(OpCodes.Ret)
+                    | Unknown        -> Instruction.Create(OpCodes.Nop)
+                    | Ceq            -> Instruction.Create(OpCodes.Ceq)
+                    | Brfalse (s, i) when s >= -128 && s <= 127 -> Instruction.Create(OpCodes.Brfalse_S, i)
+                    | Brfalse (s, i) -> Instruction.Create(OpCodes.Brfalse, i)
+                    | Nop -> Instruction.Create(OpCodes.Nop)
+
 let private emit (ilg : Cil.ILProcessor) inst = 
-    match inst with 
-    | AddInst        -> ilg.Emit(OpCodes.Add)
-    | MultiplyInst   -> ilg.Emit(OpCodes.Mul)
-    | MinusInst      -> ilg.Emit(OpCodes.Sub)
-    | DivideInst     -> ilg.Emit(OpCodes.Div)
-    | AndInst        -> ilg.Emit(OpCodes.And)
-    | OrInst         -> ilg.Emit(OpCodes.Or)
-    | XorInst        -> ilg.Emit(OpCodes.Xor)
-    | Rem            -> ilg.Emit(OpCodes.Rem)
-    | ShlInst        -> ilg.Emit(OpCodes.Shl)
-    | ShrInst        -> ilg.Emit(OpCodes.Shr)
-    | NotInst        -> ilg.Emit(OpCodes.Not)
-    | NegInst        -> ilg.Emit(OpCodes.Neg)
-    | Call mi        -> ilg.Emit(OpCodes.Call, mi)
-    | Ldc_I4 n       -> ilg.Emit(OpCodes.Ldc_I4, n)
-    | Ldloc i when i <= 3 -> 
-        match i with 
-        | 0 -> ilg.Emit(OpCodes.Ldloc_0)
-        | 1 -> ilg.Emit(OpCodes.Ldloc_1)
-        | 2 -> ilg.Emit(OpCodes.Ldloc_2)
-        | 3 -> ilg.Emit(OpCodes.Ldloc_3)
-        | _ -> assert false
-    | Ldloc i when i <= 255 -> ilg.Emit(OpCodes.Ldloc_S, byte i) 
-    | Ldloc i -> ilg.Emit(OpCodes.Ldloc, i)
-    | Stloc i when i <= 3 -> 
-        match i with 
-        | 0 -> ilg.Emit(OpCodes.Stloc_0)
-        | 1 -> ilg.Emit(OpCodes.Stloc_1)
-        | 2 -> ilg.Emit(OpCodes.Stloc_2)
-        | 3 -> ilg.Emit(OpCodes.Stloc_3)
-        | _ -> assert false
-    | Stloc i when i <= 255 -> ilg.Emit(OpCodes.Stloc_S, byte i) 
-    | Stloc i -> ilg.Emit(OpCodes.Stloc, i)
-    | Ret            -> ilg.Emit(OpCodes.Ret)
-    | Unknown        -> ilg.Emit(OpCodes.Nop)
+    match inst with
     | DeclareLocal t -> VariableDefinition(t) |> ilg.Body.Variables.Add
-    | Ceq            -> ilg.Emit(OpCodes.Ceq)
+    | InstructionSingleton i -> i |> instr |> ilg.Append
+    | InstructionList p -> p |> List.iter (instr >> ilg.Append) 
+    | IlInstructionList i -> i |> List.iter ilg.Append
 
 let findVar (DIdent ident) (ctx: Ctx) =
     assert(ident.Length = 1)
@@ -98,7 +113,7 @@ let rec exprToIl exprEl ctx =
     | Equal(a, b) -> add2OpIl a b Ceq
     | _ -> []
 
-let callParamToIl cp ctx = 
+let callParamToIl ctx cp = 
     match cp with
     | ParamExpr expr -> exprToIl expr ctx
     | _ -> []
@@ -108,7 +123,7 @@ let callParamToIl cp ctx =
 // let a = AssemblyDefinition.ReadAssembly(t.Assembly.Location);
 // let methodToRef (m: System.Reflection.MethodInfo): MethodReference = a.MainModule.ImportReference(m)    
 
-let compileBlock (methodBuilder: MethodDefinition) (typeBuilder : TypeDefinition) (instr: Instruction list) = 
+let compileBlock (methodBuilder: MethodDefinition) (typeBuilder : TypeDefinition) (instr: MetaInstruction list) = 
     let ilGenerator = methodBuilder.Body.GetILProcessor() |> emit
     typeBuilder.Methods.Add(methodBuilder)
     List.iter ilGenerator instr
@@ -121,7 +136,7 @@ let compileBlock (methodBuilder: MethodDefinition) (typeBuilder : TypeDefinition
     //     let rt = System.Type.GetType(tr.FullName + ", " + tr.Scope.ToString()) // tr.Module.Assembly.FullName)
     //     let writeln = typeof<System.Console>.GetMethod("WriteLine", [| rt |]) |> moduleBuilder.ImportReference
     //     ilGenerator (Call(writeln))
-    ilGenerator Ret
+    Ret |> InstructionSingleton |> ilGenerator
     methodBuilder 
 
 let simplifiedDIdent = List.map <| function | PIName s -> s
@@ -227,22 +242,36 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 | _ -> null
         [Call(f)]
 
-    let rec stmtToIl s ctx = 
+    let rec stmtToIl ctx s = 
+        let foldBackStmt stmt s = (stmtToIl ctx stmt)::s
+        let metaToIlList = function 
+                           | InstructionList l -> l |> List.map instr
+                           | InstructionSingleton s -> [instr s]
+                           | IlInstructionList l -> l
+                           | _ -> []
+        let stmtToIlList sl = List.foldBack foldBackStmt sl [] |> List.collect metaToIlList
+        let getIlListSize = List.fold (fun s (i: Instruction) -> s + i.GetSize()) 0
         match s with
         | CallStm(CallExpr(ident, cp)) -> 
-            [for p in cp do callParamToIl p ctx] @ [findFunction(ident)] |> List.concat
+            [for p in cp do callParamToIl ctx p] @ [findFunction(ident)] |> List.concat |> InstructionList
         | AssignStm(ident, expr) -> 
             let var = findVar ident ctx 
-            exprToIl expr ctx @ [Stloc(fst var)]
+            exprToIl expr ctx @ [Stloc(fst var)] |> InstructionList
         | IfStm(expr, tb, fb) ->
-            exprToIl expr ctx // TODO block and else block
-        | _ -> []
+            let c = exprToIl expr ctx
+            let t = stmtToIlList tb
+            let mutable f = stmtToIlList fb
+            let s = getIlListSize t
+            if f.IsEmpty then f <- [instr Nop]
+            let fh = f.Head
+            List.concat [List.map instr c;[instr(Brfalse(s, fh))];t;f] |> IlInstructionList
+        | _ -> [] |> InstructionList
 
-    let stmtListToIl (vars: List<Instruction>) sl ctx =
+    let stmtListToIl (vars: List<MetaInstruction>) sl ctx =
         [   
-            for v in vars do [v]
-            for s in sl do stmtToIl s ctx
-        ] |> List.concat
+            for v in vars do v
+            for s in sl do (stmtToIl ctx s) 
+        ]
 
     let defTypes = Map.ofArray[|
             (stdType "Integer", mb.TypeSystem.Int32)
@@ -254,7 +283,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         typeIdToStr
 
     member _.BuildIl(block: Block) =
-        let vars = List<Instruction>(block.decl.Length)
+        let vars = List<MetaInstruction>(block.decl.Length)
         block.decl
         |> List.collect 
                (function
