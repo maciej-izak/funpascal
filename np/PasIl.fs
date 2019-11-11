@@ -24,6 +24,7 @@ type Instruction =
      | NotInst
      | NegInst
      | Ret
+     | Ceq
 
 type Ctx = Map<string,(int*TypeReference)>
 
@@ -64,6 +65,7 @@ let private emit (ilg : Cil.ILProcessor) inst =
     | Ret            -> ilg.Emit(OpCodes.Ret)
     | Unknown        -> ilg.Emit(OpCodes.Nop)
     | DeclareLocal t -> VariableDefinition(t) |> ilg.Body.Variables.Add
+    | Ceq            -> ilg.Emit(OpCodes.Ceq)
 
 let findVar (DIdent ident) (ctx: Ctx) =
     assert(ident.Length = 1)
@@ -93,6 +95,7 @@ let rec exprToIl exprEl ctx =
     | Shr(a, b) -> add2OpIl a b ShrInst
     | Not(a) -> add1OpIl a NotInst
     | UnaryMinus(a) -> add1OpIl a NegInst
+    | Equal(a, b) -> add2OpIl a b Ceq
     | _ -> []
 
 let callParamToIl cp ctx = 
@@ -230,7 +233,9 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
             [for p in cp do callParamToIl p ctx] @ [findFunction(ident)] |> List.concat
         | AssignStm(ident, expr) -> 
             let var = findVar ident ctx 
-            exprToIl expr ctx @ [Stloc(fst var)] 
+            exprToIl expr ctx @ [Stloc(fst var)]
+        | IfStm(expr, tb, fb) ->
+            exprToIl expr ctx // TODO block and else block
         | _ -> []
 
     let stmtListToIl (vars: List<Instruction>) sl ctx =

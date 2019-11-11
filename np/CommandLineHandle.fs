@@ -1,4 +1,4 @@
-module np.CommandLineHandle
+module NP.CommandLineHandle
 
 open Argu
 
