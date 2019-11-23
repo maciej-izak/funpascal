@@ -48,13 +48,28 @@ open System.Text.Json
 //     end.
 //     """
 
+// testAll 
+//     """program wow;
+//     var
+//       x: Integer;
+//     begin
+//       x := 8;
+//       if (x = 8) and (x mod 3 = 0) then // bitwise and is used :O
+//         WriteLn(x)
+//     end.
+//     """
+
 testAll 
     """program wow;
     var
       x: Integer;
     begin
       x := 8;
-      if x = 8 then 
+      if (x = 8) and (x mod 3 = 0) then
         WriteLn(x)
+      else if x = 7 + 1 then
+        WriteLnS('foo')
+      else
+        WriteLnS('O_o');
     end.
     """

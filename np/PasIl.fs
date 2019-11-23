@@ -25,7 +25,9 @@ type IlInstruction =
      | Ret
      | Ceq
      | Brfalse of (int * Instruction)
+     | Br of (int * Instruction)
      | Nop
+     | Ldstr of string
 
 type MetaInstruction =
      | DeclareLocal of TypeReference
@@ -86,8 +88,11 @@ let private instr = function
                     | Unknown        -> Instruction.Create(OpCodes.Nop)
                     | Ceq            -> Instruction.Create(OpCodes.Ceq)
                     | Brfalse (s, i) when s >= -128 && s <= 127 -> Instruction.Create(OpCodes.Brfalse_S, i)
-                    | Brfalse (s, i) -> Instruction.Create(OpCodes.Brfalse, i)
+                    | Brfalse (_, i) -> Instruction.Create(OpCodes.Brfalse, i)
+                    | Br (s, i) when s >= -128 && s <= 127 -> Instruction.Create(OpCodes.Br_S, i)
+                    | Br (_, i) -> Instruction.Create(OpCodes.Br, i)
                     | Nop -> Instruction.Create(OpCodes.Nop)
+                    | Ldstr s -> Instruction.Create(OpCodes.Ldstr, s)
 
 let private emit (ilg : Cil.ILProcessor) inst = 
     match inst with
@@ -106,6 +111,7 @@ let valueToIl v ctx =
     match v with
     | VInteger i -> [Ldc_I4(i)]
     | VIdent i -> findVarAndLoad i ctx
+    | VString s -> [Ldstr(s)]
     | _ -> [Unknown] 
 
 let rec exprToIl exprEl ctx =
@@ -249,12 +255,15 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let mb = moduleBuilder
     let writeLineMethod = 
         typeof<System.Console>.GetMethod("WriteLine", [| typeof<int32> |]) |> moduleBuilder.ImportReference
+    let writeLineSMethod = 
+        typeof<System.Console>.GetMethod("WriteLine", [| typeof<string> |]) |> moduleBuilder.ImportReference     
 
     let findFunction (DIdent ident) =
         assert(ident.Length = 1)
         let h = ident.Head
         let f = match h with
                 | PIName n when n = "WriteLn" -> writeLineMethod
+                | PIName n when n = "WriteLnS" -> writeLineSMethod
                 | _ -> null
         [Call(f)]
 
@@ -274,13 +283,15 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
             let var = findVar ident ctx 
             exprToIl expr ctx @ [Stloc(fst var)] |> InstructionList
         | IfStm(expr, tb, fb) ->
+            let e = [instr Nop]
             let c = exprToIl expr ctx
-            let t = stmtToIlList tb
+            let it = stmtToIlList tb
+            let t =  it @ [instr(Br(getIlListSize it, e.Head))]
             let mutable f = stmtToIlList fb
             let s = getIlListSize t
             if f.IsEmpty then f <- [instr Nop]
             let fh = f.Head
-            List.concat [List.map instr c;[instr(Brfalse(s, fh))];t;f] |> IlInstructionList
+            List.concat [List.map instr c;[instr(Brfalse(s, fh))];t;f;e] |> IlInstructionList
         | _ -> [] |> InstructionList
 
     let stmtListToIl (vars: List<MetaInstruction>) sl ctx =
