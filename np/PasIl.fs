@@ -61,6 +61,7 @@ let private instr = function
                         | 6 -> Instruction.Create(OpCodes.Ldc_I4_6)
                         | 7 -> Instruction.Create(OpCodes.Ldc_I4_7)
                         | 8 -> Instruction.Create(OpCodes.Ldc_I4_8)
+                        | _ -> null
                     | Ldc_I4 n when n >= -128 && n <= 127 -> Instruction.Create(OpCodes.Ldc_I4_S, sbyte n)
                     | Ldc_I4 n -> Instruction.Create(OpCodes.Ldc_I4, n)
                     | Ldloc i when i <= 3 -> 
@@ -99,10 +100,12 @@ let findVar (DIdent ident) (ctx: Ctx) =
     assert(ident.Length = 1)
     ident.Head |> function | PIName n -> ctx.Item n
 
+let findVarAndLoad ident (ctx: Ctx) = (findVar ident ctx) |> fst |> Ldloc |> List.singleton
+
 let valueToIl v ctx = 
     match v with
     | VInteger i -> [Ldc_I4(i)]
-    | VIdent i -> findVar i ctx |> fst |> Ldloc |> List.singleton
+    | VIdent i -> findVarAndLoad i ctx
     | _ -> [Unknown] 
 
 let rec exprToIl exprEl ctx =
@@ -129,7 +132,7 @@ let rec exprToIl exprEl ctx =
 let callParamToIl ctx cp = 
     match cp with
     | ParamExpr expr -> exprToIl expr ctx
-    | _ -> []
+    | ParamIdent id -> findVarAndLoad id ctx
 
 // type internal Marker = interface end
 // let t = typeof<Marker>.DeclaringType

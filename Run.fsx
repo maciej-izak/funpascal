@@ -37,6 +37,17 @@ open System.Text.Json
 //     end.
 //     """
 
+// testAll 
+//     """program wow;
+//     var
+//       x: Integer;
+//     begin
+//       x := 8;
+//       if (x = 8) then 
+//         WriteLn(x)
+//     end.
+//     """
+
 testAll 
     """program wow;
     var
