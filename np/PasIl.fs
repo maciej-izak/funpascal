@@ -49,7 +49,20 @@ let private instr = function
                     | NotInst        -> Instruction.Create(OpCodes.Not)
                     | NegInst        -> Instruction.Create(OpCodes.Neg)
                     | Call mi        -> Instruction.Create(OpCodes.Call, mi)
-                    | Ldc_I4 n       -> Instruction.Create(OpCodes.Ldc_I4, n)
+                    | Ldc_I4 n when n = -1 -> Instruction.Create(OpCodes.Ldc_I4_M1)
+                    | Ldc_I4 n when n >= 0 && n <= 8 -> 
+                        match n with
+                        | 0 -> Instruction.Create(OpCodes.Ldc_I4_0)
+                        | 1 -> Instruction.Create(OpCodes.Ldc_I4_1)
+                        | 2 -> Instruction.Create(OpCodes.Ldc_I4_2)
+                        | 3 -> Instruction.Create(OpCodes.Ldc_I4_3)
+                        | 4 -> Instruction.Create(OpCodes.Ldc_I4_4)
+                        | 5 -> Instruction.Create(OpCodes.Ldc_I4_5)
+                        | 6 -> Instruction.Create(OpCodes.Ldc_I4_6)
+                        | 7 -> Instruction.Create(OpCodes.Ldc_I4_7)
+                        | 8 -> Instruction.Create(OpCodes.Ldc_I4_8)
+                    | Ldc_I4 n when n >= -128 && n <= 127 -> Instruction.Create(OpCodes.Ldc_I4_S, sbyte n)
+                    | Ldc_I4 n -> Instruction.Create(OpCodes.Ldc_I4, n)
                     | Ldloc i when i <= 3 -> 
                         match i with 
                         | 0 -> Instruction.Create(OpCodes.Ldloc_0)
