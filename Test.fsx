@@ -6,6 +6,7 @@ module Test
 #r @"np/bin/Debug/netcoreapp3.0/FParsec.dll"
 #r @"np/bin/Debug/netcoreapp3.0/FsPickler.dll"
 #r @"np/bin/Debug/netcoreapp3.0/Mono.Cecil.dll"
+#r @"np/bin/Debug/netcoreapp3.0/Mono.Cecil.Rocks.dll"
 //#r @"np/bin/Debug/netcoreapp2.2/FParsec-Pipes.dll"
 
 #load "np/PasAst.fs"

@@ -20,6 +20,7 @@ open System.Runtime.Serialization.Json
 open MBrace.FsPickler
 open Mono.Cecil
 open Mono.Cecil.Cil
+open Mono.Cecil.Rocks
 
 let applyParser (parser: Parser<'Result,'UserState>) (stream: CharStream<'UserState>) =
     let reply = parser stream
@@ -73,6 +74,8 @@ let private compileModule (ProgramAst(name, block)) = //, methods: Method list) 
     printfn "%A" bb
     let mainBlock = compileBlock methodBuilder typeBuilder bb
     mainBlock.Body.InitLocals <- true
+    // https://github.com/jbevain/cecil/issues/365
+    mainBlock.Body.OptimizeMacros()
     assemblyBuilder.EntryPoint <- mainBlock
     //printfn "%A" 
     (*let methodBuilders = 
