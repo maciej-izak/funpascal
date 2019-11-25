@@ -67,9 +67,10 @@ testAll
       x := 8;
       if (x = 8) and (x mod 3 = 0) then
         WriteLn(x)
-      else if x = 7 + 1 then
-        WriteLnS('foo')
-      else
+      else if x = 7 + 1 then begin
+        WriteLnS('1');
+        WriteLnS('foo');
+      end else
         WriteLnS('O_o');
     end.
     """

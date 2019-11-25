@@ -284,7 +284,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                | Variables(v) -> v |> List.collect (fun (l, t) -> l |> List.map (fun v -> (v, defTypes.[t])))
                | _ -> [])
         // ! context !
-        |> List.mapi (fun i (v, t) -> 
+        |> List.map (fun (v, t) -> 
             let var = VariableDefinition(t)
             vars.Add(DeclareLocal(var))
             (v, var))
