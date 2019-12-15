@@ -32,7 +32,7 @@ let directiveIdentifier =
     many1Satisfy2L isProperFirstChar isProperChar "directive ident"
     .>>. (pchar '+' <|> pchar '-' <|> (mws >>% ' '))
 
-// TODE escape for ~ in inc files ?
+// TODO: escape for ~ in inc files ?
 
 let manySatisfyWith0 (commentParser: Parser<_,_>) = 
     fun (stream: CharStream<_>) ->
@@ -108,7 +108,7 @@ let c0 =
             raise (InternalErrorException("201909150"))
           stream.Seek pos
           // important to omit FParsec bug i.e. {$I foo.inc}i f
-          // otherwaise the following error is raised
+          // otherwise the following error is raised
           // The current position of the stream must not lie before the position corresponding to the given CharStreamIndexToken/CharStreamState.
           stream.BacktrackTo(s)
           Reply(Ok,Regular,reply.Error)

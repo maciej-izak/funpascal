@@ -70,9 +70,10 @@ let private compileModule (ProgramAst(name, block)) = //, methods: Method list) 
         let methodName = "Main"
         MethodDefinition(methodName, methodAttributes, moduleBuilder.TypeSystem.Void)
     let ilBuilder = IlBuilder(moduleBuilder)
-    let bb = ilBuilder.BuildIl block
-    printfn "%A" bb
-    let mainBlock = compileBlock methodBuilder typeBuilder bb
+    let (bb, labels) = ilBuilder.BuildIl block 
+    printfn "bb = %A" bb
+    printfn "labels = %A" labels
+    let mainBlock = compileBlock methodBuilder typeBuilder bb labels
     mainBlock.Body.InitLocals <- true
     // https://github.com/jbevain/cecil/issues/365
     mainBlock.Body.OptimizeMacros()
