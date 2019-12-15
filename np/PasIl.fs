@@ -57,10 +57,12 @@ type Ctx(variables: Map<string,VariableDefinition>) = class
     member val labels = Stack<LabelRec>()
   end
 
-let brli = function
+let rec brli = function
            | Label l -> l
            | LazyLabel l -> match l with
                             | IlResolved i -> i
+                            | IlBrfalse i -> brli !i
+                            | IlBr i -> brli !i
                             | _ -> failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
            | _ -> failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
 
@@ -149,7 +151,7 @@ let callParamToIl ctx cp =
 // let a = AssemblyDefinition.ReadAssembly(t.Assembly.Location);
 // let methodToRef (m: System.Reflection.MethodInfo): MethodReference = a.MainModule.ImportReference(m)    
 
-let compileBlock (methodBuilder: MethodDefinition) (typeBuilder : TypeDefinition) (instr: List<MetaInstruction>) (labels: Stack<LabelRec>) = 
+let compileBlock (methodBuilder: MethodDefinition) (typeBuilder : TypeDefinition) (instr: List<MetaInstruction>) =
     let ilGenerator = methodBuilder.Body.GetILProcessor() |> emit
     typeBuilder.Methods.Add(methodBuilder)
     Seq.iter ilGenerator instr
@@ -276,15 +278,15 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 | _ -> failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
         let mutable l: LabelRec = Unchecked.defaultof<_>
         while ctx.labels.TryPeek(&l) && l.level > level do
-            printfn "fill label > %A" l
+            printfn "fill label (%i) > %A" level l
             l.branch := Label(i)
             ctx.labels.Pop() |> ignore
     
     let rec stmtToIl ctx s level = 
         let foldBackStmt stmt s = (stmtToIl ctx stmt (level+1))::s
         let metaToIlList = function 
-                           | InstructionList l -> l // |> List.map instr
-                           | InstructionSingleton s -> [s] // [instr s]
+                           | InstructionList l -> l
+                           | InstructionSingleton s -> [s]
                            | IlInstructionList l ->  l |> List.map (fun i -> IlResolved(i))
                            | _ -> []
         let stmtToIlList sl = List.foldBack foldBackStmt sl [] |> List.collect metaToIlList
@@ -299,8 +301,10 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let endOfStm = ref EmptyLabel
                     let condition = exprToIl expr ctx
                     let trueBranch = (stmtToIlList tb) @ [IlBr(endOfStm)]
-                    let falseBranch = (stmtToIlList fb) @ [IlBr(endOfStm)]
-                    let checkCondition = [IlBrfalse(ref (LazyLabel(falseBranch.Head)))]
+                    let falseBlock = (stmtToIlList fb)
+                    let hasFalseBlock = falseBlock.Length > 0;
+                    let falseBranch = if hasFalseBlock then falseBlock @ [IlBr(endOfStm)] else []
+                    let checkCondition = [IlBrfalse(if hasFalseBlock then ref (LazyLabel(falseBranch.Head)) else endOfStm)]
                     ctx.labels.Push {branch = endOfStm; level = level}
                     List.concat [condition;checkCondition;trueBranch;falseBranch]
                 | _ -> []
@@ -345,5 +349,5 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         vars.Add(DeclareLocal(var))
                         (v, var))
                     |> Map.ofList);
-        (stmtListToIl vars block.stmt ctx, ctx.labels)
+        stmtListToIl vars block.stmt ctx
 end
