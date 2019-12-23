@@ -303,13 +303,13 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
 //            printfn "pop label (%i) > %A" level l
 //            ctx.newLabels.Pop() |> ctx.labels.Push
             
-    let rec stmtToIl (ctx: Ctx) s level (labelsStack: Stack<LabelRec>) =
+    let rec stmtToIl (ctx: Ctx) s level =
         //let newLabels: Stack<LabelRec> ref = ref labelsStack
         let mutable head: LabelRec = Unchecked.defaultof<_>
         let mutable head2: LabelRec = Unchecked.defaultof<_>
-        labelsStack.TryPeek(&head) |> ignore
+        ctx.newLabels.TryPeek(&head) |> ignore
         let foldStmt s stmt =
-            let sl = stmtToIl ctx stmt (level+1) labelsStack
+            let sl = stmtToIl ctx stmt (level+1)
             sl::s
         let metaToIlList = function 
                            | InstructionList l -> l
@@ -328,48 +328,47 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     exprToIl expr ctx @ [Stloc(var) |> ainstr |> IlResolved]
                 | IfStm(expr, tb, fb) ->
                     let endOfStm = ref EmptyLabel
-                    labelsStack.Push {branch = endOfStm; level = -level}
+                    ctx.newLabels.Push {branch = endOfStm; level = -level}
                     let condition = exprToIl expr ctx
                     let trueBranch = (stmtToIlList tb) @ [IlBr(endOfStm)]
                     let falseBlock = (stmtToIlList fb)
                     let hasFalseBlock = falseBlock.Length > 0;
                     let falseBranch = if hasFalseBlock then falseBlock @ [IlBr(endOfStm)] else []
                     let checkCondition = [IlBrfalse(if hasFalseBlock then ref (LazyLabel(falseBranch.Head)) else endOfStm)]
-                    labelsStack.TryPeek(&head2) |> ignore
+                    ctx.newLabels.TryPeek(&head2) |> ignore
                     List.concat [condition;checkCondition;trueBranch;falseBranch]
                 | _ -> []
 
         let hasSameHead = obj.ReferenceEquals(head, head2) 
         if not (hasSameHead) && not(obj.ReferenceEquals(head, null)) then
             let mutable lr: LabelRec = Unchecked.defaultof<_>
-            if labelsStack.TryPeek(&lr) && lr.level >= level then
+            if ctx.newLabels.TryPeek(&lr) && lr.level >= level then
                 ctx.labels <- {branch = lr.branch; level = level}::ctx.labels
-                labelsStack.Pop() |> ignore
+                ctx.newLabels.Pop() |> ignore
                 // elimination of redundant jumps
-                while labelsStack.TryPeek(&lr) && lr.level >= level do
+                while ctx.newLabels.TryPeek(&lr) && lr.level >= level do
                     lr.branch := IgnoreLabel
-                    labelsStack.Pop() |> ignore
+                    ctx.newLabels.Pop() |> ignore
             
         if i.Length > 0 then
             ctx.labels <- resolveLabels ctx.labels i.Head level
             
         let mutable lr: LabelRec = Unchecked.defaultof<_>
-        [while labelsStack.TryPeek(&lr) && (lr.level <= -level) do
-            labelsStack.Pop() |> ignore
+        [while ctx.newLabels.TryPeek(&lr) && (lr.level <= -level) do
+            ctx.newLabels.Pop() |> ignore
             yield {branch = lr.branch; level = -lr.level}]
         |> List.rev
-        |> List.iter labelsStack.Push 
+        |> List.iter ctx.newLabels.Push 
             
         i |> InstructionList
 
     let stmtListToIl (vars: List<MetaInstruction>) sl ctx =
         let res = List<MetaInstruction>(vars)
-        let ls = Stack<_>()
-        for s in sl do stmtToIl ctx s 1 ls |> res.Add
+        for s in sl do stmtToIl ctx s 1 |> res.Add
         let mutable l: LabelRec = Unchecked.defaultof<_>
-        if ls.TryPop(&l) then
+        if ctx.newLabels.TryPop(&l) then
             ctx.labels <- {branch = l.branch; level = 0}::ctx.labels
-            while ls.TryPop(&l) do
+            while ctx.newLabels.TryPop(&l) do
                 l.branch := IgnoreLabel
         let ret = Ret |> ainstr |> IlResolved
         if (resolveLabels ctx.labels ret 0).Length <> 0 then // resolve all possible labels
