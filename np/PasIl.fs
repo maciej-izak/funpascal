@@ -2,6 +2,7 @@ module NP.PasIl
 
 open System
 open System.Collections.Generic
+open System.Linq.Expressions
 open Mono.Cecil
 open Mono.Cecil.Cil
 
@@ -55,7 +56,7 @@ type LabelRec = {
 
 type Ctx(variables: Map<string,VariableDefinition>) = class
     member val variables = variables
-    member val labels: LabelRec list = [] with get, set
+    member val sysLabels: LabelRec list = [] with get, set
     member val newLabels = Stack<LabelRec>()
     
     member private self.resolveLabels head level =
@@ -70,18 +71,17 @@ type Ctx(variables: Map<string,VariableDefinition>) = class
                       else
                         h.branch := Label(i)
                         resolve t
-        self.labels <- resolve self.labels
+        self.sysLabels <- resolve self.sysLabels
     
-    member self.moveToLabels head level =
+    member self.moveToLabels newLabels head level =
         let mutable lr: LabelRec = Unchecked.defaultof<_>
-        if self.newLabels.TryPeek(&lr) then
-            if lr.level >= 0 && lr.level >= level then
-                self.labels <- {branch = lr.branch; level = level}::self.labels
+        if newLabels && self.newLabels.TryPeek(&lr) && lr.level >= level then
+            self.sysLabels <- {branch = lr.branch; level = level}::self.sysLabels
+            self.newLabels.Pop() |> ignore
+            // elimination of redundant jumps
+            while self.newLabels.TryPeek(&lr) && lr.level >= level do
+                lr.branch := IgnoreLabel
                 self.newLabels.Pop() |> ignore
-                // elimination of redundant jumps
-                while self.newLabels.TryPeek(&lr) && lr.level >= level do
-                    lr.branch := IgnoreLabel
-                    self.newLabels.Pop() |> ignore
         match head with
         | Some h -> 
             self.resolveLabels h level
@@ -316,7 +316,11 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 | _ -> null
         [Call(f) |> ainstr |> IlResolved]
             
+    let emptyLabelRec = Unchecked.defaultof<LabelRec>
     let rec stmtToIl (ctx: Ctx) s level =
+        let mutable head = emptyLabelRec
+        let mutable head2 = emptyLabelRec
+        ctx.newLabels.TryPeek(&head) |> ignore
         let foldStmt s stmt =
             let sl = stmtToIl ctx stmt (level+1)
             sl::s
@@ -337,17 +341,20 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     exprToIl expr ctx @ [Stloc(var) |> ainstr |> IlResolved]
                 | IfStm(expr, tb, fb) ->
                     let endOfStm = ref EmptyLabel
+                    ctx.newLabels.Push {branch = endOfStm; level = -level}
                     let condition = exprToIl expr ctx
                     let trueBranch = (stmtToIlList tb) @ [IlBr(endOfStm)]
                     let falseBlock = (stmtToIlList fb)
                     let hasFalseBlock = falseBlock.Length > 0;
                     let falseBranch = if hasFalseBlock then falseBlock @ [IlBr(endOfStm)] else []
                     let checkCondition = [IlBrfalse(if hasFalseBlock then ref (LazyLabel(falseBranch.Head)) else endOfStm)]
-                    ctx.newLabels.Push {branch = endOfStm; level = -level}
+                    ctx.newLabels.TryPeek(&head2) |> ignore
                     List.concat [condition;checkCondition;trueBranch;falseBranch]
+                | GotoStm s -> []
                 | _ -> []
         
-        ctx.moveToLabels (List.tryHead i) level
+        let newHead = not (obj.ReferenceEquals(head, head2) || obj.ReferenceEquals(head, null))
+        ctx.moveToLabels newHead (List.tryHead i) level
             
         i |> InstructionList
 
@@ -355,8 +362,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let res = List<MetaInstruction>(vars)
         for s in sl do stmtToIl ctx s 1 |> res.Add
         let ret = Ret |> ainstr |> IlResolved
-        ctx.moveToLabels (Some ret) 0
-        if ctx.labels.Length <> 0 || ctx.newLabels.Count <> 0 then
+        ctx.moveToLabels true (Some ret) -Int32.MaxValue
+        if ctx.sysLabels.Length <> 0 || ctx.newLabels.Count <> 0 then
             failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
         res.Add(ret |> InstructionSingleton)
         res

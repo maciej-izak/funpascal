@@ -59,7 +59,23 @@ open System.Text.Json
 //     end.
 //     """
 
-testAll 
+// testAll 
+//     """program wow;
+//     var
+//       x: Integer;
+//     begin
+//       x := 8;
+//       if (x = 8) and (x mod 3 = 0) then
+//         WriteLn(x)
+//       else if x = 7 + 1 then begin
+//         WriteLnS('1');
+//         WriteLnS('foo');
+//       end else
+//         WriteLnS('O_o');
+//     end.
+//     """
+
+testAll
     """program wow;
     var
       x: Integer;
@@ -69,7 +85,9 @@ testAll
         WriteLn(x)
       else if x = 7 + 1 then begin
         WriteLnS('1');
-        WriteLnS('foo');
+        if x = 9 then
+          WriteLnS('foo');
+        WriteLnS('foo2');
       end else
         WriteLnS('O_o');
     end.
