@@ -19,8 +19,9 @@ let main argv =
           WriteLn(x)
         else if x = 7 + 1 then begin
           WriteLnS('1');
-          if x = 8 then
+          if x = 9 then
             WriteLnS('foo');
+          WriteLnS('foo2');
         end else
           WriteLnS('O_o');
       end.

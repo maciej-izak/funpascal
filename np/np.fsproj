@@ -4,15 +4,8 @@
     <TargetFramework>netcoreapp3.1</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="FParsecCS, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null">
-      <HintPath>..\..\..\fparsec\FParsecCS\bin\Release\netcoreapp3.1\FParsecCS.dll</HintPath>
-    </Reference>
-    <Reference Include="FParsec, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null">
-      <HintPath>..\..\..\fparsec\FParsec\bin\Release\netcoreapp3.1\FParsec.dll</HintPath>
-    </Reference>
-  </ItemGroup>
-  <ItemGroup>
     <ProjectReference Include="..\..\..\Argu\src\Argu\Argu.fsproj" />
+    <ProjectReference Include="..\..\..\fparsec\FParsec\FParsec.fsproj" />
     <ProjectReference Include="..\..\..\FsPickler\src\FsPickler\FsPickler.fsproj" />
   </ItemGroup>
   <ItemGroup>
@@ -30,5 +23,10 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Mono.Cecil" Version="0.11.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="FParsecCS, Version=1.0.4.0, Culture=neutral, PublicKeyToken=null">
+      <HintPath>..\..\..\fparsec\FParsecCS\bin\Debug\netcoreapp3.1\FParsecCS.dll</HintPath>
+    </Reference>
   </ItemGroup>
 </Project>

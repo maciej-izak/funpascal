@@ -1,5 +1,6 @@
 module NP.PasIl
 
+open System
 open System.Collections.Generic
 open Mono.Cecil
 open Mono.Cecil.Cil
@@ -8,6 +9,7 @@ type BranchLabel =
     | LazyLabel of IlInstruction
     | Label of Instruction
     | EmptyLabel
+    | IgnoreLabel
 
 and AtomIlInstruction =
     | Unknown
@@ -45,7 +47,6 @@ type MetaInstruction =
     | DeclareLocal of VariableDefinition
     | InstructionSingleton of IlInstruction
     | InstructionList of IlInstruction list
-    | IlInstructionList of Instruction list
 
 type LabelRec = {
         branch: BranchLabel ref
@@ -54,17 +55,25 @@ type LabelRec = {
 
 type Ctx(variables: Map<string,VariableDefinition>) = class
     member val variables = variables
-    member val labels = Stack<LabelRec>()
+    member val labels: LabelRec list = [] with get, set
+    member val newLabels = Stack<LabelRec>()
   end
-
-let rec brli = function
+       
+let brtoinstr l opc =
+    let rec bril = function
            | Label l -> l
            | LazyLabel l -> match l with
                             | IlResolved i -> i
-                            | IlBrfalse i -> brli !i
-                            | IlBr i -> brli !i
+                            | IlBrfalse i -> bril !i
+                            | IlBr i -> bril !i
                             | _ -> failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
+           | IgnoreLabel -> null
            | _ -> failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
+           
+    let instr = bril !l
+    if instr <> null then
+        Instruction.Create(opc, instr)
+    else null
 
 let private ainstr = function
                     | AddInst      -> Instruction.Create(OpCodes.Add)
@@ -93,19 +102,19 @@ let private ainstr = function
                     | Resolved i   -> i
 
 let private instr = function
-                    | IlBrfalse i  -> Instruction.Create(OpCodes.Brfalse, brli !i)
-                    | IlBr i       -> Instruction.Create(OpCodes.Br, brli !i)
+                    | IlBrfalse i  -> brtoinstr i OpCodes.Brfalse
+                    | IlBr i       -> brtoinstr i OpCodes.Br
                     | IlResolved i -> i
                     | IlAtom i     -> let r = ainstr !i
                                       i := Resolved(r)
                                       r
 
-let private emit (ilg : Cil.ILProcessor) inst = 
+let private emit (ilg : Cil.ILProcessor) inst =
+    let appendIfNotNull i = if i <> null then ilg.Append i
     match inst with
     | DeclareLocal t -> t |> ilg.Body.Variables.Add
-    | InstructionSingleton i -> i |> instr |> ilg.Append
-    | InstructionList p -> p |> List.iter (instr >> ilg.Append) 
-    | IlInstructionList i -> i |> List.iter ilg.Append
+    | InstructionSingleton is -> instr is |> appendIfNotNull
+    | InstructionList p -> p |> List.iter (instr >> appendIfNotNull) 
 
 let findVar (DIdent ident) (ctx: Ctx) =
     assert(ident.Length = 1)
@@ -272,26 +281,46 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 | _ -> null
         [Call(f) |> ainstr |> IlResolved]
 
-    let resolveLabels (ctx: Ctx) last level =
+    let resolveLabels labels last level =
         let i = match last with
                 | IlResolved l -> l
                 | _ -> failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
-        let mutable l: LabelRec = Unchecked.defaultof<_>
-        while ctx.labels.TryPeek(&l) && l.level > level do
-            printfn "fill label (%i) > %A" level l
-            l.branch := Label(i)
-            ctx.labels.Pop() |> ignore
-    
-    let rec stmtToIl ctx s level = 
-        let foldBackStmt stmt s = (stmtToIl ctx stmt (level+1))::s
+        let rec resolve l =
+            match l with
+            | [] -> []
+            | h::t -> if h.level < level then
+                        l
+                      else
+                        h.branch := Label(i)
+                        resolve t
+        resolve labels
+//        let mutable l: LabelRec = Unchecked.defaultof<_>
+//        while ctx.labels.TryPeek(&l) && l.level >= level do
+//            printfn "fill label (%i) > %A" level l
+//            l.branch := Label(i)
+//            ctx.labels.Pop() |> ignore
+//        while ctx.newLabels.TryPeek(&l) && l.level >= level do
+//            printfn "pop label (%i) > %A" level l
+//            ctx.newLabels.Pop() |> ctx.labels.Push
+            
+    let rec stmtToIl (ctx: Ctx) s level (labelsStack: Stack<LabelRec>) =
+        //let newLabels: Stack<LabelRec> ref = ref labelsStack
+        let mutable head: LabelRec = Unchecked.defaultof<_>
+        let mutable head2: LabelRec = Unchecked.defaultof<_>
+        labelsStack.TryPeek(&head) |> ignore
+        let foldStmt s stmt =
+            let sl = stmtToIl ctx stmt (level+1) labelsStack
+            sl::s
         let metaToIlList = function 
                            | InstructionList l -> l
                            | InstructionSingleton s -> [s]
-                           | IlInstructionList l ->  l |> List.map (fun i -> IlResolved(i))
                            | _ -> []
-        let stmtToIlList sl = List.foldBack foldBackStmt sl [] |> List.collect metaToIlList
+        let stmtToIlList sl =
+            List.fold foldStmt [] sl |> List.rev |> List.collect metaToIlList
         //let getIlListSize = List.fold (fun s (i: Instruction) -> s + i.GetSize()) 0
-        let i = match s with
+        
+        let i =
+                match s with
                 | CallStm(CallExpr(ident, cp)) ->
                     [for p in cp do callParamToIl ctx p] @ [findFunction(ident)] |> List.concat
                 | AssignStm(ident, expr) -> 
@@ -299,33 +328,54 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     exprToIl expr ctx @ [Stloc(var) |> ainstr |> IlResolved]
                 | IfStm(expr, tb, fb) ->
                     let endOfStm = ref EmptyLabel
+                    labelsStack.Push {branch = endOfStm; level = -level}
                     let condition = exprToIl expr ctx
                     let trueBranch = (stmtToIlList tb) @ [IlBr(endOfStm)]
                     let falseBlock = (stmtToIlList fb)
                     let hasFalseBlock = falseBlock.Length > 0;
                     let falseBranch = if hasFalseBlock then falseBlock @ [IlBr(endOfStm)] else []
                     let checkCondition = [IlBrfalse(if hasFalseBlock then ref (LazyLabel(falseBranch.Head)) else endOfStm)]
-                    ctx.labels.Push {branch = endOfStm; level = level}
+                    labelsStack.TryPeek(&head2) |> ignore
                     List.concat [condition;checkCondition;trueBranch;falseBranch]
                 | _ -> []
-        if i.Length > 0 then resolveLabels ctx i.Head level
+
+        let hasSameHead = obj.ReferenceEquals(head, head2) 
+        if not (hasSameHead) && not(obj.ReferenceEquals(head, null)) then
+            let mutable lr: LabelRec = Unchecked.defaultof<_>
+            if labelsStack.TryPeek(&lr) && lr.level >= level then
+                ctx.labels <- {branch = lr.branch; level = level}::ctx.labels
+                labelsStack.Pop() |> ignore
+                // elimination of redundant jumps
+                while labelsStack.TryPeek(&lr) && lr.level >= level do
+                    lr.branch := IgnoreLabel
+                    labelsStack.Pop() |> ignore
+            
+        if i.Length > 0 then
+            ctx.labels <- resolveLabels ctx.labels i.Head level
+            
+        let mutable lr: LabelRec = Unchecked.defaultof<_>
+        [while labelsStack.TryPeek(&lr) && (lr.level <= -level) do
+            labelsStack.Pop() |> ignore
+            yield {branch = lr.branch; level = -lr.level}]
+        |> List.rev
+        |> List.iter labelsStack.Push 
+            
         i |> InstructionList
 
     let stmtListToIl (vars: List<MetaInstruction>) sl ctx =
         let res = List<MetaInstruction>(vars)
-        //let q = Stack<
-        for s in sl do 
-            match stmtToIl ctx s 0 with 
-            | IlInstructionList i -> ()
-            | m -> res.Add(m)
+        let ls = Stack<_>()
+        for s in sl do stmtToIl ctx s 1 ls |> res.Add
+        let mutable l: LabelRec = Unchecked.defaultof<_>
+        if ls.TryPop(&l) then
+            ctx.labels <- {branch = l.branch; level = 0}::ctx.labels
+            while ls.TryPop(&l) do
+                l.branch := IgnoreLabel
         let ret = Ret |> ainstr |> IlResolved
-        resolveLabels ctx ret -1 // resolve all possible labels
+        if (resolveLabels ctx.labels ret 0).Length <> 0 then // resolve all possible labels
+            failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
         res.Add(ret |> InstructionSingleton)
         res
-        // [   
-        //     for v in vars do v
-        //     for s in sl do (stmtToIl ctx s) 
-        // ]
 
     let defTypes = Map.ofArray[|
             (stdType "Integer", mb.TypeSystem.Int32)
