@@ -57,8 +57,43 @@ type Ctx(variables: Map<string,VariableDefinition>) = class
     member val variables = variables
     member val labels: LabelRec list = [] with get, set
     member val newLabels = Stack<LabelRec>()
+    
+    member private self.resolveLabels head level =
+        let i = match head with
+                | IlResolved l -> l
+                | _ -> failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
+        let rec resolve l =
+            match l with
+            | [] -> []
+            | h::t -> if h.level < level then
+                        l
+                      else
+                        h.branch := Label(i)
+                        resolve t
+        self.labels <- resolve self.labels
+    
+    member self.moveToLabels head level =
+        let mutable lr: LabelRec = Unchecked.defaultof<_>
+        if self.newLabels.TryPeek(&lr) then
+            if lr.level >= 0 && lr.level >= level then
+                self.labels <- {branch = lr.branch; level = level}::self.labels
+                self.newLabels.Pop() |> ignore
+                // elimination of redundant jumps
+                while self.newLabels.TryPeek(&lr) && lr.level >= level do
+                    lr.branch := IgnoreLabel
+                    self.newLabels.Pop() |> ignore
+        match head with
+        | Some h -> 
+            self.resolveLabels h level
+            [while self.newLabels.TryPeek(&lr) && (lr.level <= -level) do
+                self.newLabels.Pop() |> ignore
+                yield {branch = lr.branch; level = -lr.level}]
+            |> List.rev
+            |> List.iter self.newLabels.Push
+        | _ -> ()
+    
   end
-       
+
 let brtoinstr l opc =
     let rec bril = function
            | Label l -> l
@@ -280,34 +315,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 | PIName n when n = "WriteLnS" -> writeLineSMethod
                 | _ -> null
         [Call(f) |> ainstr |> IlResolved]
-
-    let resolveLabels labels last level =
-        let i = match last with
-                | IlResolved l -> l
-                | _ -> failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
-        let rec resolve l =
-            match l with
-            | [] -> []
-            | h::t -> if h.level < level then
-                        l
-                      else
-                        h.branch := Label(i)
-                        resolve t
-        resolve labels
-//        let mutable l: LabelRec = Unchecked.defaultof<_>
-//        while ctx.labels.TryPeek(&l) && l.level >= level do
-//            printfn "fill label (%i) > %A" level l
-//            l.branch := Label(i)
-//            ctx.labels.Pop() |> ignore
-//        while ctx.newLabels.TryPeek(&l) && l.level >= level do
-//            printfn "pop label (%i) > %A" level l
-//            ctx.newLabels.Pop() |> ctx.labels.Push
             
     let rec stmtToIl (ctx: Ctx) s level =
-        //let newLabels: Stack<LabelRec> ref = ref labelsStack
-        let mutable head: LabelRec = Unchecked.defaultof<_>
-        let mutable head2: LabelRec = Unchecked.defaultof<_>
-        ctx.newLabels.TryPeek(&head) |> ignore
         let foldStmt s stmt =
             let sl = stmtToIl ctx stmt (level+1)
             sl::s
@@ -328,50 +337,26 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     exprToIl expr ctx @ [Stloc(var) |> ainstr |> IlResolved]
                 | IfStm(expr, tb, fb) ->
                     let endOfStm = ref EmptyLabel
-                    ctx.newLabels.Push {branch = endOfStm; level = -level}
                     let condition = exprToIl expr ctx
                     let trueBranch = (stmtToIlList tb) @ [IlBr(endOfStm)]
                     let falseBlock = (stmtToIlList fb)
                     let hasFalseBlock = falseBlock.Length > 0;
                     let falseBranch = if hasFalseBlock then falseBlock @ [IlBr(endOfStm)] else []
                     let checkCondition = [IlBrfalse(if hasFalseBlock then ref (LazyLabel(falseBranch.Head)) else endOfStm)]
-                    ctx.newLabels.TryPeek(&head2) |> ignore
+                    ctx.newLabels.Push {branch = endOfStm; level = -level}
                     List.concat [condition;checkCondition;trueBranch;falseBranch]
                 | _ -> []
-
-        let hasSameHead = obj.ReferenceEquals(head, head2) 
-        if not (hasSameHead) && not(obj.ReferenceEquals(head, null)) then
-            let mutable lr: LabelRec = Unchecked.defaultof<_>
-            if ctx.newLabels.TryPeek(&lr) && lr.level >= level then
-                ctx.labels <- {branch = lr.branch; level = level}::ctx.labels
-                ctx.newLabels.Pop() |> ignore
-                // elimination of redundant jumps
-                while ctx.newLabels.TryPeek(&lr) && lr.level >= level do
-                    lr.branch := IgnoreLabel
-                    ctx.newLabels.Pop() |> ignore
-            
-        if i.Length > 0 then
-            ctx.labels <- resolveLabels ctx.labels i.Head level
-            
-        let mutable lr: LabelRec = Unchecked.defaultof<_>
-        [while ctx.newLabels.TryPeek(&lr) && (lr.level <= -level) do
-            ctx.newLabels.Pop() |> ignore
-            yield {branch = lr.branch; level = -lr.level}]
-        |> List.rev
-        |> List.iter ctx.newLabels.Push 
+        
+        ctx.moveToLabels (List.tryHead i) level
             
         i |> InstructionList
 
     let stmtListToIl (vars: List<MetaInstruction>) sl ctx =
         let res = List<MetaInstruction>(vars)
         for s in sl do stmtToIl ctx s 1 |> res.Add
-        let mutable l: LabelRec = Unchecked.defaultof<_>
-        if ctx.newLabels.TryPop(&l) then
-            ctx.labels <- {branch = l.branch; level = 0}::ctx.labels
-            while ctx.newLabels.TryPop(&l) do
-                l.branch := IgnoreLabel
         let ret = Ret |> ainstr |> IlResolved
-        if (resolveLabels ctx.labels ret 0).Length <> 0 then // resolve all possible labels
+        ctx.moveToLabels (Some ret) 0
+        if ctx.labels.Length <> 0 || ctx.newLabels.Count <> 0 then
             failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
         res.Add(ret |> InstructionSingleton)
         res
