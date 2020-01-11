@@ -1,15 +1,18 @@
 module NP.PasIl
 
 open System
+open System.Collections
 open System.Collections.Generic
 open System.Linq.Expressions
+open System.Linq
 open Mono.Cecil
 open Mono.Cecil.Cil
 
 type BranchLabel =
     | LazyLabel of IlInstruction
     | Label of Instruction
-    | EmptyLabel
+    | FirstEmptyLabel
+    | LastEmptyLabel
     | IgnoreLabel
 
 and AtomIlInstruction =
@@ -49,15 +52,20 @@ type MetaInstruction =
     | InstructionSingleton of IlInstruction
     | InstructionList of IlInstruction list
 
-type LabelRec = {
+type SysLabelRec = {
         branch: BranchLabel ref
-        level: int
+        mutable level: int
+    }
+
+type VarLabelRec = {
+        name: string
     }
 
 type Ctx(variables: Map<string,VariableDefinition>) = class
     member val variables = variables
-    member val sysLabels: LabelRec list = [] with get, set
-    member val newLabels = Stack<LabelRec>()
+    member val labels: VarLabelRec list = [] with get, set
+    member val sysLabels: SysLabelRec list = [] with get, set
+    member val newLabels = List<SysLabelRec>()
     
     member private self.resolveLabels head level =
         let i = match head with
@@ -74,22 +82,46 @@ type Ctx(variables: Map<string,VariableDefinition>) = class
         self.sysLabels <- resolve self.sysLabels
     
     member self.moveToLabels newLabels head level =
-        let mutable lr: LabelRec = Unchecked.defaultof<_>
-        if newLabels && self.newLabels.TryPeek(&lr) && lr.level >= level then
+        let mutable lr: SysLabelRec = self.newLabels.LastOrDefault()
+        if newLabels then
             self.sysLabels <- {branch = lr.branch; level = level}::self.sysLabels
-            self.newLabels.Pop() |> ignore
+            self.newLabels.RemoveAt(self.newLabels.Count - 1)
             // elimination of redundant jumps
-            while self.newLabels.TryPeek(&lr) && lr.level >= level do
-                lr.branch := IgnoreLabel
-                self.newLabels.Pop() |> ignore
+            let i = ref self.newLabels.Count
+            let next() =
+                decr i
+                match !i with
+                | -1 -> lr <- Unchecked.defaultof<_>; false
+                | _ -> lr <- self.newLabels.[!i]; lr.level >= level  
+            
+            while next() do
+                match !lr.branch with
+                | LastEmptyLabel -> 
+                    lr.branch := IgnoreLabel
+                    self.newLabels.RemoveAt !i
+                | _ ->
+                    self.sysLabels <- {branch = lr.branch; level = level}::self.sysLabels
+                    self.newLabels.RemoveAt !i
         match head with
         | Some h -> 
             self.resolveLabels h level
-            [while self.newLabels.TryPeek(&lr) && (lr.level <= -level) do
-                self.newLabels.Pop() |> ignore
-                yield {branch = lr.branch; level = -lr.level}]
-            |> List.rev
-            |> List.iter self.newLabels.Push
+            lr <- self.newLabels.LastOrDefault()
+            let i = ref self.newLabels.Count
+            let next() =
+                decr i
+                match !i with
+                | -1 -> lr <- Unchecked.defaultof<_>; false
+                | _ -> lr <- self.newLabels.[!i]; lr.level <= -level  
+            if obj.Equals(lr, null) = false then
+                while next() do
+                    self.newLabels.RemoveAt !i
+                    self.newLabels.Insert(!i, {branch = lr.branch; level = -lr.level})
+            
+//            [while self.newLabels.TryPeek(&lr) && (lr.level <= -level) do
+//                self.newLabels.Pop() |> ignore
+//                yield {branch = lr.branch; level = -lr.level}]
+//            |> List.rev
+//            |> List.iter self.newLabels.Push
         | _ -> ()
     
   end
@@ -316,11 +348,10 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 | _ -> null
         [Call(f) |> ainstr |> IlResolved]
             
-    let emptyLabelRec = Unchecked.defaultof<LabelRec>
+    let emptyLabelRec = Unchecked.defaultof<SysLabelRec>
     let rec stmtToIl (ctx: Ctx) s level =
         let mutable head = emptyLabelRec
-        let mutable head2 = emptyLabelRec
-        ctx.newLabels.TryPeek(&head) |> ignore
+        let mutable head2: SysLabelRec = ctx.newLabels.LastOrDefault()
         let foldStmt s stmt =
             let sl = stmtToIl ctx stmt (level+1)
             sl::s
@@ -340,20 +371,23 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let var = findVar ident ctx 
                     exprToIl expr ctx @ [Stloc(var) |> ainstr |> IlResolved]
                 | IfStm(expr, tb, fb) ->
-                    let endOfStm = ref EmptyLabel
-                    ctx.newLabels.Push {branch = endOfStm; level = -level}
+                    let firstEnfOfStm = ref FirstEmptyLabel
+                    let lastEndOfStm = ref LastEmptyLabel
                     let condition = exprToIl expr ctx
-                    let trueBranch = (stmtToIlList tb) @ [IlBr(endOfStm)]
+                    let trueBranch = (stmtToIlList tb) @ [IlBr(if true then firstEnfOfStm else lastEndOfStm)]
                     let falseBlock = (stmtToIlList fb)
                     let hasFalseBlock = falseBlock.Length > 0;
-                    let falseBranch = if hasFalseBlock then falseBlock @ [IlBr(endOfStm)] else []
-                    let checkCondition = [IlBrfalse(if hasFalseBlock then ref (LazyLabel(falseBranch.Head)) else endOfStm)]
-                    ctx.newLabels.TryPeek(&head2) |> ignore
+                    let falseBranch = if hasFalseBlock then falseBlock @ [IlBr(lastEndOfStm)] else []
+                    let checkCondition = [IlBrfalse(if hasFalseBlock then ref (LazyLabel(falseBranch.Head)) else firstEnfOfStm)]
+                    ctx.newLabels.Add {branch = firstEnfOfStm; level = -level}
+                    ctx.newLabels.Add {branch = lastEndOfStm; level = -level}
                     List.concat [condition;checkCondition;trueBranch;falseBranch]
-                | GotoStm s -> []
+                | GotoStm s ->
+                    []
                 | _ -> []
         
-        let newHead = not (obj.ReferenceEquals(head, head2) || obj.ReferenceEquals(head, null))
+        head <- ctx.newLabels.LastOrDefault()
+        let newHead = obj.ReferenceEquals(head, head2) && not(obj.ReferenceEquals(head, null))
         ctx.moveToLabels newHead (List.tryHead i) level
             
         i |> InstructionList

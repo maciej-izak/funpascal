@@ -13,19 +13,20 @@ let main argv =
       """program wow;
       var
         x: Integer;
-      //label a;
+      label a;
       begin
         x := 8;
-        //goto a;
+        goto a;
         if (x = 8) and (x mod 3 = 0) then
           WriteLn(x)
         else if x = 7 + 1 then begin
           WriteLnS('1');
           if x = 9 then
-            WriteLnS('foo');
+            if x = 8 then
+              WriteLnS('foo');
           WriteLnS('foo2');
         end else
-          WriteLnS('O_o');
+          a: WriteLnS('O_o');
       end.
       """
     |> printfn "%A"
