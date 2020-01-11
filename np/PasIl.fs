@@ -374,9 +374,10 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let firstEnfOfStm = ref FirstEmptyLabel
                     let lastEndOfStm = ref LastEmptyLabel
                     let condition = exprToIl expr ctx
-                    let trueBranch = (stmtToIlList tb) @ [IlBr(if true then firstEnfOfStm else lastEndOfStm)]
+                    let mutable trueBranch = (stmtToIlList tb)
                     let falseBlock = (stmtToIlList fb)
-                    let hasFalseBlock = falseBlock.Length > 0;
+                    let hasFalseBlock = falseBlock.Length > 0
+                    trueBranch <- trueBranch @ [IlBr(if hasFalseBlock then firstEnfOfStm else lastEndOfStm)]
                     let falseBranch = if hasFalseBlock then falseBlock @ [IlBr(lastEndOfStm)] else []
                     let checkCondition = [IlBrfalse(if hasFalseBlock then ref (LazyLabel(falseBranch.Head)) else firstEnfOfStm)]
                     ctx.newLabels.Add {branch = firstEnfOfStm; level = -level}
