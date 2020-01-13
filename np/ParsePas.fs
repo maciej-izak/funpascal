@@ -375,6 +375,9 @@ let labelDeclarations =
 let expression =
     pint32
 
+let emptyStatement =
+    lookAhead(``; ``) >>% EmptyStm
+
 let simpleStatement =
     designator .>>.? (``:= `` >>. expr) |>> AssignStm
 
@@ -445,9 +448,7 @@ let gotoStatement =
     ``goto `` >>. identifier |>> GotoStm
 
 let statement =
-    many ``; ``
-    >>.
-    many((identifier .>>? (lookAhead(notFollowedBy (pstring ":=")) >>. (``: ``) .>> many ``; ``) |>> LabelStm) .>> many ``; ``) 
+    many(identifier .>>? (lookAhead(notFollowedBy (pstring ":=")) >>. ``: ``) |>> LabelStm) 
     .>>.
     choice[
             simpleStatement
@@ -460,6 +461,7 @@ let statement =
             whileStatement
             withStatement
             gotoStatement
+            emptyStatement
         ] 
     |>> function
         | ([], s) -> [s]

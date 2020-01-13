@@ -129,7 +129,8 @@ type CaseLabel =
     | CaseExpr of ConstExpr
     | CaseRange of ConstExprRange
 
-type Statement = 
+type Statement =
+    | EmptyStm
     | AssignStm of DIdent * ExprEl
     | CallStm of CallExpr
     | IdentStm of DIdent
