@@ -25,8 +25,12 @@
     <PackageReference Include="Mono.Cecil" Version="0.11.1" />
   </ItemGroup>
   <ItemGroup>
-    <Reference Include="FParsecCS, Version=1.0.4.0, Culture=neutral, PublicKeyToken=null">
-      <HintPath>..\..\..\fparsec\FParsecCS\bin\Debug\netcoreapp3.1\FParsecCS.dll</HintPath>
+    <Reference Include="FParsec, Version=1.0.4.0, Culture=neutral, PublicKeyToken=null">
+      <HintPath>..\..\..\fparsec\FParsec\bin\Debug\netcoreapp3.1\FParsec.dll</HintPath>
+    </Reference>
+    <Reference Include="FParsecCS, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null">
+      <HintPath>..\..\..\fparsec\FParsec\bin\Debug\netcoreapp3.1\FParsecCS.dll</HintPath>
     </Reference>
   </ItemGroup>
+
 </Project>

@@ -105,7 +105,7 @@ type Ctx(variables: Map<string,VariableDefinition>) = class
         match head with
         | Some h -> 
             self.resolveLabels h level
-            lr <- self.newLabels.LastOrDefault()
+            (*lr <- self.newLabels.LastOrDefault()
             let i = ref self.newLabels.Count
             let next() =
                 decr i
@@ -115,7 +115,7 @@ type Ctx(variables: Map<string,VariableDefinition>) = class
             if obj.Equals(lr, null) = false then
                 while next() do
                     self.newLabels.RemoveAt !i
-                    self.newLabels.Insert(!i, {branch = lr.branch; level = -lr.level})
+                    self.newLabels.Insert(!i, {branch = lr.branch; level = -lr.level})*)
             
 //            [while self.newLabels.TryPeek(&lr) && (lr.level <= -level) do
 //                self.newLabels.Pop() |> ignore
@@ -351,7 +351,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let emptyLabelRec = Unchecked.defaultof<SysLabelRec>
     let rec stmtToIl (ctx: Ctx) s level =
         let mutable head = emptyLabelRec
-        let mutable head2: SysLabelRec = ctx.newLabels.LastOrDefault()
+        let mutable head2 = ctx.newLabels.LastOrDefault()
         let foldStmt s stmt =
             let sl = stmtToIl ctx stmt (level+1)
             sl::s
@@ -362,7 +362,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let stmtToIlList sl =
             List.fold foldStmt [] sl |> List.rev |> List.collect metaToIlList
         //let getIlListSize = List.fold (fun s (i: Instruction) -> s + i.GetSize()) 0
-        
+        let newLb = List<SysLabelRec>()
         let i =
                 match s with
                 | CallStm(CallExpr(ident, cp)) ->
@@ -380,16 +380,20 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     trueBranch <- trueBranch @ [IlBr(if hasFalseBlock then firstEnfOfStm else lastEndOfStm)]
                     let falseBranch = if hasFalseBlock then falseBlock @ [IlBr(lastEndOfStm)] else []
                     let checkCondition = [IlBrfalse(if hasFalseBlock then ref (LazyLabel(falseBranch.Head)) else firstEnfOfStm)]
-                    ctx.newLabels.Add {branch = firstEnfOfStm; level = -level}
-                    ctx.newLabels.Add {branch = lastEndOfStm; level = -level}
+                    newLb.Add {branch = firstEnfOfStm; level = level}
+                    newLb.Add {branch = lastEndOfStm; level = level}
                     List.concat [condition;checkCondition;trueBranch;falseBranch]
                 | GotoStm s ->
                     []
                 | _ -> []
         
         head <- ctx.newLabels.LastOrDefault()
-        let newHead = obj.ReferenceEquals(head, head2) && not(obj.ReferenceEquals(head, null))
+        let newHead =
+            if obj.ReferenceEquals(head, null) then
+                false
+            else obj.ReferenceEquals(head, head2)
         ctx.moveToLabels newHead (List.tryHead i) level
+        ctx.newLabels.AddRange(newLb)    
             
         i |> InstructionList
 
