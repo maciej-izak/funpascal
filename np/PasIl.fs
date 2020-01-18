@@ -64,64 +64,14 @@ type VarLabelRec = {
 type Ctx(variables: Map<string,VariableDefinition>) = class
     member val variables = variables
     member val labels: VarLabelRec list = [] with get, set
-    member val sysLabels: SysLabelRec list = [] with get, set
-    member val newLabels = List<SysLabelRec>()
     
-    member private self.resolveLabels head level =
-        let i = match head with
-                | IlResolved l -> l
-                | _ -> failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
-        let rec resolve l =
-            match l with
-            | [] -> []
-            | h::t -> if h.level < level then
-                        l
-                      else
-                        h.branch := Label(i)
-                        resolve t
-        self.sysLabels <- resolve self.sysLabels
-    
-    member self.moveToLabels newLabels head level =
-        let mutable lr: SysLabelRec = self.newLabels.LastOrDefault()
-        if newLabels then
-            self.sysLabels <- {branch = lr.branch; level = level}::self.sysLabels
-            self.newLabels.RemoveAt(self.newLabels.Count - 1)
-            // elimination of redundant jumps
-            let i = ref self.newLabels.Count
-            let next() =
-                decr i
-                match !i with
-                | -1 -> lr <- Unchecked.defaultof<_>; false
-                | _ -> lr <- self.newLabels.[!i]; lr.level >= level  
-            
-            while next() do
-                match !lr.branch with
-                | LastEmptyLabel -> 
-                    lr.branch := IgnoreLabel
-                    self.newLabels.RemoveAt !i
-                | _ ->
-                    self.sysLabels <- {branch = lr.branch; level = level}::self.sysLabels
-                    self.newLabels.RemoveAt !i
+    member self.resolveLabels head labels =
         match head with
-        | Some h -> 
-            self.resolveLabels h level
-            (*lr <- self.newLabels.LastOrDefault()
-            let i = ref self.newLabels.Count
-            let next() =
-                decr i
-                match !i with
-                | -1 -> lr <- Unchecked.defaultof<_>; false
-                | _ -> lr <- self.newLabels.[!i]; lr.level <= -level  
-            if obj.Equals(lr, null) = false then
-                while next() do
-                    self.newLabels.RemoveAt !i
-                    self.newLabels.Insert(!i, {branch = lr.branch; level = -lr.level})*)
-            
-//            [while self.newLabels.TryPeek(&lr) && (lr.level <= -level) do
-//                self.newLabels.Pop() |> ignore
-//                yield {branch = lr.branch; level = -lr.level}]
-//            |> List.rev
-//            |> List.iter self.newLabels.Push
+        | Some h ->
+            let i = match h with
+                    | IlResolved l -> l
+                    | _ -> failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
+            for l in labels do l := Label(i)
         | _ -> ()
     
   end
@@ -349,74 +299,55 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         [Call(f) |> ainstr |> IlResolved]
             
     let emptyLabelRec = Unchecked.defaultof<SysLabelRec>
-    let rec stmtToIl (ctx: Ctx) s level (newLb: List<SysLabelRec>) =
-        let mutable head = emptyLabelRec
-        let head2 = ref (ctx.newLabels.LastOrDefault())
-        //let getIlListSize = List.fold (fun s (i: Instruction) -> s + i.GetSize()) 0
-        let _newLb: List<SysLabelRec> ref = ref(null)
+    let rec stmtToIl (ctx: Ctx) s labels =
         let i =
                 match s with
                 | CallStm(CallExpr(ident, cp)) ->
-                    [for p in cp do callParamToIl ctx p] @ [findFunction(ident)] |> List.concat
+                    ([for p in cp do callParamToIl ctx p] @ [findFunction(ident)] |> List.concat, [])
                 | AssignStm(ident, expr) -> 
                     let var = findVar ident ctx 
-                    exprToIl expr ctx @ [Stloc(var) |> ainstr |> IlResolved]
+                    (exprToIl expr ctx @ [Stloc(var) |> ainstr |> IlResolved], [])
                 | IfStm(expr, tb, fb) ->
                     // for ifs
-                    _newLb := List<SysLabelRec>()
                     let foldStmt s stmt =
-                        let sl = stmtToIl ctx stmt (level+1) !_newLb
-                        //ctx.newLabels.AddRange !_newLb
-                        sl::s
+                        let sl = stmtToIl ctx stmt (snd s)
+                        ((fst sl)::(fst s), snd sl)
                     let metaToIlList = function 
                                        | InstructionList l -> l
                                        | InstructionSingleton s -> [s]
                                        | _ -> []
                     let stmtToIlList sl =
-                        List.fold foldStmt [] sl |> List.rev |> List.collect metaToIlList
+                        List.fold foldStmt ([],[]) sl |> fun (i,l) -> (List.rev i |> List.collect metaToIlList, l) 
                     
                     // if logic
                     let firstEnfOfStm = ref FirstEmptyLabel
                     let lastEndOfStm = ref LastEmptyLabel
                     let condition = exprToIl expr ctx
-                    let mutable trueBranch = (stmtToIlList tb)
-                    let falseBlock = (stmtToIlList fb)
+                    let (trueBranch, trueLabels) = stmtToIlList tb
+                    let (falseBlock, falseLabels) = stmtToIlList fb
                     let hasFalseBlock = falseBlock.Length > 0
-                    trueBranch <- trueBranch @ [IlBr(if hasFalseBlock then firstEnfOfStm else lastEndOfStm)]
                     let falseBranch = if hasFalseBlock then falseBlock @ [IlBr(lastEndOfStm)] else []
                     let checkCondition = [IlBrfalse(if hasFalseBlock then ref (LazyLabel(falseBranch.Head)) else firstEnfOfStm)]
-                    newLb.Add {branch = firstEnfOfStm; level = level}
-                    newLb.Add {branch = lastEndOfStm; level = level}
-                    //let nh = ctx.newLabels.LastOrDefault()
-                    //if not(obj.ReferenceEquals(nh, null)) && nh.level > level then
-                    //   head2 := nh
-                    List.concat [condition;checkCondition;trueBranch;falseBranch]
+                    (List.concat [
+                        condition
+                        checkCondition
+                        trueBranch @ [IlBr(if hasFalseBlock then firstEnfOfStm else lastEndOfStm)]
+                        falseBranch
+                    ], List.concat [[firstEnfOfStm;lastEndOfStm];trueLabels;falseLabels])
                 | GotoStm s ->
-                    []
-                | EmptyStm -> []
-                | _ -> []
+                    ([],[])
+                | EmptyStm -> ([],[])
+                | _ -> ([],[])
         
-        head <- ctx.newLabels.LastOrDefault()
-        let newHead =
-            if obj.ReferenceEquals(head, null) then
-                false
-            else true // obj.ReferenceEquals(head, !head2) // || head.level < level
-        ctx.moveToLabels newHead (List.tryHead i) level
-        ctx.newLabels.AddRange(newLb)
-        //if !_newLb <> null then
-        //    ctx.newLabels.AddRange !_newLb
-            
-        i |> InstructionList
+        ctx.resolveLabels (List.tryHead (fst i)) labels
+        (fst i |> InstructionList, snd i)
 
     let stmtListToIl (vars: List<MetaInstruction>) sl ctx =
         let res = List<MetaInstruction>(vars)
-        let newl = List<SysLabelRec>()
-        for s in sl do stmtToIl ctx s 1 newl |> res.Add
-        ctx.newLabels.AddRange newl
+        let resi = seq { for s in sl do stmtToIl ctx s [] }
+        let xx = List.concat [for x in resi do res.Add(fst x); (snd x)]
         let ret = Ret |> ainstr |> IlResolved
-        ctx.moveToLabels true (Some ret) -Int32.MaxValue
-        if ctx.sysLabels.Length <> 0 || ctx.newLabels.Count <> 0 then
-            failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
+        ctx.resolveLabels (Some ret) xx
         res.Add(ret |> InstructionSingleton)
         res
 
