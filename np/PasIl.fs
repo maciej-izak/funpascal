@@ -65,7 +65,7 @@ type Ctx(variables: Map<string,VariableDefinition>) = class
     member val variables = variables
     member val labels: VarLabelRec list = [] with get, set
     
-    member self.resolveLabels head labels =
+    member self.resolveSysLabels head labels =
         match head with
         | Some h ->
             let i = match h with
@@ -299,8 +299,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         [Call(f) |> ainstr |> IlResolved]
             
     let emptyLabelRec = Unchecked.defaultof<SysLabelRec>
-    let rec stmtToIl (ctx: Ctx) s labels =
-        let i =
+    let rec stmtToIl (ctx: Ctx) s sysLabels =
+        let (instructions, newSysLabels) =
                 match s with
                 | CallStm(CallExpr(ident, cp)) ->
                     ([for p in cp do callParamToIl ctx p] @ [findFunction(ident)] |> List.concat, [])
@@ -324,30 +324,29 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let lastEndOfStm = ref LastEmptyLabel
                     let condition = exprToIl expr ctx
                     let (trueBranch, trueLabels) = stmtToIlList tb
-                    let (falseBlock, falseLabels) = stmtToIlList fb
-                    let hasFalseBlock = falseBlock.Length > 0
-                    let falseBranch = if hasFalseBlock then falseBlock @ [IlBr(lastEndOfStm)] else []
+                    let (falseBranch, falseLabels) = stmtToIlList fb
+                    let hasFalseBlock = falseBranch.Length > 0
                     let checkCondition = [IlBrfalse(if hasFalseBlock then ref (LazyLabel(falseBranch.Head)) else firstEnfOfStm)]
                     (List.concat [
                         condition
                         checkCondition
                         trueBranch @ [IlBr(if hasFalseBlock then firstEnfOfStm else lastEndOfStm)]
-                        falseBranch
+                        if hasFalseBlock then falseBranch @ [IlBr(lastEndOfStm)] else []
                     ], List.concat [[firstEnfOfStm;lastEndOfStm];trueLabels;falseLabels])
                 | GotoStm s ->
                     ([],[])
                 | EmptyStm -> ([],[])
                 | _ -> ([],[])
         
-        ctx.resolveLabels (List.tryHead (fst i)) labels
-        (fst i |> InstructionList, snd i)
+        ctx.resolveSysLabels (List.tryHead instructions) sysLabels
+        (instructions |> InstructionList, newSysLabels)
 
     let stmtListToIl (vars: List<MetaInstruction>) sl ctx =
         let res = List<MetaInstruction>(vars)
         let resi = seq { for s in sl do stmtToIl ctx s [] }
-        let xx = List.concat [for x in resi do res.Add(fst x); (snd x)]
+        let sysLabels = List.concat [for x in resi do res.Add(fst x); (snd x)]
         let ret = Ret |> ainstr |> IlResolved
-        ctx.resolveLabels (Some ret) xx
+        ctx.resolveSysLabels (Some ret) sysLabels
         res.Add(ret |> InstructionSingleton)
         res
 
