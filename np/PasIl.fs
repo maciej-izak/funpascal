@@ -13,6 +13,7 @@ type BranchLabel =
     | Label of Instruction
     | FirstEmptyLabel
     | LastEmptyLabel
+    | UserLabel of string
     | IgnoreLabel
 
 and AtomIlInstruction =
@@ -63,15 +64,15 @@ type VarLabelRec = {
 
 type Ctx(variables: Map<string,VariableDefinition>) = class
     member val variables = variables
-    member val labels: VarLabelRec list = [] with get, set
+    member val labels: Dictionary<string, BranchLabel ref> = null with get, set
     
     member self.resolveSysLabels head labels =
         match head with
         | Some h ->
-            let i = match h with
-                    | IlResolved l -> l
-                    | _ -> failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
-            for l in labels do l := Label(i)
+            match h with
+            | IlResolved il -> for l in labels do l := Label(il)
+            | IlBr _ -> for l in labels do l := LazyLabel(h)
+            | _ -> failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
         | _ -> ()
     
   end
@@ -333,8 +334,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         trueBranch @ [IlBr(if hasFalseBranch then firstEnfOfStm else lastEndOfStm)]
                         if hasFalseBranch then falseBranch @ [IlBr(lastEndOfStm)] else []
                     ], List.concat [[firstEnfOfStm;lastEndOfStm];trueLabels;falseLabels])
-                | GotoStm s ->
-                    ([],[])
+                | LabelStm l -> ([],[ctx.labels.[l]])
+                | GotoStm s -> ([IlBr(ctx.labels.[s])],[])
                 | EmptyStm -> ([],[])
                 | _ -> ([],[])
         
@@ -367,16 +368,19 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
 
     member _.BuildIl(block: Block) =
         let vars = List<MetaInstruction>(block.decl.Length)
+        let labelsMap = Dictionary<_,_>()
         let ctx = Ctx(block.decl
                     |> List.collect 
                            (function
-                           | Variables(v) -> v |> List.collect (fun (l, t) -> l |> List.map (fun v -> (v, defTypes.[t])))
+                           | Variables v -> v |> List.collect (fun (l, t) -> l |> List.map (fun v -> (v, defTypes.[t])))
+                           | Labels labels -> (for l in labels do labelsMap.Add(l, ref (UserLabel l)) |> ignore); []
                            | _ -> [])
                     // ! context !
                     |> List.map (fun (v, t) -> 
                         let var = VariableDefinition(t)
                         vars.Add(DeclareLocal(var))
                         (v, var))
-                    |> Map.ofList);
+                    |> Map.ofList)
+        ctx.labels <- labelsMap
         stmtListToIl vars block.stmt ctx
 end

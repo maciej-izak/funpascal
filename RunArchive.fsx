@@ -2,6 +2,31 @@
 open np.BasicParsers
 open FParsec
 
+    // PasStreams.testAll
+    //   """program wow;
+    //   var
+    //     x: Integer;
+    //   label a;
+    //   begin
+    //     x := 8;
+    //     goto a;
+    //     if (x = 8) and (x mod 3 = 0) then
+    //       WriteLn(x)
+    //     else if x = 7 + 1 then begin
+    //       WriteLnS('1');
+    //       if x = 123 then
+    //       else ;
+    //       if x = 9 then
+    //         if x = 8 then
+    //           WriteLnS('foo');
+    //       WriteLnS('foo2');
+    //     end else
+    //       a: WriteLnS('O_o');
+    //     if 6=7 then
+    //       WriteLnS('^^');
+    //   end.
+    //   """
+
 // testAll """
 //     program FsIsTheBest;
 //     { WOWWWW } {W} (* LOL *)
