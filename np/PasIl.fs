@@ -325,13 +325,13 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let condition = exprToIl expr ctx
                     let (trueBranch, trueLabels) = stmtToIlList tb
                     let (falseBranch, falseLabels) = stmtToIlList fb
-                    let hasFalseBlock = falseBranch.Length > 0
-                    let checkCondition = [IlBrfalse(if hasFalseBlock then ref (LazyLabel(falseBranch.Head)) else firstEnfOfStm)]
+                    let hasFalseBranch = falseBranch.Length > 0
+                    let checkCondition = [IlBrfalse(if hasFalseBranch then ref (LazyLabel(falseBranch.Head)) else firstEnfOfStm)]
                     (List.concat [
                         condition
                         checkCondition
-                        trueBranch @ [IlBr(if hasFalseBlock then firstEnfOfStm else lastEndOfStm)]
-                        if hasFalseBlock then falseBranch @ [IlBr(lastEndOfStm)] else []
+                        trueBranch @ [IlBr(if hasFalseBranch then firstEnfOfStm else lastEndOfStm)]
+                        if hasFalseBranch then falseBranch @ [IlBr(lastEndOfStm)] else []
                     ], List.concat [[firstEnfOfStm;lastEndOfStm];trueLabels;falseLabels])
                 | GotoStm s ->
                     ([],[])
@@ -343,10 +343,16 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
 
     let stmtListToIl (vars: List<MetaInstruction>) sl ctx =
         let res = List<MetaInstruction>(vars)
-        let resi = seq { for s in sl do stmtToIl ctx s [] }
-        let sysLabels = List.concat [for x in resi do res.Add(fst x); (snd x)]
+        let lastSysLabels = ref []
+        let resSeq = seq {
+            for s in sl do
+                let (instructions, sysLabels) = stmtToIl ctx s !lastSysLabels
+                lastSysLabels := sysLabels
+                yield instructions
+        }
+        for i in resSeq do res.Add i
         let ret = Ret |> ainstr |> IlResolved
-        ctx.resolveSysLabels (Some ret) sysLabels
+        ctx.resolveSysLabels (Some ret) !lastSysLabels
         res.Add(ret |> InstructionSingleton)
         res
 

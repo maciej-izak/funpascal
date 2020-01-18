@@ -29,6 +29,8 @@ let main argv =
           WriteLnS('foo2');
         end else
           a: WriteLnS('O_o');
+        if 6=7 then
+          WriteLnS('^^');
       end.
       """
     |> printfn "%A"
