@@ -349,20 +349,11 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         [Call(f) |> ainstr |> IlResolved]
             
     let emptyLabelRec = Unchecked.defaultof<SysLabelRec>
-    let rec stmtToIl (ctx: Ctx) s level =
+    let rec stmtToIl (ctx: Ctx) s level (newLb: List<SysLabelRec>) =
         let mutable head = emptyLabelRec
-        let mutable head2 = ctx.newLabels.LastOrDefault()
-        let foldStmt s stmt =
-            let sl = stmtToIl ctx stmt (level+1)
-            sl::s
-        let metaToIlList = function 
-                           | InstructionList l -> l
-                           | InstructionSingleton s -> [s]
-                           | _ -> []
-        let stmtToIlList sl =
-            List.fold foldStmt [] sl |> List.rev |> List.collect metaToIlList
+        let head2 = ref (ctx.newLabels.LastOrDefault())
         //let getIlListSize = List.fold (fun s (i: Instruction) -> s + i.GetSize()) 0
-        let newLb = List<SysLabelRec>()
+        let _newLb: List<SysLabelRec> ref = ref(null)
         let i =
                 match s with
                 | CallStm(CallExpr(ident, cp)) ->
@@ -371,6 +362,20 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let var = findVar ident ctx 
                     exprToIl expr ctx @ [Stloc(var) |> ainstr |> IlResolved]
                 | IfStm(expr, tb, fb) ->
+                    // for ifs
+                    _newLb := List<SysLabelRec>()
+                    let foldStmt s stmt =
+                        let sl = stmtToIl ctx stmt (level+1) !_newLb
+                        //ctx.newLabels.AddRange !_newLb
+                        sl::s
+                    let metaToIlList = function 
+                                       | InstructionList l -> l
+                                       | InstructionSingleton s -> [s]
+                                       | _ -> []
+                    let stmtToIlList sl =
+                        List.fold foldStmt [] sl |> List.rev |> List.collect metaToIlList
+                    
+                    // if logic
                     let firstEnfOfStm = ref FirstEmptyLabel
                     let lastEndOfStm = ref LastEmptyLabel
                     let condition = exprToIl expr ctx
@@ -382,24 +387,32 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let checkCondition = [IlBrfalse(if hasFalseBlock then ref (LazyLabel(falseBranch.Head)) else firstEnfOfStm)]
                     newLb.Add {branch = firstEnfOfStm; level = level}
                     newLb.Add {branch = lastEndOfStm; level = level}
+                    //let nh = ctx.newLabels.LastOrDefault()
+                    //if not(obj.ReferenceEquals(nh, null)) && nh.level > level then
+                    //   head2 := nh
                     List.concat [condition;checkCondition;trueBranch;falseBranch]
                 | GotoStm s ->
                     []
+                | EmptyStm -> []
                 | _ -> []
         
         head <- ctx.newLabels.LastOrDefault()
         let newHead =
             if obj.ReferenceEquals(head, null) then
                 false
-            else obj.ReferenceEquals(head, head2)
+            else true // obj.ReferenceEquals(head, !head2) // || head.level < level
         ctx.moveToLabels newHead (List.tryHead i) level
-        ctx.newLabels.AddRange(newLb)    
+        ctx.newLabels.AddRange(newLb)
+        //if !_newLb <> null then
+        //    ctx.newLabels.AddRange !_newLb
             
         i |> InstructionList
 
     let stmtListToIl (vars: List<MetaInstruction>) sl ctx =
         let res = List<MetaInstruction>(vars)
-        for s in sl do stmtToIl ctx s 1 |> res.Add
+        let newl = List<SysLabelRec>()
+        for s in sl do stmtToIl ctx s 1 newl |> res.Add
+        ctx.newLabels.AddRange newl
         let ret = Ret |> ainstr |> IlResolved
         ctx.moveToLabels true (Some ret) -Int32.MaxValue
         if ctx.sysLabels.Length <> 0 || ctx.newLabels.Count <> 0 then
