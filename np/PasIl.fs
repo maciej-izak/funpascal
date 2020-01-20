@@ -62,9 +62,12 @@ type VarLabelRec = {
         name: string
     }
 
-type Ctx(variables: Map<string,VariableDefinition>) = class
+type Ctx(
+            variables: Map<string,VariableDefinition>,
+            labels: Dictionary<string, BranchLabel ref>
+        ) = class
     member val variables = variables
-    member val labels: Dictionary<string, BranchLabel ref> = null with get, set
+    member val labels = labels
     
     member self.resolveSysLabels head labels =
         match head with
@@ -310,14 +313,14 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     (exprToIl expr ctx @ [Stloc(var) |> ainstr |> IlResolved], [])
                 | IfStm(expr, tb, fb) ->
                     // for ifs
-                    let foldStmt s stmt =
-                        let sl = stmtToIl ctx stmt (snd s)
-                        ((fst sl)::(fst s), snd sl)
-                    let metaToIlList = function 
-                                       | InstructionList l -> l
-                                       | InstructionSingleton s -> [s]
-                                       | _ -> []
                     let stmtToIlList sl =
+                        let foldStmt s stmt =
+                            let sl = stmtToIl ctx stmt (snd s)
+                            ((fst sl)::(fst s), snd sl)
+                        let metaToIlList = function 
+                                           | InstructionList l -> l
+                                           | InstructionSingleton s -> [s]
+                                           | _ -> []
                         List.fold foldStmt ([],[]) sl |> fun (i,l) -> (List.rev i |> List.collect metaToIlList, l) 
                     
                     // if logic
@@ -335,7 +338,10 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         if hasFalseBranch then falseBranch @ [IlBr(lastEndOfStm)] else []
                     ], List.concat [[firstEnfOfStm;lastEndOfStm];trueLabels;falseLabels])
                 | LabelStm l -> ([],[ctx.labels.[l]])
-                | GotoStm s -> ([IlBr(ctx.labels.[s])],[])
+                | GotoStm s -> ([IlBr(ctx.labels.[s])],[]) // TODO ? check how goto is implemented in C#
+                | CaseStm (expr, mainLabels, stmt) ->
+                    let case = exprToIl expr
+                    ([],[])
                 | EmptyStm -> ([],[])
                 | _ -> ([],[])
         
@@ -357,11 +363,11 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         res.Add(ret |> InstructionSingleton)
         res
 
-    let defTypes = Map.ofArray[|
+    let defTypes = Dictionary<_,_>([|
             (stdType "Integer", mb.TypeSystem.Int32)
             (stdType "Byte", mb.TypeSystem.Byte)
             (stdType "Boolean", mb.TypeSystem.Boolean)
-        |]
+        |])
 
     let findType =
         typeIdToStr
@@ -369,9 +375,12 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     member _.BuildIl(block: Block) =
         let vars = List<MetaInstruction>(block.decl.Length)
         let labelsMap = Dictionary<_,_>()
-        let ctx = Ctx(block.decl
+        printfn "%A" block.decl
+        let variables =
+                    block.decl
                     |> List.collect 
                            (function
+                           | Types t -> []
                            | Variables v -> v |> List.collect (fun (l, t) -> l |> List.map (fun v -> (v, defTypes.[t])))
                            | Labels labels -> (for l in labels do labelsMap.Add(l, ref (UserLabel l)) |> ignore); []
                            | _ -> [])
@@ -380,7 +389,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         let var = VariableDefinition(t)
                         vars.Add(DeclareLocal(var))
                         (v, var))
-                    |> Map.ofList)
-        ctx.labels <- labelsMap
+                    |> Map.ofList
+        let ctx = Ctx(variables, labelsMap)
         stmtListToIl vars block.stmt ctx
 end

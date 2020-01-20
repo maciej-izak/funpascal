@@ -11,26 +11,18 @@ open NP
 let main argv =
     PasStreams.testAll
       """program wow;
+      type
+        TFoo = (f1, f2, f3);
       var
-        x: Integer;
-      label a;
+        x: TFoo;
       begin
-        x := 8;
-        goto a;
-        if (x = 8) and (x mod 3 = 0) then
-          WriteLn(x)
-        else if x = 7 + 1 then begin
-          WriteLnS('1');
-          if x = 123 then
-          else ;
-          if x = 9 then
-            if x = 8 then
-              WriteLnS('foo');
-          WriteLnS('foo2');
-        end else
-          a: WriteLnS('O_o');
-        if 6=7 then
-          WriteLnS('^^');
+        x := f1;
+        case x of
+          f1: WriteLn(1);
+          f2: WriteLn(2);
+        else
+          WriteLnS('f3 or unknown');
+        end;
       end.
       """
     |> printfn "%A"
