@@ -363,12 +363,12 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         res.Add(ret |> InstructionSingleton)
         res
 
-    let defTypes = Dictionary<_,_>([|
-            (stdType "Integer", mb.TypeSystem.Int32)
-            (stdType "Byte", mb.TypeSystem.Byte)
-            (stdType "Boolean", mb.TypeSystem.Boolean)
-        |])
-
+    let defTypes = Dictionary<TypeIdentifier, TypeReference>()
+    do
+        defTypes.Add(stdType "Integer", mb.TypeSystem.Int32)
+        defTypes.Add(stdType "Byte", mb.TypeSystem.Byte)
+        defTypes.Add(stdType "Boolean", mb.TypeSystem.Boolean)
+    
     let findType =
         typeIdToStr
 
