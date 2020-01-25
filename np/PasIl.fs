@@ -62,9 +62,15 @@ type VarLabelRec = {
         name: string
     }
 
+type Symbol =
+    | VariableSym
+    | LabelSym
+    | EnumSym
+
 type Ctx(
-            variables: Map<string,VariableDefinition>,
-            labels: Dictionary<string, BranchLabel ref>
+            variables: Dictionary<string,VariableDefinition>,
+            labels: Dictionary<string, BranchLabel ref>,
+            symbols: Map<string, Symbol>
         ) = class
     member val variables = variables
     member val labels = labels
@@ -330,6 +336,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let (trueBranch, trueLabels) = stmtToIlList tb
                     let (falseBranch, falseLabels) = stmtToIlList fb
                     let hasFalseBranch = falseBranch.Length > 0
+                    // TODO rethink LazyLabel here
                     let checkCondition = [IlBrfalse(if hasFalseBranch then ref (LazyLabel(falseBranch.Head)) else firstEnfOfStm)]
                     (List.concat [
                         condition
@@ -348,8 +355,9 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         ctx.resolveSysLabels (List.tryHead instructions) sysLabels
         (instructions |> InstructionList, newSysLabels)
 
-    let stmtListToIl (vars: List<MetaInstruction>) sl ctx =
-        let res = List<MetaInstruction>(vars)
+    let stmtListToIl sl (ctx: Ctx) =
+        let res = List<MetaInstruction>()
+        for v in ctx.variables.Values do res.Add(DeclareLocal(v))
         let lastSysLabels = ref []
         let resSeq = seq {
             for s in sl do
@@ -373,23 +381,19 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         typeIdToStr
 
     member _.BuildIl(block: Block) =
-        let vars = List<MetaInstruction>(block.decl.Length)
+        let variables = Dictionary<_,_>()
         let labelsMap = Dictionary<_,_>()
         printfn "%A" block.decl
-        let variables =
-                    block.decl
-                    |> List.collect 
-                           (function
-                           | Types t -> []
-                           | Variables v -> v |> List.collect (fun (l, t) -> l |> List.map (fun v -> (v, defTypes.[t])))
-                           | Labels labels -> (for l in labels do labelsMap.Add(l, ref (UserLabel l)) |> ignore); []
-                           | _ -> [])
-                    // ! context !
-                    |> List.map (fun (v, t) -> 
-                        let var = VariableDefinition(t)
-                        vars.Add(DeclareLocal(var))
-                        (v, var))
-                    |> Map.ofList
-        let ctx = Ctx(variables, labelsMap)
-        stmtListToIl vars block.stmt ctx
+        block.decl
+        |> List.iter 
+               (function
+               | Types types -> (for t in types do defTypes.Add(stdType (fst t), mb.TypeSystem.Int32))
+               | Variables v ->
+                   v
+                   |> List.collect (fun (l, t) -> l |> List.map (fun v -> (v, defTypes.[t])))
+                   |> List.iter (fun (v, t) -> (v, VariableDefinition(t)) |> variables.Add)
+               | Labels labels -> (for l in labels do labelsMap.Add(l, ref (UserLabel l)))
+               | _ -> ())
+        let ctx = Ctx(variables, labelsMap, Map.empty)
+        stmtListToIl block.stmt ctx
 end
