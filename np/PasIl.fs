@@ -63,9 +63,9 @@ type VarLabelRec = {
     }
 
 type Symbol =
-    | VariableSym
-    | LabelSym
-    | EnumSym
+    | VariableSym of VariableDefinition
+    //| LabelSym
+    | EnumValueSym of int
 
 type Ctx(
             variables: Dictionary<string,VariableDefinition>,
@@ -74,6 +74,7 @@ type Ctx(
         ) = class
     member val variables = variables
     member val labels = labels
+    member val symbols = symbols
     
     member self.resolveSysLabels head labels =
         match head with
@@ -143,16 +144,19 @@ let private emit (ilg : Cil.ILProcessor) inst =
     | InstructionSingleton is -> instr is |> appendIfNotNull
     | InstructionList p -> p |> List.iter (instr >> appendIfNotNull) 
 
-let findVar (DIdent ident) (ctx: Ctx) =
+let findSymbol (DIdent ident) (ctx: Ctx) =
     assert(ident.Length = 1)
-    ident.Head |> function | PIName n -> ctx.variables.Item n
+    ident.Head |> function | PIName n -> ctx.symbols.[n]
 
-let findVarAndLoad ident (ctx: Ctx) = (findVar ident ctx) |> Ldloc |> ainstr |> IlResolved |> List.singleton
+let findSymbolAndLoad ident (ctx: Ctx) =
+    match findSymbol ident ctx with
+    | VariableSym vs -> vs |> Ldloc |> ainstr |> IlResolved |> List.singleton
+    | EnumValueSym evs -> Ldc_I4(evs) |> ainstr |> IlResolved |> List.singleton
 
 let valueToIl v ctx = 
     match v with
     | VInteger i -> Ldc_I4(i) |> ainstr |> IlResolved |> List.singleton
-    | VIdent i -> findVarAndLoad i ctx
+    | VIdent i -> findSymbolAndLoad i ctx
     | VString s -> Ldstr(s) |> ainstr |> IlResolved |> List.singleton
     | _ -> Unknown |> ainstr |> IlResolved |> List.singleton 
 
@@ -180,7 +184,7 @@ let rec exprToIl exprEl ctx =
 let callParamToIl ctx cp = 
     match cp with
     | ParamExpr expr -> exprToIl expr ctx
-    | ParamIdent id -> findVarAndLoad id ctx
+    | ParamIdent id -> findSymbolAndLoad id ctx
 
 // type internal Marker = interface end
 // let t = typeof<Marker>.DeclaringType
@@ -315,7 +319,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 | CallStm(CallExpr(ident, cp)) ->
                     ([for p in cp do callParamToIl ctx p] @ [findFunction(ident)] |> List.concat, [])
                 | AssignStm(ident, expr) -> 
-                    let var = findVar ident ctx 
+                    let var = findSymbol ident ctx |> function | VariableSym vs -> vs | _ -> failwith "IE"  
                     (exprToIl expr ctx @ [Stloc(var) |> ainstr |> IlResolved], [])
                 | IfStm(expr, tb, fb) ->
                     // for ifs
@@ -383,17 +387,28 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     member _.BuildIl(block: Block) =
         let variables = Dictionary<_,_>()
         let labelsMap = Dictionary<_,_>()
+        let symbols = List<_>()
         printfn "%A" block.decl
         block.decl
         |> List.iter 
                (function
-               | Types types -> (for t in types do defTypes.Add(stdType (fst t), mb.TypeSystem.Int32))
+               | Types types ->
+                   (
+                       for (name, decl) in types do
+                           defTypes.Add(stdType name, mb.TypeSystem.Int32)
+                           match decl with
+                           | TypeEnum enumValues -> enumValues |> List.iteri (fun i v -> symbols.Add (v, EnumValueSym(i))) 
+                           | _ -> ()
+                   )
                | Variables v ->
                    v
                    |> List.collect (fun (l, t) -> l |> List.map (fun v -> (v, defTypes.[t])))
                    |> List.iter (fun (v, t) -> (v, VariableDefinition(t)) |> variables.Add)
                | Labels labels -> (for l in labels do labelsMap.Add(l, ref (UserLabel l)))
                | _ -> ())
-        let ctx = Ctx(variables, labelsMap, Map.empty)
+               
+        for kv in variables do symbols.Add(kv.Key, VariableSym(kv.Value))
+        
+        let ctx = Ctx(variables, labelsMap, Map.ofSeq symbols)
         stmtListToIl block.stmt ctx
 end

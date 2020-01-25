@@ -16,7 +16,7 @@ let main argv =
       var
         x: TFoo;
       begin
-        x := f1;
+        x := f3;
         case x of
           f1: WriteLn(1);
           f2: WriteLn(2);
