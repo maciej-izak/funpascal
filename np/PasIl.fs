@@ -11,8 +11,7 @@ open Mono.Cecil.Cil
 type BranchLabel =
     | LazyLabel of IlInstruction
     | Label of Instruction
-    | FirstEmptyLabel
-    | LastEmptyLabel
+    | ForwardLabel
     | UserLabel of string
     | IgnoreLabel
 
@@ -40,12 +39,14 @@ and AtomIlInstruction =
     | Ldstr of string
     | Brfalse of Instruction
     | Br of Instruction
+    | Beq of Instruction
     | Resolved of Instruction
 
 and IlInstruction =
     | IlAtom of AtomIlInstruction ref
     | IlBrfalse of BranchLabel ref
     | IlBr of BranchLabel ref
+    | IlBeq of BranchLabel ref
     | IlResolved of Instruction
 
 type MetaInstruction =
@@ -70,11 +71,28 @@ type Symbol =
 type Ctx(
             variables: Dictionary<string,VariableDefinition>,
             labels: Dictionary<string, BranchLabel ref>,
-            symbols: Map<string, Symbol>
+            symbols: Dictionary<string, Symbol>,
+            moduleBuilder: ModuleDefinition
         ) = class
+    let localVariables = ref 0
     member val variables = variables
     member val labels = labels
     member val symbols = symbols
+    member val res = List<MetaInstruction>()
+    member self.EnsureVariable() =
+        let ikey = !localVariables
+        let key = string ikey
+        incr localVariables
+        // TODO manager of variables for reuse
+//        let result = match self.variables.TryGetValue key with
+//                     | true, value ->
+//                         value
+//                     | _ ->
+        let value = VariableDefinition(moduleBuilder.TypeSystem.Int32)
+        self.res.Add(DeclareLocal(value))
+        self.variables.Add(key, value)
+        self.symbols.Add(key, VariableSym(value))
+        (key, value)
     
     member self.resolveSysLabels head labels =
         match head with
@@ -94,6 +112,7 @@ let brtoinstr l opc =
                             | IlResolved i -> i
                             | IlBrfalse i -> bril !i
                             | IlBr i -> bril !i
+                            | IlBeq i -> bril !i
                             | _ -> failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
            | IgnoreLabel -> null
            | _ -> failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
@@ -127,11 +146,13 @@ let private ainstr = function
                     | Ldstr s      -> Instruction.Create(OpCodes.Ldstr, s)
                     | Brfalse i    -> Instruction.Create(OpCodes.Brfalse, i)
                     | Br i         -> Instruction.Create(OpCodes.Br, i)
+                    | Beq i        -> Instruction.Create(OpCodes.Beq, i)
                     | Resolved i   -> i
 
 let private instr = function
                     | IlBrfalse i  -> brtoinstr i OpCodes.Brfalse
                     | IlBr i       -> brtoinstr i OpCodes.Br
+                    | IlBeq i      -> brtoinstr i OpCodes.Beq
                     | IlResolved i -> i
                     | IlAtom i     -> let r = ainstr !i
                                       i := Resolved(r)
@@ -289,12 +310,8 @@ let rec typeIdToStr = function
     | TIdIdent(DIdent di) -> simplifiedDIdent di |> String.concat "$" |> (+) "$i"
     | TIdArray(ArrayDef(p, d, t)) -> "$a" + packedToStr(p) + (dimenstionsToStr d |> String.concat ",") + "$" + typeIdToStr t
 
-let stdType name =
-    (Unchecked.defaultof<_>, name)
-    |> PINameCreate
-    |> List.singleton
-    |> DIdent
-    |> TIdIdent
+let stdIdent = PINameCreate >> List.singleton >> DIdent
+let stdType  = stdIdent >> TIdIdent
 
 type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let mb = moduleBuilder
@@ -313,7 +330,18 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         [Call(f) |> ainstr |> IlResolved]
             
     let emptyLabelRec = Unchecked.defaultof<SysLabelRec>
-    let rec stmtToIl (ctx: Ctx) s sysLabels =
+    let rec stmtToIl (ctx: Ctx) sysLabels s =
+        // for ifs
+        let stmtToIlList sl =
+            let foldStmt s stmt =
+                let sl = stmtToIl ctx (snd s) stmt
+                ((fst sl)::(fst s), snd sl)
+            let metaToIlList = function 
+                               | InstructionList l -> l
+                               | InstructionSingleton s -> [s]
+                               | _ -> []
+            List.fold foldStmt ([],[]) sl |> fun (i,l) -> (List.rev i |> List.collect metaToIlList, l) 
+        
         let (instructions, newSysLabels) =
                 match s with
                 | CallStm(CallExpr(ident, cp)) ->
@@ -322,20 +350,9 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let var = findSymbol ident ctx |> function | VariableSym vs -> vs | _ -> failwith "IE"  
                     (exprToIl expr ctx @ [Stloc(var) |> ainstr |> IlResolved], [])
                 | IfStm(expr, tb, fb) ->
-                    // for ifs
-                    let stmtToIlList sl =
-                        let foldStmt s stmt =
-                            let sl = stmtToIl ctx stmt (snd s)
-                            ((fst sl)::(fst s), snd sl)
-                        let metaToIlList = function 
-                                           | InstructionList l -> l
-                                           | InstructionSingleton s -> [s]
-                                           | _ -> []
-                        List.fold foldStmt ([],[]) sl |> fun (i,l) -> (List.rev i |> List.collect metaToIlList, l) 
-                    
                     // if logic
-                    let firstEnfOfStm = ref FirstEmptyLabel
-                    let lastEndOfStm = ref LastEmptyLabel
+                    let firstEnfOfStm = ref ForwardLabel
+                    let lastEndOfStm = ref ForwardLabel
                     let condition = exprToIl expr ctx
                     let (trueBranch, trueLabels) = stmtToIlList tb
                     let (falseBranch, falseLabels) = stmtToIlList fb
@@ -349,10 +366,32 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         if hasFalseBranch then falseBranch @ [IlBr(lastEndOfStm)] else []
                     ], List.concat [[firstEnfOfStm;lastEndOfStm];trueLabels;falseLabels])
                 | LabelStm l -> ([],[ctx.labels.[l]])
-                | GotoStm s -> ([IlBr(ctx.labels.[s])],[]) // TODO ? check how goto is implemented in C#
+                | GotoStm s -> ([IlBr(ctx.labels.[s])],[]) // will do LazyLabel
                 | CaseStm (expr, mainLabels, stmt) ->
-                    let case = exprToIl expr
-                    ([],[])
+                    // let case = exprToIl expr
+                    let (name, var) = ctx.EnsureVariable()
+                    let (setCaseVar, _) = AssignStm(stdIdent name, expr) |> List.singleton |> stmtToIlList
+                    let (tocheck, stmt) = mainLabels.Head
+                    let (trueBranch, trueLabels) = stmtToIlList stmt
+                    let lastEndOfStm = ref ForwardLabel
+                    let casec =
+                        List.concat [
+                            for l in tocheck do
+                                yield [IlAtom(ref(Ldloc(var)))]
+                                match l with
+                                | CaseExpr ce -> match ce with
+                                                 | ConstExpr ce ->
+                                                     yield (exprToIl ce ctx)
+                                                     yield [IlBeq(ref(LazyLabel(trueBranch.Head)))]
+                                                 | _ -> failwith "IE" 
+                                | _ -> failwith "IE";
+                            yield [IlBr(lastEndOfStm)]
+                        ]              
+                    (List.concat[
+                        setCaseVar
+                        casec
+                        trueBranch
+                    ] , List.concat[trueLabels;[lastEndOfStm]])
                 | EmptyStm -> ([],[])
                 | _ -> ([],[])
         
@@ -360,20 +399,19 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         (instructions |> InstructionList, newSysLabels)
 
     let stmtListToIl sl (ctx: Ctx) =
-        let res = List<MetaInstruction>()
-        for v in ctx.variables.Values do res.Add(DeclareLocal(v))
+        for v in ctx.variables.Values do ctx.res.Add(DeclareLocal(v))
         let lastSysLabels = ref []
         let resSeq = seq {
             for s in sl do
-                let (instructions, sysLabels) = stmtToIl ctx s !lastSysLabels
+                let (instructions, sysLabels) = stmtToIl ctx !lastSysLabels s
                 lastSysLabels := sysLabels
                 yield instructions
         }
-        for i in resSeq do res.Add i
+        for i in resSeq do ctx.res.Add i
         let ret = Ret |> ainstr |> IlResolved
         ctx.resolveSysLabels (Some ret) !lastSysLabels
-        res.Add(ret |> InstructionSingleton)
-        res
+        ctx.res.Add(ret |> InstructionSingleton)
+        ctx.res
 
     let defTypes = Dictionary<TypeIdentifier, TypeReference>()
     do
@@ -387,7 +425,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     member _.BuildIl(block: Block) =
         let variables = Dictionary<_,_>()
         let labelsMap = Dictionary<_,_>()
-        let symbols = List<_>()
+        let symbols = Dictionary<_,_>()
         printfn "%A" block.decl
         block.decl
         |> List.iter 
@@ -409,6 +447,6 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                
         for kv in variables do symbols.Add(kv.Key, VariableSym(kv.Value))
         
-        let ctx = Ctx(variables, labelsMap, Map.ofSeq symbols)
+        let ctx = Ctx(variables, labelsMap, symbols, moduleBuilder)
         stmtListToIl block.stmt ctx
 end

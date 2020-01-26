@@ -171,4 +171,5 @@ let (|PIName|) = function
     | Ident(PIdent(name=n)) -> n
     | _ -> ""
 
-let PINameCreate = PIdent >> Ident
+let PIPosNameCreate = PIdent >> Ident
+let PINameCreate name = PIPosNameCreate(null, name)

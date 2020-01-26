@@ -184,13 +184,13 @@ let arrayIndexes =
     ``[ `` >>. (sepEndBy1 arrayIndex ``, ``) .>> ``] ``
 
 let designator = 
-    pipe2   (getPosition .>>. identifier |>> PINameCreate) 
+    pipe2   (getPosition .>>. identifier |>> PIPosNameCreate) 
             (manyTill
                 (choice[
                         ``^ `` >>% Deref; 
                         (``[ `` >>. (sepEndBy1 expr ``, ``) .>> ``] ``)
                         |>> Designator.Array;
-                        ``. `` >>. getPosition .>>. identifier |>> PINameCreate
+                        ``. `` >>. getPosition .>>. identifier |>> PIPosNameCreate
                       ])
                 (lookAhead(followedBy (next2CharsSatisfy 
                               (fun c1 c2 ->
