@@ -370,28 +370,36 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 | CaseStm (expr, mainLabels, stmt) ->
                     // let case = exprToIl expr
                     let (name, var) = ctx.EnsureVariable()
-                    let (setCaseVar, _) = AssignStm(stdIdent name, expr) |> List.singleton |> stmtToIlList
-                    let (tocheck, stmt) = mainLabels.Head
-                    let (trueBranch, trueLabels) = stmtToIlList stmt
                     let lastEndOfStm = ref ForwardLabel
+                    let (defBranch, defLabels) = stmtToIlList stmt
+                    // TODO reduce creation of new var if we want to just read variable
+                    let (setCaseVar, _) = AssignStm(stdIdent name, expr) |> List.singleton |> stmtToIlList
                     let casec =
-                        List.concat [
-                            for l in tocheck do
-                                yield [IlAtom(ref(Ldloc(var)))]
-                                match l with
-                                | CaseExpr ce -> match ce with
-                                                 | ConstExpr ce ->
-                                                     yield (exprToIl ce ctx)
-                                                     yield [IlBeq(ref(LazyLabel(trueBranch.Head)))]
-                                                 | _ -> failwith "IE" 
-                                | _ -> failwith "IE";
-                            yield [IlBr(lastEndOfStm)]
-                        ]              
+                            //List.concat
+                                [for (tocheck, stmt) in mainLabels do
+                                    let (trueBranch, trueLabels) = stmtToIlList stmt
+                                    yield
+                                        (
+                                         List.concat [
+                                            for l in tocheck do
+                                                yield [IlAtom(ref(Ldloc(var)))]
+                                                match l with
+                                                | CaseExpr ce -> match ce with
+                                                                 | ConstExpr ce ->
+                                                                     yield (exprToIl ce ctx)
+                                                                     yield [IlBeq(ref(LazyLabel(trueBranch.Head)))]
+                                                                 | _ -> failwith "IE" 
+                                                | _ -> failwith "IE";
+                                           ],
+                                         trueBranch @ [IlBr(lastEndOfStm)], trueLabels)
+                                 yield (defBranch @ [IlBr(lastEndOfStm)], [], defLabels)
+                                ]
+                    let (cases, casesbodies, labels) = List.unzip3 casec |||> (fun a b c -> (List.concat a, List.concat b, List.concat c))
                     (List.concat[
                         setCaseVar
-                        casec
-                        trueBranch
-                    ] , List.concat[trueLabels;[lastEndOfStm]])
+                        cases
+                        casesbodies
+                    ] , List.concat[labels ; [lastEndOfStm]])
                 | EmptyStm -> ([],[])
                 | _ -> ([],[])
         
