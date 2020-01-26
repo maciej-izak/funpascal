@@ -2,6 +2,24 @@
 open np.BasicParsers
 open FParsec
 
+      // """program wow;
+      // type
+      //   TFoo = (f1, f2, f3);
+      // var
+      //   x: TFoo;
+      // label f1, f2;
+      // begin
+      //   x := f3;
+      //   case x of
+      //     f1: f2:WriteLn(1);
+      //     f2: begin f1:WriteLn(2); goto f2; end;
+      //   else
+      //     WriteLnS('f3 or unknown');
+      //     goto f1;
+      //   end;
+      // end.
+      // """
+
     // PasStreams.testAll
     //   """program wow;
     //   var
