@@ -40,13 +40,17 @@ and AtomIlInstruction =
     | Brfalse of Instruction
     | Br of Instruction
     | Beq of Instruction
+    | Blt of Instruction
+    | Bgt of Instruction
     | Resolved of Instruction
 
 and IlInstruction =
     | IlAtom of AtomIlInstruction ref
     | IlBrfalse of BranchLabel ref
     | IlBr of BranchLabel ref
-    | IlBeq of BranchLabel ref
+    | IlBeq of BranchLabel ref // =
+    | IlBlt of BranchLabel ref // <
+    | IlBgt of BranchLabel ref // >
     | IlResolved of Instruction
 
 type MetaInstruction =
@@ -147,12 +151,16 @@ let private ainstr = function
                     | Brfalse i    -> Instruction.Create(OpCodes.Brfalse, i)
                     | Br i         -> Instruction.Create(OpCodes.Br, i)
                     | Beq i        -> Instruction.Create(OpCodes.Beq, i)
+                    | Blt i        -> Instruction.Create(OpCodes.Blt, i)
+                    | Bgt i        -> Instruction.Create(OpCodes.Bgt, i)
                     | Resolved i   -> i
 
 let private instr = function
                     | IlBrfalse i  -> brtoinstr i OpCodes.Brfalse
                     | IlBr i       -> brtoinstr i OpCodes.Br
                     | IlBeq i      -> brtoinstr i OpCodes.Beq
+                    | IlBgt i      -> brtoinstr i OpCodes.Bgt 
+                    | IlBlt i      -> brtoinstr i OpCodes.Blt 
                     | IlResolved i -> i
                     | IlAtom i     -> let r = ainstr !i
                                       i := Resolved(r)
@@ -374,6 +382,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let (defBranch, defLabels) = stmtToIlList stmt
                     // TODO reduce creation of new var if we want to just read variable
                     let (setCaseVar, _) = AssignStm(stdIdent name, expr) |> List.singleton |> stmtToIlList
+                    let omitCase: BranchLabel ref option ref = ref None
                     let casec =
                         [for (tocheck, stmt) in mainLabels do
                             let (caseBranch, caseLabels) = stmtToIlList stmt
@@ -381,16 +390,41 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                 (
                                  List.concat [
                                     for l in tocheck do
-                                        yield [IlAtom(ref(Ldloc(var)))]
+                                        let beginOfCase = IlAtom(ref(Ldloc(var)))
+                                        // for ranges we need to skip
+                                        match !omitCase with
+                                        | Some c ->
+                                            c := LazyLabel(beginOfCase)
+                                            omitCase := None
+                                        | _ -> ()
+                                        
+                                        yield [beginOfCase]
                                         match l with
-                                        | CaseExpr ce -> match ce with
-                                                         | ConstExpr ce ->
-                                                             yield (exprToIl ce ctx)
-                                                             yield [IlBeq(ref(LazyLabel(caseBranch.Head)))]
-                                                         | _ -> failwith "IE" 
+                                        | CaseExpr(ConstExpr(ce)) -> 
+                                             yield (exprToIl ce ctx)
+                                             yield [IlBeq(ref(LazyLabel(caseBranch.Head)))]
+                                        | CaseRange(ConstExpr(ce1), ConstExpr(ce2)) ->
+                                             // TODO check proper range
+                                             // lower range
+                                             let nextCase = ref ForwardLabel
+                                             omitCase := Some nextCase
+                                             yield (exprToIl ce1 ctx)
+                                             yield [IlBlt nextCase]
+                                             // higher range
+                                             yield [IlAtom(ref(Ldloc(var)))]
+                                             yield (exprToIl ce2 ctx)
+                                             yield [IlBgt nextCase]
+                                             yield [IlBr(ref(LazyLabel(caseBranch.Head)))]
                                         | _ -> failwith "IE";
                                    ], caseBranch @ [IlBr(lastEndOfStm)], caseLabels)
-                         yield (defBranch @ [IlBr(lastEndOfStm)], [], defLabels)
+                         let defaultCase = defBranch @ [IlBr(lastEndOfStm)]
+                         // for ranges we need to skip
+                         match !omitCase with
+                         | Some c ->
+                             c := LazyLabel(defaultCase.Head)
+                             omitCase := None
+                         | _ -> ()
+                         yield (defaultCase, [], defLabels)
                         ]
                     let (cases, casesbodies, labels) = List.unzip3 casec |||> (fun a b c -> (List.concat a, List.concat b, List.concat c))
                     (List.concat[

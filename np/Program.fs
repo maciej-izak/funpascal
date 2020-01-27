@@ -13,17 +13,11 @@ let main argv =
       """program wow;
       type
         TFoo = (f1, f2, f3);
-      var
-        x: TFoo;
-      label f1, f2;
       begin
-        x := f3;
-        case x of
-          f1: f2:WriteLn(1);
-          f2: begin f1:WriteLn(2); goto f2; end;
+        case f2 of
+          f2..f3: WriteLn(1);
         else
-          WriteLnS('f3 or unknown');
-          goto f1;
+          WriteLnS('f1 or unknown');
         end;
       end.
       """
