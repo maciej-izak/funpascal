@@ -383,6 +383,12 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     // TODO reduce creation of new var if we want to just read variable
                     let (setCaseVar, _) = AssignStm(stdIdent name, expr) |> List.singleton |> stmtToIlList
                     let omitCase: BranchLabel ref option ref = ref None
+                    let ensureOmitCase i =
+                        match !omitCase with
+                        | Some c ->
+                            c := LazyLabel i
+                            omitCase := None
+                        | _ -> ()
                     let casec =
                         [for (tocheck, stmt) in mainLabels do
                             let (caseBranch, caseLabels) = stmtToIlList stmt
@@ -392,11 +398,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                     for l in tocheck do
                                         let beginOfCase = IlAtom(ref(Ldloc(var)))
                                         // for ranges we need to skip
-                                        match !omitCase with
-                                        | Some c ->
-                                            c := LazyLabel(beginOfCase)
-                                            omitCase := None
-                                        | _ -> ()
+                                        ensureOmitCase beginOfCase
                                         
                                         yield [beginOfCase]
                                         match l with
@@ -418,13 +420,12 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                         | _ -> failwith "IE";
                                    ], caseBranch @ [IlBr(lastEndOfStm)], caseLabels)
                          let defaultCase = defBranch @ [IlBr(lastEndOfStm)]
-                         // for ranges we need to skip
-                         match !omitCase with
-                         | Some c ->
-                             c := LazyLabel(defaultCase.Head)
-                             omitCase := None
-                         | _ -> ()
                          yield (defaultCase, [], defLabels)
+                         // for ranges we need to skip
+                         match (!omitCase, List.tryHead defaultCase) with
+                         | None, _ -> ()
+                         | Some oc, Some i -> ensureOmitCase i
+                         | Some oc, None -> yield ([],[],[oc])
                         ]
                     let (cases, casesbodies, labels) = List.unzip3 casec |||> (fun a b c -> (List.concat a, List.concat b, List.concat c))
                     (List.concat[

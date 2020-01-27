@@ -2,6 +2,19 @@
 open np.BasicParsers
 open FParsec
 
+      // peephole opt needed for IL C
+      // """program wow;
+      // type
+      //   TFoo = (f1, f2, f3);
+      // begin
+      //   case f2 of
+      //     f2..f3: WriteLn(1);
+      //   //else
+      //   end;  WriteLnS('f1 or unknown');
+      //   //end;
+      // end.
+      // """
+
       // """program wow;
       // type
       //   TFoo = (f1, f2, f3);
