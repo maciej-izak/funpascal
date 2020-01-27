@@ -399,7 +399,6 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                         let beginOfCase = IlAtom(ref(Ldloc(var)))
                                         // for ranges we need to skip
                                         ensureOmitCase beginOfCase
-                                        
                                         yield [beginOfCase]
                                         match l with
                                         | CaseExpr(ConstExpr(ce)) -> 
@@ -433,6 +432,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         cases
                         casesbodies
                     ] , List.concat[labels ; [lastEndOfStm]])
+                | WhileStm (expr, stmt) -> ([],[])
                 | EmptyStm -> ([],[])
                 | _ -> ([],[])
         
