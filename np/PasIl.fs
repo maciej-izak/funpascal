@@ -35,6 +35,8 @@ and AtomIlInstruction =
     | NegInst
     | Ret
     | Ceq
+    | Clt
+    | Cgt
     | Nop
     | Ldstr of string
     | Brfalse of Instruction
@@ -146,6 +148,8 @@ let private ainstr = function
                     | Ret          -> Instruction.Create(OpCodes.Ret)
                     | Unknown      -> Instruction.Create(OpCodes.Nop)
                     | Ceq          -> Instruction.Create(OpCodes.Ceq)
+                    | Clt          -> Instruction.Create(OpCodes.Clt)
+                    | Cgt          -> Instruction.Create(OpCodes.Cgt)
                     | Nop          -> Instruction.Create(OpCodes.Nop)
                     | Ldstr s      -> Instruction.Create(OpCodes.Ldstr, s)
                     | Brfalse i    -> Instruction.Create(OpCodes.Brfalse, i)
@@ -177,21 +181,23 @@ let findSymbol (DIdent ident) (ctx: Ctx) =
     assert(ident.Length = 1)
     ident.Head |> function | PIName n -> ctx.symbols.[n]
 
+let ilResolve = ainstr >> IlResolved
+
 let findSymbolAndLoad ident (ctx: Ctx) =
     match findSymbol ident ctx with
-    | VariableSym vs -> vs |> Ldloc |> ainstr |> IlResolved |> List.singleton
-    | EnumValueSym evs -> Ldc_I4(evs) |> ainstr |> IlResolved |> List.singleton
+    | VariableSym vs -> vs |> Ldloc |> ilResolve |> List.singleton
+    | EnumValueSym evs -> Ldc_I4(evs) |> ilResolve |> List.singleton
 
 let valueToIl v ctx = 
     match v with
-    | VInteger i -> Ldc_I4(i) |> ainstr |> IlResolved |> List.singleton
+    | VInteger i -> Ldc_I4(i) |> ilResolve |> List.singleton
     | VIdent i -> findSymbolAndLoad i ctx
-    | VString s -> Ldstr(s) |> ainstr |> IlResolved |> List.singleton
-    | _ -> Unknown |> ainstr |> IlResolved |> List.singleton 
+    | VString s -> Ldstr(s) |> ilResolve |> List.singleton
+    | _ -> Unknown |> ilResolve |> List.singleton 
 
 let rec exprToIl exprEl ctx =
-    let inline add2OpIl a b i = exprToIl a ctx @ exprToIl b ctx @ [i |> ainstr |> IlResolved]
-    let inline add1OpIl a i = exprToIl a ctx @ [i |> ainstr |> IlResolved]
+    let inline add2OpIl a b i = exprToIl a ctx @ exprToIl b ctx @ [ilResolve i]
+    let inline add1OpIl a i = exprToIl a ctx @ [ilResolve i]
     match exprEl with
     | Value v -> valueToIl v ctx
     | Add(a, b) -> add2OpIl a b AddInst
@@ -208,6 +214,11 @@ let rec exprToIl exprEl ctx =
     | Not(a) -> add1OpIl a NotInst
     | UnaryMinus(a) -> add1OpIl a NegInst
     | Equal(a, b) -> add2OpIl a b Ceq
+    | NotEqual(a, b) -> add2OpIl a b Ceq @ [ilResolve (Ldc_I4(0)); ilResolve Ceq]
+    | StrictlyLessThan(a, b) -> add2OpIl a b Clt
+    | StrictlyGreaterThan(a, b) -> add2OpIl a b Cgt
+    | LessThanOrEqual(a, b) -> add2OpIl a b Cgt @ [ilResolve (Ldc_I4(0)); ilResolve Ceq]
+    | GreaterThanOrEqual(a, b) -> add2OpIl a b Clt @ [ilResolve (Ldc_I4(0)); ilResolve Ceq]
     | _ -> []
 
 let callParamToIl ctx cp = 
