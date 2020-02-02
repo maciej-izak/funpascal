@@ -177,7 +177,7 @@ let private emit (ilg : Cil.ILProcessor) inst =
     | InstructionSingleton is -> instr is |> appendIfNotNull
     | InstructionList p -> p |> List.iter (instr >> appendIfNotNull) 
 
-let findSymbol (DIdent ident) (ctx: Ctx) =
+let findSymbol (ctx: Ctx) (DIdent ident) =
     assert(ident.Length = 1)
     ident.Head |> function | PIName n -> ctx.symbols.[n]
 
@@ -368,12 +368,13 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let rec stmtToIl (ctx: Ctx) sysLabels (s: Statement): (MetaInstruction * BranchLabel ref list) =
         let stmtToIlList = stmtListToIlList ctx
         let exprToIl = exprToIl ctx
+        let getVar = findSymbol ctx >> function | VariableSym vs -> vs | _ -> failwith "IE"  
         let (instructions, newSysLabels) =
                 match s with
                 | CallStm(CallExpr(ident, cp)) ->
                     ([for p in cp do yield! callParamToIl ctx p; findFunction(ident)], [])
                 | AssignStm(ident, expr) -> 
-                    let var = findSymbol ident ctx |> function | VariableSym vs -> vs | _ -> failwith "IE"  
+                    let var = getVar ident
                     ([yield! exprToIl expr ; Stloc(var) |> ilResolve], [])
                 | IfStm(expr, tb, fb) ->
                     // if logic
@@ -482,6 +483,9 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                                 | Some h -> h
                                                 | _ -> condition.[0])))
                     ],[])
+                | ForStm (ident, initExpr, delta, finiExpr, stmt) ->
+                    let var = getVar ident
+                    ([],[])
                 | EmptyStm -> ([],[])
                 | _ -> ([],[])
         // TODO fix peepholes about jump to next opcode
