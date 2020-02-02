@@ -180,23 +180,23 @@ let findSymbol (DIdent ident) (ctx: Ctx) =
 
 let ilResolve = ainstr >> IlResolved
 
-let findSymbolAndLoad ident (ctx: Ctx) =
+let findSymbolAndLoad (ctx: Ctx) ident =
     match findSymbol ident ctx with
     | VariableSym vs -> vs |> Ldloc |> ilResolve |> List.singleton
     | EnumValueSym evs -> Ldc_I4(evs) |> ilResolve |> List.singleton
 
-let valueToIl v ctx = 
+let valueToIl ctx v = 
     match v with
     | VInteger i -> Ldc_I4(i) |> ilResolve |> List.singleton
-    | VIdent i -> findSymbolAndLoad i ctx
+    | VIdent i -> findSymbolAndLoad ctx i
     | VString s -> Ldstr(s) |> ilResolve |> List.singleton
     | _ -> Unknown |> ilResolve |> List.singleton 
 
-let rec exprToIl exprEl ctx =
-    let inline add2OpIl a b i = [yield! exprToIl a ctx; yield! exprToIl b ctx; yield ilResolve i]
-    let inline add1OpIl a i = [yield! exprToIl a ctx; yield ilResolve i]
+let rec exprToIl ctx exprEl =
+    let inline add2OpIl a b i = [yield! exprToIl ctx a; yield! exprToIl ctx b; yield ilResolve i]
+    let inline add1OpIl a i = [yield! exprToIl ctx a; yield ilResolve i]
     match exprEl with
-    | Value v -> [yield! valueToIl v ctx]
+    | Value v -> [yield! valueToIl ctx v]
     | Add(a, b) -> add2OpIl a b AddInst
     | Multiply(a, b) -> add2OpIl a b MultiplyInst
     | Minus(a, b) -> add2OpIl a b MinusInst
@@ -220,8 +220,8 @@ let rec exprToIl exprEl ctx =
 
 let callParamToIl ctx cp = 
     match cp with
-    | ParamExpr expr -> exprToIl expr ctx
-    | ParamIdent id -> findSymbolAndLoad id ctx
+    | ParamExpr expr -> exprToIl ctx expr
+    | ParamIdent id -> findSymbolAndLoad ctx id
 
 // type internal Marker = interface end
 // let t = typeof<Marker>.DeclaringType
@@ -343,22 +343,23 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 | PIName n when n = "WriteLn" -> writeLineMethod
                 | PIName n when n = "WriteLnS" -> writeLineSMethod
                 | _ -> null
-        Call(f) |> ainstr |> IlResolved
+        Call(f) |> ilResolve
             
     let rec stmtToIl (ctx: Ctx) sysLabels (s: Statement): (MetaInstruction * BranchLabel ref list) =
         let stmtToIlList = stmtListToIlList ctx
+        let exprToIl = exprToIl ctx
         let (instructions, newSysLabels) =
                 match s with
                 | CallStm(CallExpr(ident, cp)) ->
                     ([for p in cp do yield! callParamToIl ctx p; findFunction(ident)], [])
                 | AssignStm(ident, expr) -> 
                     let var = findSymbol ident ctx |> function | VariableSym vs -> vs | _ -> failwith "IE"  
-                    ([yield! exprToIl expr ctx ; Stloc(var) |> ainstr |> IlResolved], [])
+                    ([yield! exprToIl expr ; Stloc(var) |> ilResolve], [])
                 | IfStm(expr, tb, fb) ->
                     // if logic
                     let firstEnfOfStm = ref ForwardLabel
                     let lastEndOfStm = ref ForwardLabel
-                    let condition = exprToIl expr ctx
+                    let condition = exprToIl expr
                     let (trueBranch, trueLabels) = stmtToIlList tb
                     let (falseBranch, falseLabels) = stmtToIlList fb
                     let hasFalseBranch = falseBranch.Length > 0
@@ -402,18 +403,18 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                         yield beginOfCase
                                         match l with
                                         | CaseExpr(ConstExpr(ce)) -> 
-                                             yield! (exprToIl ce ctx)
+                                             yield! (exprToIl ce)
                                              yield IlBeq(ref(LazyLabel(caseBranch.[0])))
                                         | CaseRange(ConstExpr(ce1), ConstExpr(ce2)) ->
                                              // TODO check proper range
                                              // lower range
                                              let nextCase = ref ForwardLabel
                                              omitCase := Some nextCase
-                                             yield! (exprToIl ce1 ctx)
+                                             yield! (exprToIl ce1)
                                              yield IlBlt nextCase
                                              // higher range
                                              yield IlAtom(ref(Ldloc(var)))
-                                             yield! (exprToIl ce2 ctx)
+                                             yield! (exprToIl ce2)
                                              yield IlBgt nextCase
                                              yield IlBr(ref(LazyLabel(caseBranch.[0])))
                                         | _ -> failwith "IE";
@@ -434,10 +435,11 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                          yield! casesbodies
                         ]
                      , [yield! labels ; yield lastEndOfStm])
-                | WhileStm (expr, stmt) -> ([],[])
+                | WhileStm (expr, stmt) ->
+                    let condition = exprToIl expr
+                    ([],[])
                 | EmptyStm -> ([],[])
                 | _ -> ([],[])
-        
         // TODO fix peepholes about jump to next opcode
         ctx.resolveSysLabels (List.tryHead instructions) sysLabels
         (instructions |> InstructionList, newSysLabels)
