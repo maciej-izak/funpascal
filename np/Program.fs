@@ -13,11 +13,15 @@ let main argv =
       """program wow;
       type
         TFoo = (f1, f2, f3);
+      var i: Integer;
       begin
-        case f2 of
-          f2..f3: WriteLn(1);
-        else
-          WriteLnS('f1 or unknown');
+        while i < 9 do begin
+          case f2 of
+            f2..f3: WriteLn(1);
+          else
+            WriteLnS('f1 or unknown');
+          end;
+          i := i + 1
         end;
       end.
       """

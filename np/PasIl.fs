@@ -49,6 +49,7 @@ and AtomIlInstruction =
 and IlInstruction =
     | IlAtom of AtomIlInstruction ref
     | IlBrfalse of BranchLabel ref
+    | IlBrtrue of BranchLabel ref
     | IlBr of BranchLabel ref
     | IlBeq of BranchLabel ref // =
     | IlBlt of BranchLabel ref // <
@@ -108,6 +109,7 @@ let brtoinstr l opc =
            | LazyLabel l -> match l with
                             | IlResolved i -> i
                             | IlBrfalse i -> bril !i
+                            | IlBrtrue i -> bril !i
                             | IlBr i -> bril !i
                             | IlBeq i -> bril !i
                             | _ -> failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
@@ -158,6 +160,7 @@ let metaToIlList = function
 
 let private instr = function
                     | IlBrfalse i  -> brtoinstr i OpCodes.Brfalse
+                    | IlBrtrue i   -> brtoinstr i OpCodes.Brtrue
                     | IlBr i       -> brtoinstr i OpCodes.Br
                     | IlBeq i      -> brtoinstr i OpCodes.Beq
                     | IlBgt i      -> brtoinstr i OpCodes.Bgt 
@@ -193,10 +196,10 @@ let valueToIl ctx v =
     | _ -> Unknown |> ilResolve |> List.singleton 
 
 let rec exprToIl ctx exprEl =
-    let inline add2OpIl a b i = [yield! exprToIl ctx a; yield! exprToIl ctx b; yield ilResolve i]
-    let inline add1OpIl a i = [yield! exprToIl ctx a; yield ilResolve i]
+    let inline add2OpIl a b i = [|yield! exprToIl ctx a; yield! exprToIl ctx b; yield ilResolve i|]
+    let inline add1OpIl a i = [|yield! exprToIl ctx a; yield ilResolve i|]
     match exprEl with
-    | Value v -> [yield! valueToIl ctx v]
+    | Value v -> [|yield! valueToIl ctx v|]
     | Add(a, b) -> add2OpIl a b AddInst
     | Multiply(a, b) -> add2OpIl a b MultiplyInst
     | Minus(a, b) -> add2OpIl a b MinusInst
@@ -211,16 +214,16 @@ let rec exprToIl ctx exprEl =
     | Not(a) -> add1OpIl a NotInst
     | UnaryMinus(a) -> add1OpIl a NegInst
     | Equal(a, b) -> add2OpIl a b Ceq
-    | NotEqual(a, b) -> [yield! add2OpIl a b Ceq; ilResolve (Ldc_I4(0)); ilResolve Ceq]
+    | NotEqual(a, b) -> [|yield! add2OpIl a b Ceq; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
     | StrictlyLessThan(a, b) -> add2OpIl a b Clt
     | StrictlyGreaterThan(a, b) -> add2OpIl a b Cgt
-    | LessThanOrEqual(a, b) -> [yield! add2OpIl a b Cgt ; ilResolve (Ldc_I4(0)); ilResolve Ceq]
-    | GreaterThanOrEqual(a, b) -> [yield! add2OpIl a b Clt; ilResolve (Ldc_I4(0)); ilResolve Ceq]
-    | _ -> []
+    | LessThanOrEqual(a, b) -> [|yield! add2OpIl a b Cgt ; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
+    | GreaterThanOrEqual(a, b) -> [|yield! add2OpIl a b Clt; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
+    | _ -> [||]
 
 let callParamToIl ctx cp = 
     match cp with
-    | ParamExpr expr -> exprToIl ctx expr
+    | ParamExpr expr -> List.ofArray (exprToIl ctx expr)
     | ParamIdent id -> findSymbolAndLoad ctx id
 
 // type internal Marker = interface end
@@ -328,6 +331,23 @@ let rec typeIdToStr = function
 
 let stdIdent = PINameCreate >> List.singleton >> DIdent
 let stdType  = stdIdent >> TIdIdent
+
+let (|IlNotEqual|_|) (items: IlInstruction[]) =
+    if items.Length < 3 then
+        None
+    else
+        let last3 = items.[items.Length-4..]
+                    (*
+    | NotEqual(a, b) -> [|yield! add2OpIl a b Ceq; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
+    | StrictlyLessThan(a, b) -> add2OpIl a b Clt
+    | StrictlyGreaterThan(a, b) -> add2OpIl a b Cgt
+    | LessThanOrEqual(a, b) -> [|yield! add2OpIl a b Cgt ; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
+    | GreaterThanOrEqual(a, b) -> [|yield! add2OpIl a b Clt; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
+                    *)
+        match last3 with
+        | [|IlResolved(i1);IlResolved(i2);IlResolved(i3)|]
+            when i1.OpCode = OpCodes.Ceq && i2.OpCode = OpCodes.Ldc_I4 && i3.OpCode = OpCodes.Ceq -> Some(IlNotEqual) 
+        | _ -> None
 
 type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let mb = moduleBuilder
@@ -437,7 +457,19 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                      , [yield! labels ; yield lastEndOfStm])
                 | WhileStm (expr, stmt) ->
                     let condition = exprToIl expr
-                    ([],[])
+                    let conditionLabel = ref (LazyLabel(condition.[0]))
+                    let (whileBranch, whileLabels) = stmtToIlList stmt
+                    ctx.resolveSysLabels (Array.tryHead condition) whileLabels
+                    ([
+                        yield IlBr(conditionLabel)
+                        yield! whileBranch
+                        yield! condition
+                        yield IlBrtrue(ref (LazyLabel
+                                                (match List.tryHead whileBranch with
+                                                | Some h -> h
+                                                | _ -> condition.[0])))
+                          
+                    ],[])
                 | EmptyStm -> ([],[])
                 | _ -> ([],[])
         // TODO fix peepholes about jump to next opcode
