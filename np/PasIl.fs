@@ -60,15 +60,6 @@ type MetaInstruction =
     | InstructionSingleton of IlInstruction
     | InstructionList of IlInstruction list
 
-type SysLabelRec = {
-        branch: BranchLabel ref
-        mutable level: int
-    }
-
-type VarLabelRec = {
-        name: string
-    }
-
 type Symbol =
     | VariableSym of VariableDefinition
     //| LabelSym
@@ -196,10 +187,10 @@ let valueToIl v ctx =
     | _ -> Unknown |> ilResolve |> List.singleton 
 
 let rec exprToIl exprEl ctx =
-    let inline add2OpIl a b i = exprToIl a ctx @ exprToIl b ctx @ [ilResolve i]
-    let inline add1OpIl a i = exprToIl a ctx @ [ilResolve i]
+    let inline add2OpIl a b i = [yield! exprToIl a ctx; yield! exprToIl b ctx; yield ilResolve i]
+    let inline add1OpIl a i = [yield! exprToIl a ctx; yield ilResolve i]
     match exprEl with
-    | Value v -> valueToIl v ctx
+    | Value v -> [yield! valueToIl v ctx]
     | Add(a, b) -> add2OpIl a b AddInst
     | Multiply(a, b) -> add2OpIl a b MultiplyInst
     | Minus(a, b) -> add2OpIl a b MinusInst
@@ -214,11 +205,11 @@ let rec exprToIl exprEl ctx =
     | Not(a) -> add1OpIl a NotInst
     | UnaryMinus(a) -> add1OpIl a NegInst
     | Equal(a, b) -> add2OpIl a b Ceq
-    | NotEqual(a, b) -> add2OpIl a b Ceq @ [ilResolve (Ldc_I4(0)); ilResolve Ceq]
+    | NotEqual(a, b) -> [yield! add2OpIl a b Ceq; ilResolve (Ldc_I4(0)); ilResolve Ceq]
     | StrictlyLessThan(a, b) -> add2OpIl a b Clt
     | StrictlyGreaterThan(a, b) -> add2OpIl a b Cgt
-    | LessThanOrEqual(a, b) -> add2OpIl a b Cgt @ [ilResolve (Ldc_I4(0)); ilResolve Ceq]
-    | GreaterThanOrEqual(a, b) -> add2OpIl a b Clt @ [ilResolve (Ldc_I4(0)); ilResolve Ceq]
+    | LessThanOrEqual(a, b) -> [yield! add2OpIl a b Cgt ; ilResolve (Ldc_I4(0)); ilResolve Ceq]
+    | GreaterThanOrEqual(a, b) -> [yield! add2OpIl a b Clt; ilResolve (Ldc_I4(0)); ilResolve Ceq]
     | _ -> []
 
 let callParamToIl ctx cp = 
@@ -346,28 +337,31 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 | PIName n when n = "WriteLn" -> writeLineMethod
                 | PIName n when n = "WriteLnS" -> writeLineSMethod
                 | _ -> null
-        [Call(f) |> ainstr |> IlResolved]
+        Call(f) |> ainstr |> IlResolved
             
-    let emptyLabelRec = Unchecked.defaultof<SysLabelRec>
-    let rec stmtToIl (ctx: Ctx) sysLabels s =
+    let rec stmtToIl (ctx: Ctx) sysLabels (s: Statement): (MetaInstruction * BranchLabel ref list) =
         // for ifs
         let stmtToIlList sl =
-            let foldStmt s stmt =
-                let sl = stmtToIl ctx (snd s) stmt
-                ((fst sl)::(fst s), snd sl)
             let metaToIlList = function 
-                               | InstructionList l -> l
-                               | InstructionSingleton s -> [s]
-                               | _ -> []
-            List.fold foldStmt ([],[]) sl |> fun (i,l) -> (List.rev i |> List.collect metaToIlList, l) 
+                   | InstructionList l -> l
+                   | InstructionSingleton s -> [s]
+                   | _ -> []
+            let lastSysLabels = ref []
+            let instructions = [
+                  for s in sl do
+                    let (instructions, sysLabels) = stmtToIl ctx !lastSysLabels s
+                    lastSysLabels := sysLabels
+                    yield! metaToIlList instructions
+                ]
+            (instructions, !lastSysLabels)
         
         let (instructions, newSysLabels) =
                 match s with
                 | CallStm(CallExpr(ident, cp)) ->
-                    ([for p in cp do callParamToIl ctx p] @ [findFunction(ident)] |> List.concat, [])
+                    ([for p in cp do yield! callParamToIl ctx p; findFunction(ident)], [])
                 | AssignStm(ident, expr) -> 
                     let var = findSymbol ident ctx |> function | VariableSym vs -> vs | _ -> failwith "IE"  
-                    (exprToIl expr ctx @ [Stloc(var) |> ainstr |> IlResolved], [])
+                    ([yield! exprToIl expr ctx ; Stloc(var) |> ainstr |> IlResolved], [])
                 | IfStm(expr, tb, fb) ->
                     // if logic
                     let firstEnfOfStm = ref ForwardLabel
@@ -377,12 +371,15 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let (falseBranch, falseLabels) = stmtToIlList fb
                     let hasFalseBranch = falseBranch.Length > 0
                     // TODO rethink LazyLabel here
-                    let checkCondition = [IlBrfalse(if hasFalseBranch then ref (LazyLabel(falseBranch.Head)) else firstEnfOfStm)]
-                    (List.concat [
-                        condition
-                        checkCondition
-                        trueBranch @ [IlBr(if hasFalseBranch then firstEnfOfStm else lastEndOfStm)]
-                        if hasFalseBranch then falseBranch @ [IlBr(lastEndOfStm)] else []
+                    let checkCondition = [|IlBrfalse(if hasFalseBranch then ref (LazyLabel(falseBranch.[0])) else firstEnfOfStm)|]
+                    ([
+                        yield! condition
+                        yield! checkCondition
+                        yield! trueBranch
+                        yield IlBr(if hasFalseBranch then firstEnfOfStm else lastEndOfStm)
+                        if hasFalseBranch then
+                            yield! falseBranch
+                            yield IlBr(lastEndOfStm)
                     ], List.concat [[firstEnfOfStm;lastEndOfStm];trueLabels;falseLabels])
                 | LabelStm l -> ([],[ctx.labels.[l]])
                 | GotoStm s -> ([IlBr(ctx.labels.[s])],[]) // will do LazyLabel
@@ -405,31 +402,31 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                             let (caseBranch, caseLabels) = stmtToIlList stmt
                             yield
                                 (
-                                 List.concat [
+                                 [
                                     for l in tocheck do
                                         let beginOfCase = IlAtom(ref(Ldloc(var)))
                                         // for ranges we need to skip
                                         ensureOmitCase beginOfCase
-                                        yield [beginOfCase]
+                                        yield beginOfCase
                                         match l with
                                         | CaseExpr(ConstExpr(ce)) -> 
-                                             yield (exprToIl ce ctx)
-                                             yield [IlBeq(ref(LazyLabel(caseBranch.Head)))]
+                                             yield! (exprToIl ce ctx)
+                                             yield IlBeq(ref(LazyLabel(caseBranch.[0])))
                                         | CaseRange(ConstExpr(ce1), ConstExpr(ce2)) ->
                                              // TODO check proper range
                                              // lower range
                                              let nextCase = ref ForwardLabel
                                              omitCase := Some nextCase
-                                             yield (exprToIl ce1 ctx)
-                                             yield [IlBlt nextCase]
+                                             yield! (exprToIl ce1 ctx)
+                                             yield IlBlt nextCase
                                              // higher range
-                                             yield [IlAtom(ref(Ldloc(var)))]
-                                             yield (exprToIl ce2 ctx)
-                                             yield [IlBgt nextCase]
-                                             yield [IlBr(ref(LazyLabel(caseBranch.Head)))]
+                                             yield IlAtom(ref(Ldloc(var)))
+                                             yield! (exprToIl ce2 ctx)
+                                             yield IlBgt nextCase
+                                             yield IlBr(ref(LazyLabel(caseBranch.[0])))
                                         | _ -> failwith "IE";
-                                   ], caseBranch @ [IlBr(lastEndOfStm)], caseLabels)
-                         let defaultCase = defBranch @ [IlBr(lastEndOfStm)]
+                                    ], [yield! caseBranch ; IlBr(lastEndOfStm)], caseLabels)
+                         let defaultCase = [yield! defBranch; IlBr(lastEndOfStm)]
                          yield (defaultCase, [], defLabels)
                          // for ranges we need to skip
                          match (!omitCase, List.tryHead defaultCase) with
@@ -438,11 +435,13 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                          | Some oc, None -> yield ([],[],[oc])
                         ]
                     let (cases, casesbodies, labels) = List.unzip3 casec |||> (fun a b c -> (List.concat a, List.concat b, List.concat c))
-                    (List.concat[
-                        setCaseVar
-                        cases
-                        casesbodies
-                    ] , List.concat[labels ; [lastEndOfStm]])
+                    (
+                        [
+                         yield! setCaseVar
+                         yield! cases
+                         yield! casesbodies
+                        ]
+                     , [yield! labels ; yield lastEndOfStm])
                 | WhileStm (expr, stmt) -> ([],[])
                 | EmptyStm -> ([],[])
                 | _ -> ([],[])
