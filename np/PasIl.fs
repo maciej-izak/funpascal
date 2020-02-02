@@ -468,7 +468,19 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                                 (match List.tryHead whileBranch with
                                                 | Some h -> h
                                                 | _ -> condition.[0])))
-                          
+                    ],[])
+                | RepeatStm (stmt, expr) ->
+                    let condition = exprToIl expr
+                    // let conditionLabel = ref (LazyLabel(condition.[0]))
+                    let (repeatBranch, whileLabels) = stmtToIlList stmt
+                    ctx.resolveSysLabels (Array.tryHead condition) whileLabels
+                    ([
+                        yield! repeatBranch
+                        yield! condition
+                        yield IlBrfalse(ref (LazyLabel
+                                                (match List.tryHead repeatBranch with
+                                                | Some h -> h
+                                                | _ -> condition.[0])))
                     ],[])
                 | EmptyStm -> ([],[])
                 | _ -> ([],[])

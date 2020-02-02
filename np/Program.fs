@@ -23,6 +23,8 @@ let main argv =
           end;
           i := i + 1
         end;
+        i := 0;
+        repeat WriteLnS(':D'); i := i + 2 until i >= 9
       end.
       """
     |> printfn "%A"
