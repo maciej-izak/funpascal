@@ -150,6 +150,12 @@ let private ainstr = function
                     | Bgt i        -> Instruction.Create(OpCodes.Bgt, i)
                     | Resolved i   -> i
 
+let metaToIlList = function 
+       | InstructionList l -> l
+       | InstructionSingleton s -> [s]
+       // may be extended for inline variables in the future
+       | _ -> failwith "IE not supported metaToIlList"
+
 let private instr = function
                     | IlBrfalse i  -> brtoinstr i OpCodes.Brfalse
                     | IlBr i       -> brtoinstr i OpCodes.Br
@@ -340,21 +346,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         Call(f) |> ainstr |> IlResolved
             
     let rec stmtToIl (ctx: Ctx) sysLabels (s: Statement): (MetaInstruction * BranchLabel ref list) =
-        // for ifs
-        let stmtToIlList sl =
-            let metaToIlList = function 
-                   | InstructionList l -> l
-                   | InstructionSingleton s -> [s]
-                   | _ -> []
-            let lastSysLabels = ref []
-            let instructions = [
-                  for s in sl do
-                    let (instructions, sysLabels) = stmtToIl ctx !lastSysLabels s
-                    lastSysLabels := sysLabels
-                    yield! metaToIlList instructions
-                ]
-            (instructions, !lastSysLabels)
-        
+        let stmtToIlList = stmtListToIlList ctx
         let (instructions, newSysLabels) =
                 match s with
                 | CallStm(CallExpr(ident, cp)) ->
@@ -450,18 +442,22 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         ctx.resolveSysLabels (List.tryHead instructions) sysLabels
         (instructions |> InstructionList, newSysLabels)
 
-    let stmtListToIl sl (ctx: Ctx) =
-        for v in ctx.variables.Values do ctx.res.Add(DeclareLocal(v))
+    and stmtListToIlList (ctx: Ctx) sl: (IlInstruction list * BranchLabel ref list) =
         let lastSysLabels = ref []
-        let resSeq = seq {
-            for s in sl do
+        let instructions = [
+              for s in sl do
                 let (instructions, sysLabels) = stmtToIl ctx !lastSysLabels s
                 lastSysLabels := sysLabels
-                yield instructions
-        }
-        for i in resSeq do ctx.res.Add i
-        let ret = Ret |> ainstr |> IlResolved
-        ctx.resolveSysLabels (Some ret) !lastSysLabels
+                yield! metaToIlList instructions
+            ]
+        (instructions, !lastSysLabels)
+    
+    let stmtListToIl sl (ctx: Ctx) =
+        for v in ctx.variables.Values do ctx.res.Add(DeclareLocal(v))
+        let (instr, labels) = stmtListToIlList ctx sl
+        ctx.res.Add(instr |> InstructionList)
+        let ret = Ret |> ilResolve
+        ctx.resolveSysLabels (Some ret) labels
         ctx.res.Add(ret |> InstructionSingleton)
         ctx.res
 
