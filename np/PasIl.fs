@@ -44,6 +44,8 @@ and AtomIlInstruction =
     | Beq of Instruction
     | Blt of Instruction
     | Bgt of Instruction
+    | Ble of Instruction
+    | Bge of Instruction
     | Resolved of Instruction
 
 and IlInstruction =
@@ -54,6 +56,8 @@ and IlInstruction =
     | IlBeq of BranchLabel ref // =
     | IlBlt of BranchLabel ref // <
     | IlBgt of BranchLabel ref // >
+    | IlBle of BranchLabel ref // <=
+    | IlBge of BranchLabel ref // >=
     | IlResolved of Instruction
 
 type MetaInstruction =
@@ -150,6 +154,8 @@ let private ainstr = function
                     | Beq i        -> Instruction.Create(OpCodes.Beq, i)
                     | Blt i        -> Instruction.Create(OpCodes.Blt, i)
                     | Bgt i        -> Instruction.Create(OpCodes.Bgt, i)
+                    | Ble i        -> Instruction.Create(OpCodes.Ble, i)
+                    | Bge i        -> Instruction.Create(OpCodes.Bge, i)
                     | Resolved i   -> i
 
 let metaToIlList = function 
@@ -165,6 +171,8 @@ let private instr = function
                     | IlBeq i      -> brtoinstr i OpCodes.Beq
                     | IlBgt i      -> brtoinstr i OpCodes.Bgt 
                     | IlBlt i      -> brtoinstr i OpCodes.Blt 
+                    | IlBge i      -> brtoinstr i OpCodes.Bge 
+                    | IlBle i      -> brtoinstr i OpCodes.Ble 
                     | IlResolved i -> i
                     | IlAtom i     -> let r = ainstr !i
                                       i := Resolved(r)
@@ -184,7 +192,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
 let ilResolve = ainstr >> IlResolved
 
 let findSymbolAndLoad (ctx: Ctx) ident =
-    match findSymbol ident ctx with
+    match findSymbol ctx ident with
     | VariableSym vs -> vs |> Ldloc |> ilResolve |> List.singleton
     | EnumValueSym evs -> Ldc_I4(evs) |> ilResolve |> List.singleton
 
@@ -484,8 +492,34 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                                 | _ -> condition.[0])))
                     ],[])
                 | ForStm (ident, initExpr, delta, finiExpr, stmt) ->
+                    let exprLabel = ref ForwardLabel
                     let var = getVar ident
-                    ([],[])
+                    let (name, varFinal) = ctx.EnsureVariable()
+                    let (loopInit, _) = AssignStm(ident, initExpr) |> List.singleton |> stmtToIlList
+                    let (loopFinal, _) = AssignStm(stdIdent name, finiExpr) |> List.singleton |> stmtToIlList
+                    let condition = [
+                        Ldloc var |> ilResolve
+                        Ldloc varFinal |> ilResolve;
+                        match delta with
+                                    | 1 -> IlBle exprLabel
+                                    | -1 -> IlBge exprLabel
+                                    | _ -> failwith "IE"]
+                    let conditionLabel = ref <| LazyLabel(condition.Head)
+                    let (incLoopVar, _) = AssignStm(ident, Add(Value(VIdent(ident)), Value(VInteger delta))) |> List.singleton |> stmtToIlList
+                    let (forBranch, forLabels) = stmtToIlList stmt
+                    exprLabel := (LazyLabel
+                                                (match List.tryHead forBranch with
+                                                | Some h -> h
+                                                | _ -> condition.[0]))
+                    ctx.resolveSysLabels (List.tryHead condition) forLabels
+                    ([
+                        yield! loopInit
+                        yield! loopFinal
+                        yield IlBr(conditionLabel)
+                        yield! forBranch
+                        yield! incLoopVar
+                        yield! condition
+                    ],[])
                 | EmptyStm -> ([],[])
                 | _ -> ([],[])
         // TODO fix peepholes about jump to next opcode
