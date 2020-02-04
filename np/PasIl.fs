@@ -453,7 +453,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                          // for ranges we need to skip
                          match (!omitCase, List.tryHead defaultCase) with
                          | None, _ -> ()
-                         | Some oc, Some i -> ensureOmitCase i
+                         | Some _, Some i -> ensureOmitCase i
                          | Some oc, None -> yield ([],[],[oc])
                         ]
                     let (cases, casesbodies, labels) = List.unzip3 casec |||> (fun a b c -> (List.concat a, List.concat b, List.concat c))
@@ -496,6 +496,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let var = getVar ident
                     let (name, varFinal) = ctx.EnsureVariable()
                     let (loopInit, _) = AssignStm(ident, initExpr) |> List.singleton |> stmtToIlList
+                    // TODO optimization for simple values (dont store in var)
                     let (loopFinal, _) = AssignStm(stdIdent name, finiExpr) |> List.singleton |> stmtToIlList
                     let condition = [
                         Ldloc var |> ilResolve
@@ -510,7 +511,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     exprLabel := (LazyLabel
                                                 (match List.tryHead forBranch with
                                                 | Some h -> h
-                                                | _ -> condition.[0]))
+                                                | _ -> condition.Head))
                     ctx.resolveSysLabels (List.tryHead condition) forLabels
                     ([
                         yield! loopInit
@@ -520,6 +521,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         yield! incLoopVar
                         yield! condition
                     ],[])
+                | WithStm (ident, stmt) -> ([],[])
                 | EmptyStm -> ([],[])
                 | _ -> ([],[])
         // TODO fix peepholes about jump to next opcode

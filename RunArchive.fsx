@@ -2,6 +2,26 @@
 open np.BasicParsers
 open FParsec
 
+      // for optimizations ?
+      // type
+      //   TFoo = (f1, f2, f3);
+      // var i: Integer;
+      // begin
+      //   for i := 0 to 3 do
+      //     WriteLn(i);
+      //   for i := 3 downto 0 do
+      //     WriteLn(i);
+      //   while i < 9 do begin
+      //     case f2 of
+      //       f2..f3: WriteLn(1);
+      //     else
+      //       WriteLnS('f1 or unknown');
+      //     end;
+      //     i := i + 1
+      //   end;
+      //   i := 0;
+      //   repeat WriteLnS(':D'); i := i + 2 until i >= 9
+
       // peephole opt needed for IL C
       // """program wow;
       // type
