@@ -552,6 +552,14 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         defTypes.Add(stdType "Integer", mb.TypeSystem.Int32)
         defTypes.Add(stdType "Byte", mb.TypeSystem.Byte)
         defTypes.Add(stdType "Boolean", mb.TypeSystem.Boolean)
+        let df = TypeDefinition("foo", "foo", TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout)
+        df.ClassSize <- 0
+        let vt = mb.ImportReference(typeof<ValueType>)
+        df.BaseType <- vt
+        df.PackingSize <- 1s
+        FieldDefinition("X", FieldAttributes.Public, mb.TypeSystem.SByte)
+        |> df.Fields.Add
+        mb.Types.Add(df)
     
     let findType =
         typeIdToStr
