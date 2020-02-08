@@ -70,7 +70,7 @@ let private compileModule (ProgramAst(name, block)) = //, methods: Method list) 
         let methodName = "Main"
         MethodDefinition(methodName, methodAttributes, moduleBuilder.TypeSystem.Void)
     let ilBuilder = IlBuilder(moduleBuilder)
-    let bb = ilBuilder.BuildIl block 
+    let bb = ilBuilder.BuildIl(block, moduleName) 
     printfn "bb = %A" bb
     let mainBlock = compileBlock methodBuilder typeBuilder bb
     mainBlock.Body.InitLocals <- true

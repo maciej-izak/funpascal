@@ -547,24 +547,18 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         ctx.res.Add(ret |> InstructionSingleton)
         ctx.res
 
+    let vt = mb.ImportReference(typeof<ValueType>)
+    
     let defTypes = Dictionary<TypeIdentifier, TypeReference>()
     do
         defTypes.Add(stdType "Integer", mb.TypeSystem.Int32)
         defTypes.Add(stdType "Byte", mb.TypeSystem.Byte)
         defTypes.Add(stdType "Boolean", mb.TypeSystem.Boolean)
-        let df = TypeDefinition("foo", "foo", TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout)
-        df.ClassSize <- 0
-        let vt = mb.ImportReference(typeof<ValueType>)
-        df.BaseType <- vt
-        df.PackingSize <- 1s
-        FieldDefinition("X", FieldAttributes.Public, mb.TypeSystem.SByte)
-        |> df.Fields.Add
-        mb.Types.Add(df)
     
     let findType =
         typeIdToStr
 
-    member _.BuildIl(block: Block) =
+    member _.BuildIl(block: Block, ns) =
         let variables = Dictionary<_,_>()
         let labelsMap = Dictionary<_,_>()
         let symbols = Dictionary<_,_>()
@@ -575,9 +569,21 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                | Types types ->
                    (
                        for (name, decl) in types do
-                           defTypes.Add(stdType name, mb.TypeSystem.Int32)
                            match decl with
-                           | TypeEnum enumValues -> enumValues |> List.iteri (fun i v -> symbols.Add (v, EnumValueSym(i))) 
+                           | TypeEnum enumValues ->
+                               enumValues |> List.iteri (fun i v -> symbols.Add (v, EnumValueSym(i))) 
+                               defTypes.Add(stdType name, mb.TypeSystem.Int32)                          
+                           | Record (packed, fields) -> 
+                                let df = TypeDefinition(ns, name, TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout)
+                                df.ClassSize <- 0
+                                df.BaseType <- vt
+                                df.PackingSize <- if packed then 1s else 0s
+                                for (names, typeName) in fields do
+                                  for name in names do
+                                    FieldDefinition(name, FieldAttributes.Public, defTypes.[typeName])
+                                    |> df.Fields.Add
+                                mb.Types.Add(df)
+                                defTypes.Add(stdType name, df)
                            | _ -> ()
                    )
                | Variables v ->
