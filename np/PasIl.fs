@@ -5,8 +5,10 @@ open System.Collections
 open System.Collections.Generic
 open System.Linq.Expressions
 open System.Linq
+open System.Reflection.Metadata
 open Mono.Cecil
 open Mono.Cecil.Cil
+open Microsoft.FSharp.Linq
 
 type BranchLabel =
     | LazyLabel of IlInstruction
@@ -20,7 +22,11 @@ and AtomIlInstruction =
     | Call of MethodReference
     | Ldc_I4 of int
     | Ldloc of VariableDefinition
+    | Ldloca of VariableDefinition
+    | Ldfld of FieldDefinition
+    | Ldflda of FieldDefinition
     | Stloc of VariableDefinition
+    | Stfld of FieldDefinition
     | AddInst
     | MultiplyInst
     | MinusInst
@@ -67,19 +73,21 @@ type MetaInstruction =
 
 type Symbol =
     | VariableSym of VariableDefinition
-    //| LabelSym
+    | VariableStructSym of VariableDefinition * FieldDefinition list
     | EnumValueSym of int
 
 type Ctx(
             variables: Dictionary<string,VariableDefinition>,
             labels: Dictionary<string, BranchLabel ref>,
             symbols: Dictionary<string, Symbol>,
+            typeSymbols: Dictionary<TypeReference,Dictionary<string,FieldDefinition>>,
             moduleBuilder: ModuleDefinition
         ) = class
     let localVariables = ref 0
     member val variables = variables
     member val labels = labels
     member val symbols = symbols
+    member val typeSymbols = typeSymbols
     member val res = List<MetaInstruction>()
     member self.EnsureVariable() =
         let ikey = !localVariables
@@ -141,7 +149,11 @@ let private ainstr = function
                     | Call mi      -> Instruction.Create(OpCodes.Call, mi)
                     | Ldc_I4 n     -> Instruction.Create(OpCodes.Ldc_I4, n)
                     | Ldloc i      -> Instruction.Create(OpCodes.Ldloc, i)
+                    | Ldloca i     -> Instruction.Create(OpCodes.Ldloca, i)
+                    | Ldfld f      -> Instruction.Create(OpCodes.Ldfld, f)
+                    | Ldflda f     -> Instruction.Create(OpCodes.Ldflda, f)
                     | Stloc i      -> Instruction.Create(OpCodes.Stloc, i)
+                    | Stfld f      -> Instruction.Create(OpCodes.Stfld, f)
                     | Ret          -> Instruction.Create(OpCodes.Ret)
                     | Unknown      -> Instruction.Create(OpCodes.Nop)
                     | Ceq          -> Instruction.Create(OpCodes.Ceq)
@@ -186,14 +198,30 @@ let private emit (ilg : Cil.ILProcessor) inst =
     | InstructionList p -> p |> List.iter (instr >> appendIfNotNull) 
 
 let findSymbol (ctx: Ctx) (DIdent ident) =
-    assert(ident.Length = 1)
-    ident.Head |> function | PIName n -> ctx.symbols.[n]
+    let mainSym = ident.Head |> function | PIName n -> ctx.symbols.[n]
+    let vd = match mainSym with
+             | VariableSym vd -> Some vd
+             | _ -> None
+    
+    let rec findSym ref = function
+    | PIName(h)::t ->
+        let symbols = ctx.typeSymbols.[ref]
+        let sym = symbols.[h]
+        sym::findSym sym.FieldType t
+    | [] -> [] // failwith "IE"
+
+    match vd with
+    | Some vd ->
+        VariableStructSym(vd, findSym vd.VariableType ident.Tail)
+    | None -> assert(ident.Tail = []); mainSym
 
 let ilResolve = ainstr >> IlResolved
 
 let findSymbolAndLoad (ctx: Ctx) ident =
     match findSymbol ctx ident with
     | VariableSym vs -> vs |> Ldloc |> ilResolve |> List.singleton
+    | VariableStructSym(vd, fdl) ->
+        (vd |> Ldloca |> ilResolve)::(List.map (Ldfld >> ilResolve) fdl)
     | EnumValueSym evs -> Ldc_I4(evs) |> ilResolve |> List.singleton
 
 let valueToIl ctx v = 
@@ -376,14 +404,28 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let rec stmtToIl (ctx: Ctx) sysLabels (s: Statement): (MetaInstruction * BranchLabel ref list) =
         let stmtToIlList = stmtListToIlList ctx
         let exprToIl = exprToIl ctx
-        let getVar = findSymbol ctx >> function | VariableSym vs -> vs | _ -> failwith "IE"  
+        let getVar = findSymbol ctx >>
+                     function
+                     | VariableSym vs -> (vs, None)
+                     | VariableStructSym (vs, fdl) -> (vs, Some(fdl))
+                     | _ -> failwith "IE"
+                     
         let (instructions, newSysLabels) =
                 match s with
                 | CallStm(CallExpr(ident, cp)) ->
                     ([for p in cp do yield! callParamToIl ctx p; findFunction(ident)], [])
                 | AssignStm(ident, expr) -> 
                     let var = getVar ident
-                    ([yield! exprToIl expr ; Stloc(var) |> ilResolve], [])
+                    match var with
+                    | (v, None) -> ([yield! exprToIl expr ; Stloc(v) |> ilResolve], [])
+                    | (v, Some(fld)) ->
+                        let flda = Array.ofList fld
+                        ([
+                            Ldloca(v) |> ilResolve
+                            yield! Array.map (Ldflda >> ilResolve) (flda.[..flda.Length-1])
+                            yield! exprToIl expr
+                            flda.[flda.Length-1] |> Stfld |> ilResolve
+                        ], [])
                 | IfStm(expr, tb, fb) ->
                     // if logic
                     let firstEnfOfStm = ref ForwardLabel
@@ -493,7 +535,9 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     ],[])
                 | ForStm (ident, initExpr, delta, finiExpr, stmt) ->
                     let exprLabel = ref ForwardLabel
-                    let var = getVar ident
+                    let (var, fld) = getVar ident
+                    if fld.IsSome then
+                      failwith "IE"
                     let (name, varFinal) = ctx.EnsureVariable()
                     let (loopInit, _) = AssignStm(ident, initExpr) |> List.singleton |> stmtToIlList
                     // TODO optimization for simple values (dont store in var)
@@ -562,6 +606,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let variables = Dictionary<_,_>()
         let labelsMap = Dictionary<_,_>()
         let symbols = Dictionary<_,_>()
+        let typeSymbols = Dictionary<TypeReference,_>()
         printfn "%A" block.decl
         block.decl
         |> List.iter 
@@ -574,16 +619,19 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                enumValues |> List.iteri (fun i v -> symbols.Add (v, EnumValueSym(i))) 
                                defTypes.Add(stdType name, mb.TypeSystem.Int32)                          
                            | Record (packed, fields) -> 
-                                let df = TypeDefinition(ns, name, TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout)
-                                df.ClassSize <- 0
-                                df.BaseType <- vt
-                                df.PackingSize <- if packed then 1s else 0s
+                                let td = TypeDefinition(ns, name, TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout)
+                                td.ClassSize <- 0
+                                td.BaseType <- vt
+                                td.PackingSize <- if packed then 1s else 0s
+                                let fieldsMap = Dictionary<_,_>()
                                 for (names, typeName) in fields do
                                   for name in names do
-                                    FieldDefinition(name, FieldAttributes.Public, defTypes.[typeName])
-                                    |> df.Fields.Add
-                                mb.Types.Add(df)
-                                defTypes.Add(stdType name, df)
+                                    let fd = FieldDefinition(name, FieldAttributes.Public, defTypes.[typeName])
+                                    td.Fields.Add fd
+                                    fieldsMap.Add(name, fd)
+                                mb.Types.Add(td)
+                                defTypes.Add(stdType name, td)
+                                typeSymbols.Add(td, fieldsMap)
                            | _ -> ()
                    )
                | Variables v ->
@@ -595,6 +643,6 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                
         for kv in variables do symbols.Add(kv.Key, VariableSym(kv.Value))
         
-        let ctx = Ctx(variables, labelsMap, symbols, moduleBuilder)
+        let ctx = Ctx(variables, labelsMap, symbols, typeSymbols, moduleBuilder)
         stmtListToIl block.stmt ctx
 end
