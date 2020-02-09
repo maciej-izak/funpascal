@@ -420,11 +420,12 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     | (v, None) -> ([yield! exprToIl expr ; Stloc(v) |> ilResolve], [])
                     | (v, Some(fld)) ->
                         let flda = Array.ofList fld
+                        let (fieldsTo, last) = Array.splitAt (flda.Length-1) flda
                         ([
                             Ldloca(v) |> ilResolve
-                            yield! Array.map (Ldflda >> ilResolve) (flda.[..flda.Length-1])
+                            yield! Array.map (Ldflda >> ilResolve) fieldsTo
                             yield! exprToIl expr
-                            flda.[flda.Length-1] |> Stfld |> ilResolve
+                            last.[0] |> Stfld |> ilResolve
                         ], [])
                 | IfStm(expr, tb, fb) ->
                     // if logic
