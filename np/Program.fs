@@ -12,14 +12,18 @@ let main argv =
     PasStreams.testAll
       """program wow;
       type
+        TBoo = record
+          x: Integer;
+        end;
         TFoo = record
+          b: TBoo;
           x,y: Integer;
         end;
       var
         f: TFoo;
       begin
-        f.x := 10;
-        WriteLn(f.x);
+        f.b.x := 10;
+        WriteLn(f.b.x);
       end.
       """
     |> printfn "%A"
