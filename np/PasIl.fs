@@ -76,14 +76,35 @@ type Symbol =
     | VariableStructSym of VariableDefinition * FieldDefinition list
     | EnumValueSym of int
 
+type ICtx =
+    abstract member symbols: Map<string, Symbol> with get
+    abstract member typeSymbols: Dictionary<TypeReference,Dictionary<string,FieldDefinition>> with get
+    abstract member labels: Dictionary<string, BranchLabel ref> with get
+    abstract member EnsureVariable : unit -> string * VariableDefinition
+    abstract member resolveSysLabels : head:IlInstruction option -> labels:seq<BranchLabel ref> -> unit
+
+let inline toMap kvps =
+    kvps
+    |> Seq.map (|KeyValue|)
+    |> Map.ofSeq
+
 type Ctx(
             variables: Dictionary<string,VariableDefinition>,
             labels: Dictionary<string, BranchLabel ref>,
             symbols: Dictionary<string, Symbol>,
             typeSymbols: Dictionary<TypeReference,Dictionary<string,FieldDefinition>>,
             moduleBuilder: ModuleDefinition
-        ) = class
+        ) as self = class
     let localVariables = ref 0
+    let symbolsMap = toMap symbols
+
+    interface ICtx with
+        member _.symbols with get() = symbolsMap
+        member _.typeSymbols with get() = typeSymbols
+        member _.labels with get() = labels
+        member _.EnsureVariable() = self.EnsureVariable()
+        member _.resolveSysLabels head labels = self.resolveSysLabels head labels
+        
     member val variables = variables
     member val labels = labels
     member val symbols = symbols
@@ -197,7 +218,7 @@ let private emit (ilg : Cil.ILProcessor) inst =
     | InstructionSingleton is -> instr is |> appendIfNotNull
     | InstructionList p -> p |> List.iter (instr >> appendIfNotNull) 
 
-let findSymbol (ctx: Ctx) (DIdent ident) =
+let findSymbol (ctx: ICtx) (DIdent ident) =
     let mainSym = ident.Head |> function | PIName n -> ctx.symbols.[n]
     let vd = match mainSym with
              | VariableSym vd -> Some vd
@@ -217,7 +238,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
 
 let ilResolve = ainstr >> IlResolved
 
-let findSymbolAndLoad (ctx: Ctx) ident =
+let findSymbolAndLoad (ctx: ICtx) ident =
     match findSymbol ctx ident with
     | VariableSym vs -> vs |> Ldloc |> ilResolve |> List.singleton
     | VariableStructSym(vd, fdl) ->
@@ -401,7 +422,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 | _ -> null
         Call(f) |> ilResolve
             
-    let rec stmtToIl (ctx: Ctx) sysLabels (s: Statement): (MetaInstruction * BranchLabel ref list) =
+    let rec stmtToIl (ctx: ICtx) sysLabels (s: Statement): (MetaInstruction * BranchLabel ref list) =
         let stmtToIlList = stmtListToIlList ctx
         let exprToIl = exprToIl ctx
         let getVar = findSymbol ctx >>
@@ -566,14 +587,16 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         yield! incLoopVar
                         yield! condition
                     ],[])
-                | WithStm (ident, stmt) -> ([],[])
+                | WithStm (ident, stmt) ->
+                    //let x = { ctx }
+                    ([],[])
                 | EmptyStm -> ([],[])
                 | _ -> ([],[])
         // TODO fix peepholes about jump to next opcode
         ctx.resolveSysLabels (List.tryHead instructions) sysLabels
         (instructions |> InstructionList, newSysLabels)
 
-    and stmtListToIlList (ctx: Ctx) sl: (IlInstruction list * BranchLabel ref list) =
+    and stmtListToIlList (ctx: ICtx) sl: (IlInstruction list * BranchLabel ref list) =
         let lastSysLabels = ref []
         let instructions = [
               for s in sl do
