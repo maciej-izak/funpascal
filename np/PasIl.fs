@@ -8,6 +8,7 @@ open System.Linq
 open System.Reflection.Metadata
 open Mono.Cecil
 open Mono.Cecil.Cil
+open Mono.Cecil.Rocks
 open Microsoft.FSharp.Linq
 
 type BranchLabel =
@@ -75,57 +76,48 @@ type Symbol =
     | VariableSym of VariableDefinition
     | VariableStructSym of VariableDefinition * FieldDefinition list
     | EnumValueSym of int
+    | WithSym of VariableDefinition * FieldDefinition
 
-type ICtx =
-    abstract member symbols: Map<string, Symbol> with get
-    abstract member typeSymbols: Dictionary<TypeReference,Dictionary<string,FieldDefinition>> with get
-    abstract member labels: Dictionary<string, BranchLabel ref> with get
-    abstract member EnsureVariable : unit -> string * VariableDefinition
-    abstract member resolveSysLabels : head:IlInstruction option -> labels:seq<BranchLabel ref> -> unit
-
-let inline toMap kvps =
-    kvps
-    |> Seq.map (|KeyValue|)
-    |> Map.ofSeq
-
-type Ctx(
-            variables: Dictionary<string,VariableDefinition>,
-            labels: Dictionary<string, BranchLabel ref>,
-            symbols: Dictionary<string, Symbol>,
-            typeSymbols: Dictionary<TypeReference,Dictionary<string,FieldDefinition>>,
-            moduleBuilder: ModuleDefinition
-        ) as self = class
-    let localVariables = ref 0
-    let symbolsMap = toMap symbols
-
-    interface ICtx with
-        member _.symbols with get() = symbolsMap
-        member _.typeSymbols with get() = typeSymbols
-        member _.labels with get() = labels
-        member _.EnsureVariable() = self.EnsureVariable()
-        member _.resolveSysLabels head labels = self.resolveSysLabels head labels
+type Ctx = {
+        variables: Dictionary<string,VariableDefinition>
+        labels: Dictionary<string, BranchLabel ref>
+        symbols: Dictionary<string, Symbol> list
+        typeSymbols: Dictionary<TypeReference,Dictionary<string,FieldDefinition>>
+        moduleBuilder: ModuleDefinition
+        localVariables: int ref
+        res: List<MetaInstruction>
+    } with
+    static member Create variables labels symbols typeSymbols moduleBuilder =
+        {
+            variables = variables
+            labels = labels
+            symbols = symbols
+            typeSymbols = typeSymbols
+            moduleBuilder = moduleBuilder
+            localVariables = ref 0
+            res = List<MetaInstruction>()
+        }
+    member self.FindSym sym =
+        self.symbols |> List.tryPick (fun st -> match st.TryGetValue sym with | true, v -> Some v | _ -> None)
         
-    member val variables = variables
-    member val labels = labels
-    member val symbols = symbols
-    member val typeSymbols = typeSymbols
-    member val res = List<MetaInstruction>()
-    member self.EnsureVariable() =
-        let ikey = !localVariables
+    member self.EnsureVariable(?kind) =
+        let ikey = !self.localVariables
         let key = string ikey
-        incr localVariables
+        incr self.localVariables
         // TODO manager of variables for reuse
 //        let result = match self.variables.TryGetValue key with
 //                     | true, value ->
 //                         value
 //                     | _ ->
-        let value = VariableDefinition(moduleBuilder.TypeSystem.Int32)
+        let value = VariableDefinition(
+                                          defaultArg kind self.moduleBuilder.TypeSystem.Int32
+                                      )
         self.res.Add(DeclareLocal(value))
         self.variables.Add(key, value)
-        self.symbols.Add(key, VariableSym(value))
+        self.symbols.Head.Add(key, VariableSym(value))
         (key, value)
     
-    member self.resolveSysLabels head labels =
+    static member resolveSysLabels head labels =
         match head with
         | Some h ->
             match h with
@@ -133,8 +125,11 @@ type Ctx(
             | IlBr _ -> for l in labels do l := LazyLabel(h)
             | _ -> failwithf "Internal error (%s:%s)" __SOURCE_FILE__ __LINE__
         | _ -> ()
-    
-  end
+
+let inline toMap kvps =
+    kvps
+    |> Seq.map (|KeyValue|)
+    |> Map.ofSeq
 
 let brtoinstr l opc =
     let rec bril = function
@@ -218,10 +213,11 @@ let private emit (ilg : Cil.ILProcessor) inst =
     | InstructionSingleton is -> instr is |> appendIfNotNull
     | InstructionList p -> p |> List.iter (instr >> appendIfNotNull) 
 
-let findSymbol (ctx: ICtx) (DIdent ident) =
-    let mainSym = ident.Head |> function | PIName n -> ctx.symbols.[n]
+let findSymbol (ctx: Ctx) (DIdent ident) =
+    let mainSym = ident.Head |> function | PIName n -> ctx.FindSym n
     let vd = match mainSym with
-             | VariableSym vd -> Some vd
+             | Some(VariableSym vd) -> Some vd
+             | Some(WithSym ws) -> Some ws
              | _ -> None
     
     let rec findSym ref = function
@@ -231,19 +227,23 @@ let findSymbol (ctx: ICtx) (DIdent ident) =
         sym::findSym sym.FieldType t
     | [] -> [] // failwith "IE"
 
-    match vd with
-    | Some vd ->
-        VariableStructSym(vd, findSym vd.VariableType ident.Tail)
+    match mainSym with
+    | Some(VariableSym vd) ->
+        Some(VariableStructSym(vd, findSym vd.VariableType ident.Tail))
+    | Some(WithSym (ws, fd)) -> 
     | None -> assert(ident.Tail = []); mainSym
 
 let ilResolve = ainstr >> IlResolved
 
-let findSymbolAndLoad (ctx: ICtx) ident =
+let findSymbolAndLoad (ctx: Ctx) ident =
     match findSymbol ctx ident with
-    | VariableSym vs -> vs |> Ldloc |> ilResolve |> List.singleton
-    | VariableStructSym(vd, fdl) ->
+    | Some(VariableSym vs) -> vs |> Ldloc |> ilResolve |> List.singleton
+    | Some(VariableStructSym(vd, fdl)) ->
         (vd |> Ldloca |> ilResolve)::(List.map (Ldfld >> ilResolve) fdl)
-    | EnumValueSym evs -> Ldc_I4(evs) |> ilResolve |> List.singleton
+    | Some(WithSym(vd, fdl)) ->
+        (vd |> Ldloc |> ilResolve)::(List.map (Ldfld >> ilResolve) fdl)
+    | Some(EnumValueSym evs) -> Ldc_I4(evs) |> ilResolve |> List.singleton
+    | _ -> failwith "IE"
 
 let valueToIl ctx v = 
     match v with
@@ -422,13 +422,13 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 | _ -> null
         Call(f) |> ilResolve
             
-    let rec stmtToIl (ctx: ICtx) sysLabels (s: Statement): (MetaInstruction * BranchLabel ref list) =
+    let rec stmtToIl (ctx: Ctx) sysLabels (s: Statement): (MetaInstruction * BranchLabel ref list) =
         let stmtToIlList = stmtListToIlList ctx
         let exprToIl = exprToIl ctx
         let getVar = findSymbol ctx >>
                      function
-                     | VariableSym vs -> (vs, None)
-                     | VariableStructSym (vs, fdl) -> (vs, Some(fdl))
+                     | Some(VariableSym vs) -> (vs, None)
+                     | Some(VariableStructSym (vs, fdl)) -> (vs, Some(fdl))
                      | _ -> failwith "IE"
                      
         let (instructions, newSysLabels) =
@@ -532,7 +532,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let condition = exprToIl expr
                     let conditionLabel = ref (LazyLabel(condition.[0]))
                     let (whileBranch, whileLabels) = stmtToIlList stmt
-                    ctx.resolveSysLabels (Array.tryHead condition) whileLabels
+                    Ctx.resolveSysLabels (Array.tryHead condition) whileLabels
                     ([
                         yield IlBr(conditionLabel)
                         yield! whileBranch
@@ -546,7 +546,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let condition = exprToIl expr
                     // let conditionLabel = ref (LazyLabel(condition.[0]))
                     let (repeatBranch, whileLabels) = stmtToIlList stmt
-                    ctx.resolveSysLabels (Array.tryHead condition) whileLabels
+                    Ctx.resolveSysLabels (Array.tryHead condition) whileLabels
                     ([
                         yield! repeatBranch
                         yield! condition
@@ -578,7 +578,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                                 (match List.tryHead forBranch with
                                                 | Some h -> h
                                                 | _ -> condition.Head))
-                    ctx.resolveSysLabels (List.tryHead condition) forLabels
+                    Ctx.resolveSysLabels (List.tryHead condition) forLabels
                     ([
                         yield! loopInit
                         yield! loopFinal
@@ -588,15 +588,56 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         yield! condition
                     ],[])
                 | WithStm (ident, stmt) ->
-                    //let x = { ctx }
-                    ([],[])
+                    let var = getVar ident.Head
+                    // let nvW: (string * VariableDefinition) ref = Unchecked.defaultof<_>
+                    // 
+                    let loadVarW =
+                        match var with
+//                        | (v, Some(fld)) ->
+//                            let flda = Array.ofList fld
+//                            let (fieldsTo, last) = Array.splitAt (flda.Length-1) flda
+//                            last.[0].FieldType
+//                            [
+//                                Ldloca(v) |> ilResolve
+//                                yield! Array.map (Ldflda >> ilResolve) fieldsTo
+//                                yield! exprToIl expr
+//                                last.[0] |> Stfld |> ilResolve
+//                            ]
+                        | (v, Some([])) ->
+                            let vt = match v.VariableType with
+                                     | :? TypeDefinition as td ->
+                                         v.VariableType <- v.VariableType.MakePinnedType()
+                                         td
+                                     | :? PinnedType as pt -> pt.GetElementType() :?> TypeDefinition
+                                     | _ -> failwith "IE"
+//                            if vt.Fields.Count = 0 then
+//                                failwith "IE"
+                            let (_, vv) = ctx.EnsureVariable(ctx.moduleBuilder.TypeSystem.UIntPtr)
+                            ([
+                                Ldloca(v) |> ilResolve
+                                Stloc(vv) |> ilResolve
+                            ],(vv, vt))
+                            
+                            //([yield! exprToIl expr ; Stloc(v) |> ilResolve], [])
+                        | _ -> failwith "IE"
+                    
+                    let newSymbols = Dictionary<string, Symbol>()
+                    let (v, td) = snd loadVarW
+                    for f in td.Fields do
+                        newSymbols.Add(f.Name, WithSym(v, f))
+                    let newCtx = { ctx with symbols = newSymbols::ctx.symbols }
+                    let (branch, labels) = stmtListToIlList newCtx stmt
+                    ([
+                        yield! fst loadVarW
+                        yield! branch
+                    ],labels)
                 | EmptyStm -> ([],[])
                 | _ -> ([],[])
         // TODO fix peepholes about jump to next opcode
-        ctx.resolveSysLabels (List.tryHead instructions) sysLabels
+        Ctx.resolveSysLabels (List.tryHead instructions) sysLabels
         (instructions |> InstructionList, newSysLabels)
 
-    and stmtListToIlList (ctx: ICtx) sl: (IlInstruction list * BranchLabel ref list) =
+    and stmtListToIlList (ctx: Ctx) sl: (IlInstruction list * BranchLabel ref list) =
         let lastSysLabels = ref []
         let instructions = [
               for s in sl do
@@ -611,7 +652,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let (instr, labels) = stmtListToIlList ctx sl
         ctx.res.Add(instr |> InstructionList)
         let ret = Ret |> ilResolve
-        ctx.resolveSysLabels (Some ret) labels
+        Ctx.resolveSysLabels (Some ret) labels
         ctx.res.Add(ret |> InstructionSingleton)
         ctx.res
 
@@ -667,6 +708,6 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                
         for kv in variables do symbols.Add(kv.Key, VariableSym(kv.Value))
         
-        let ctx = Ctx(variables, labelsMap, symbols, typeSymbols, moduleBuilder)
+        let ctx = Ctx.Create variables labelsMap [symbols] typeSymbols moduleBuilder
         stmtListToIl block.stmt ctx
 end

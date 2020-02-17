@@ -23,7 +23,10 @@ let main argv =
         f: TFoo;
       begin
         f.b.x := 10;
-        WriteLn(f.b.x);
+        with f{, f.b} do
+          WriteLn(f.b.x);
+        with f{, f.b} do
+          WriteLn(f.b.x);
       end.
       """
     |> printfn "%A"
