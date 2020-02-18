@@ -596,47 +596,40 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         yield! condition
                     ],[])
                 | WithStm (ident, stmt) ->
-                    let var = getVar ident.Head
-                    // let nvW: (string * VariableDefinition) ref = Unchecked.defaultof<_>
-                    // 
-                    let loadVarW =
-                        match var with
-//                        | (v, Some(fld)) ->
-//                            let flda = Array.ofList fld
-//                            let (fieldsTo, last) = Array.splitAt (flda.Length-1) flda
-//                            last.[0].FieldType
-//                            [
-//                                Ldloca(v) |> ilResolve
-//                                yield! Array.map (Ldflda >> ilResolve) fieldsTo
-//                                yield! exprToIl expr
-//                                last.[0] |> Stfld |> ilResolve
-//                            ]
-                        | (v, Some([])) ->
-                            let vt = match v.VariableType with
-                                     | :? TypeDefinition as td ->
-                                         v.VariableType <- v.VariableType.MakePinnedType()
-                                         td
-                                     | :? PinnedType as pt -> pt.GetElementType() :?> TypeDefinition
-                                     | _ -> failwith "IE"
-//                            if vt.Fields.Count = 0 then
-//                                failwith "IE"
-                            let (_, vv) = ctx.EnsureVariable(ctx.moduleBuilder.TypeSystem.UIntPtr)
-                            ([
-                                Ldloca(v) |> ilResolve
-                                Stloc(vv) |> ilResolve
-                            ],(vv, vt))
+                    let (withSymbols, ils) =
+                        List.fold 
+                            (fun (symbols, ils: List<IlInstruction list>) i ->
+                                let var = getVar i
+                                let loadVarW =
+                                    match var with
+                                    | (v, Some(fld)) ->
+                                        let vt = match v.VariableType with
+                                                 | :? TypeDefinition as td ->
+                                                     v.VariableType <- v.VariableType.MakePinnedType()
+                                                     td
+                                                 | :? PinnedType as pt -> pt.GetElementType() :?> TypeDefinition
+                                                 | _ -> failwith "IE"
+                                        let (_, vv) = ctx.EnsureVariable(ctx.moduleBuilder.TypeSystem.UIntPtr)
+                                        let vt = match List.tryLast fld with | Some f -> f.FieldType :?> TypeDefinition | _ -> vt
+                                        ([
+                                            Ldloca(v) |> ilResolve
+                                            yield! List.map (Ldflda >> ilResolve) fld
+                                            Stloc(vv) |> ilResolve
+                                        ],(vv, vt))
+                                    | _ -> failwith "IE"
                             
-                            //([yield! exprToIl expr ; Stloc(v) |> ilResolve], [])
-                        | _ -> failwith "IE"
-                    
-                    let newSymbols = Dictionary<string, Symbol>()
-                    let (v, td) = snd loadVarW
-                    for f in td.Fields do
-                        newSymbols.Add(f.Name, WithSym(v, td))
-                    let newCtx = { ctx with symbols = newSymbols::ctx.symbols }
+                                let newSymbols = Dictionary<string, Symbol>()
+                                let (v, td) = snd loadVarW
+                                for f in td.Fields do
+                                    newSymbols.Add(f.Name, WithSym(v, td))
+                                    printfn "%s" td.Name
+                                ils.Add(fst loadVarW)
+                                (newSymbols::symbols, ils)
+                            ) (ctx.symbols, List<_>()) ident
+                    let newCtx = { ctx with symbols = withSymbols }
                     let (branch, labels) = stmtListToIlList newCtx stmt
                     ([
-                        yield! fst loadVarW
+                        for i in ils do yield! i 
                         yield! branch
                     ],labels)
                 | EmptyStm -> ([],[])

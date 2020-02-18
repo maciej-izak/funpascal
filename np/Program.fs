@@ -23,9 +23,12 @@ let main argv =
         f: TFoo;
       begin
         f.b.x := 10;
-        with f{, f.b} do
+        f.x := 5;
+        with f, f.b do
           WriteLn(b.x);
-        with f{, f.b} do
+        with f, f.b do
+          WriteLn(x);
+        with f, f.b do
           WriteLn(f.b.x);
       end.
       """
