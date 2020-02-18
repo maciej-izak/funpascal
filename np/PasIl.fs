@@ -75,8 +75,9 @@ type MetaInstruction =
 type Symbol =
     | VariableSym of VariableDefinition
     | VariableStructSym of VariableDefinition * FieldDefinition list
+    | VariableDerefStructSym of VariableDefinition * FieldDefinition list
     | EnumValueSym of int
-    | WithSym of VariableDefinition * FieldDefinition
+    | WithSym of VariableDefinition * TypeDefinition
 
 type Ctx = {
         variables: Dictionary<string,VariableDefinition>
@@ -215,10 +216,6 @@ let private emit (ilg : Cil.ILProcessor) inst =
 
 let findSymbol (ctx: Ctx) (DIdent ident) =
     let mainSym = ident.Head |> function | PIName n -> ctx.FindSym n
-    let vd = match mainSym with
-             | Some(VariableSym vd) -> Some vd
-             | Some(WithSym ws) -> Some ws
-             | _ -> None
     
     let rec findSym ref = function
     | PIName(h)::t ->
@@ -227,11 +224,22 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
         sym::findSym sym.FieldType t
     | [] -> [] // failwith "IE"
 
+    let absVariableType (vt: TypeReference) =
+        match vt with
+        | :? PinnedType as pt -> pt.GetElementType() :?> TypeDefinition
+        | :? TypeDefinition as td -> td
+        | _ -> failwith "IE"
+    
     match mainSym with
     | Some(VariableSym vd) ->
-        Some(VariableStructSym(vd, findSym vd.VariableType ident.Tail))
-    | Some(WithSym (ws, fd)) -> 
-    | None -> assert(ident.Tail = []); mainSym
+        let vt = absVariableType vd.VariableType
+        Some(VariableStructSym(vd, findSym vt ident.Tail))
+    | Some(WithSym (p, td)) -> 
+        let vt = absVariableType td
+        Some(VariableDerefStructSym(p, findSym vt ident))
+    | Some(EnumValueSym(_)) -> assert(ident.Tail = []); mainSym 
+    | Some(_) -> failwith "IE" 
+    | None -> None
 
 let ilResolve = ainstr >> IlResolved
 
@@ -240,7 +248,7 @@ let findSymbolAndLoad (ctx: Ctx) ident =
     | Some(VariableSym vs) -> vs |> Ldloc |> ilResolve |> List.singleton
     | Some(VariableStructSym(vd, fdl)) ->
         (vd |> Ldloca |> ilResolve)::(List.map (Ldfld >> ilResolve) fdl)
-    | Some(WithSym(vd, fdl)) ->
+    | Some(VariableDerefStructSym(vd, fdl)) ->
         (vd |> Ldloc |> ilResolve)::(List.map (Ldfld >> ilResolve) fdl)
     | Some(EnumValueSym evs) -> Ldc_I4(evs) |> ilResolve |> List.singleton
     | _ -> failwith "IE"
@@ -624,7 +632,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let newSymbols = Dictionary<string, Symbol>()
                     let (v, td) = snd loadVarW
                     for f in td.Fields do
-                        newSymbols.Add(f.Name, WithSym(v, f))
+                        newSymbols.Add(f.Name, WithSym(v, td))
                     let newCtx = { ctx with symbols = newSymbols::ctx.symbols }
                     let (branch, labels) = stmtListToIlList newCtx stmt
                     ([

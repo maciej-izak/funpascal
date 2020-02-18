@@ -24,7 +24,7 @@ let main argv =
       begin
         f.b.x := 10;
         with f{, f.b} do
-          WriteLn(f.b.x);
+          WriteLn(b.x);
         with f{, f.b} do
           WriteLn(f.b.x);
       end.
