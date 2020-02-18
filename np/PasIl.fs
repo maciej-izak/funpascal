@@ -610,6 +610,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                                  | :? PinnedType as pt -> pt.GetElementType() :?> TypeDefinition
                                                  | _ -> failwith "IE"
                                         let (_, vv) = ctx.EnsureVariable(ctx.moduleBuilder.TypeSystem.UIntPtr)
+                                        // TODO optimize List.tryLast?
+                                        // try last element in expr x.y.z (z is the right choice)
                                         let vt = match List.tryLast fld with | Some f -> f.FieldType :?> TypeDefinition | _ -> vt
                                         ([
                                             Ldloca(v) |> ilResolve
