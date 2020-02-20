@@ -596,9 +596,10 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         yield! condition
                     ],[])
                 | WithStm (ident, stmt) ->
-                    let (withSymbols, ils) =
+                    let ils = List<_>()
+                    let withSymbols =
                         List.fold 
-                            (fun (symbols, ils: List<IlInstruction list>) i ->
+                            (fun symbols i ->
                                 let var = getVar i
                                 let loadVarW =
                                     match var with
@@ -624,11 +625,11 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                 let (v, td) = snd loadVarW
                                 for f in td.Fields do
                                     newSymbols.Add(f.Name, WithSym(v, td))
-                                    printfn "%s" td.Name
                                 ils.Add(fst loadVarW)
-                                (newSymbols::symbols, ils)
-                            ) (ctx.symbols, List<_>()) ident
+                                newSymbols::symbols
+                            ) ctx.symbols ident
                     let newCtx = { ctx with symbols = withSymbols }
+                    // TODO check if some part is unused in ils
                     let (branch, labels) = stmtListToIlList newCtx stmt
                     ([
                         for i in ils do yield! i 
