@@ -2,6 +2,7 @@
 module NP.PasAst
 
 open FParsec
+open System
 
 let equalsOn f x (yobj:obj) =
     match yobj with
@@ -23,10 +24,10 @@ type PIdent =
 
     override self.Equals(a) =
         match a with
-        | :? PIdent as i -> equalsOn PIdent.Name self i
+        | :? PIdent as i -> String.Equals((PIdent.Name self), (PIdent.Name i), StringComparison.InvariantCultureIgnoreCase) // equalsOn PIdent.Name self i
         | _ -> false
 
-    override self.GetHashCode() = hashOn PIdent.Name self
+    override self.GetHashCode() = (PIdent.Name self).GetHashCode(StringComparison.InvariantCultureIgnoreCase) // hashOn PIdent.Name self
 
     interface System.IComparable with
       member self.CompareTo o = match o with

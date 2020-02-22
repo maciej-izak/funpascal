@@ -72,9 +72,9 @@ and PasStream(s: Stream) = class
     override _.set_Position(value: int64) : unit =
         stream.Position <- value
 
-    override __.Flush() : unit = stream.Flush()
+    override _.Flush() : unit = stream.Flush()
 
-    override __.Seek(offset: int64, origin: SeekOrigin) : int64 = 
+    override _.Seek(offset: int64, origin: SeekOrigin) : int64 =
         stream.Seek(offset, origin)
         
     override _.SetLength(value: int64) : unit = ()

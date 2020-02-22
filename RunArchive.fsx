@@ -2,6 +2,30 @@
 open np.BasicParsers
 open FParsec
 
+      // TODO case sensitive
+      // program wow;
+      // type
+      //   TBoo = record
+      //     x: Integer;
+      //   end;
+      //   TFoo = record
+      //     b: TBoo;
+      //     x,y: Integer;
+      //   end;
+      // var
+      //   F: TFOO;
+      // begin
+      //   f.b.x := 10;
+      //   f.x := 5;
+      //   with f, f.b do
+      //     WriteLn(b.x);
+      //   with f, f.b do
+      //     WriteLn(x);
+      //   with f, f.b do
+      //     WriteLn(f.b.x);
+      // end.
+
+
       // for optimizations ?
       // type
       //   TFoo = (f1, f2, f3);

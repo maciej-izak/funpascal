@@ -79,6 +79,25 @@ type Symbol =
     | EnumValueSym of int
     | WithSym of VariableDefinition * TypeDefinition
 
+let caseSensitive = HashIdentity.Structural<string>
+let caseInsensitive =
+    HashIdentity.FromFunctions
+        (fun (s: string) -> s.GetHashCode(StringComparison.InvariantCultureIgnoreCase))
+        (fun (a: string) (b: string) -> String.Equals(a, b, StringComparison.InvariantCultureIgnoreCase))
+
+type SymbolsDict<'T>() =
+    inherit Dictionary<string, 'T>()
+
+type LangCtx() as self =
+    let mutable ec = caseInsensitive
+    member self.caseSensitive
+        with get() = ec = caseSensitive
+        and set(cs) =  ec <- if cs then caseSensitive else caseInsensitive
+
+    interface IEqualityComparer<string> with
+        member _.GetHashCode(x) = ec.GetHashCode(x)
+        member _.Equals(x,y) = ec.Equals(x, y)
+
 type Ctx = {
         variables: Dictionary<string,VariableDefinition>
         labels: Dictionary<string, BranchLabel ref>
@@ -86,9 +105,10 @@ type Ctx = {
         typeSymbols: Dictionary<TypeReference,Dictionary<string,FieldDefinition>>
         moduleBuilder: ModuleDefinition
         localVariables: int ref
+        lang: LangCtx
         res: List<MetaInstruction>
     } with
-    static member Create variables labels symbols typeSymbols moduleBuilder =
+    static member Create variables labels symbols typeSymbols lang moduleBuilder =
         {
             variables = variables
             labels = labels
@@ -96,6 +116,7 @@ type Ctx = {
             typeSymbols = typeSymbols
             moduleBuilder = moduleBuilder
             localVariables = ref 0
+            lang = lang
             res = List<MetaInstruction>()
         }
     member self.FindSym sym =
@@ -661,21 +682,22 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         ctx.res
 
     let vt = mb.ImportReference(typeof<ValueType>)
-    
-    let defTypes = Dictionary<TypeIdentifier, TypeReference>()
-    do
-        defTypes.Add(stdType "Integer", mb.TypeSystem.Int32)
-        defTypes.Add(stdType "Byte", mb.TypeSystem.Byte)
-        defTypes.Add(stdType "Boolean", mb.TypeSystem.Boolean)
-    
+
     let findType =
         typeIdToStr
 
     member _.BuildIl(block: Block, ns) =
-        let variables = Dictionary<_,_>()
-        let labelsMap = Dictionary<_,_>()
-        let symbols = Dictionary<_,_>()
+        let langCtx = LangCtx()
+        let variables = Dictionary<_,_>(langCtx)
+        let labelsMap = Dictionary<_,_>(langCtx)
+        let symbols = Dictionary<_,_>(langCtx)
         let typeSymbols = Dictionary<TypeReference,_>()
+        let defTypes = Dictionary<TypeIdentifier, TypeReference>()
+
+        defTypes.Add(stdType "Integer", mb.TypeSystem.Int32)
+        defTypes.Add(stdType "Byte", mb.TypeSystem.Byte)
+        defTypes.Add(stdType "Boolean", mb.TypeSystem.Boolean)
+
         printfn "%A" block.decl
         block.decl
         |> List.iter 
@@ -712,6 +734,6 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                
         for kv in variables do symbols.Add(kv.Key, VariableSym(kv.Value))
         
-        let ctx = Ctx.Create variables labelsMap [symbols] typeSymbols moduleBuilder
+        let ctx = Ctx.Create variables labelsMap [symbols] typeSymbols langCtx moduleBuilder
         stmtListToIl block.stmt ctx
 end

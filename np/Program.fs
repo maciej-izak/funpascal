@@ -10,27 +10,7 @@ open NP
 [<EntryPoint>]
 let main argv =
     PasStreams.testAll
-      """program wow;
-      type
-        TBoo = record
-          x: Integer;
-        end;
-        TFoo = record
-          b: TBoo;
-          x,y: Integer;
-        end;
-      var
-        f: TFoo;
-      begin
-        f.b.x := 10;
-        f.x := 5;
-        with f, f.b do
-          WriteLn(b.x);
-        with f, f.b do
-          WriteLn(x);
-        with f, f.b do
-          WriteLn(f.b.x);
-      end.
+      """
       """
     |> printfn "%A"
     0

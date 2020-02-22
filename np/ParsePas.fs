@@ -106,7 +106,7 @@ let keywords = [
 
 let expr = opp.ExpressionParser
 
-let keywordsSet = new HashSet<string>(keywords);
+let keywordsSet = HashSet<string>(keywords);
 
 let isKeyword s = keywordsSet.Contains s
 

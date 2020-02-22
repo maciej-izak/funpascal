@@ -152,4 +152,4 @@ let pass1Parser =
           ))))
 
 let str_wsc s =
-    pstring s .>> wsc
+    pstringCI s .>> wsc
