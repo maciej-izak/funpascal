@@ -10,6 +10,8 @@ open Mono.Cecil
 open Mono.Cecil.Cil
 open Mono.Cecil.Rocks
 open Microsoft.FSharp.Linq
+open Mono.Cecil
+open Mono.Cecil
 
 type BranchLabel =
     | LazyLabel of IlInstruction
@@ -75,6 +77,7 @@ type MetaInstruction =
 type Symbol =
     | VariableSym of VariableDefinition
     | VariableStructSym of VariableDefinition * FieldDefinition list
+    | VariableDerefSym of VariableDefinition
     | VariableDerefStructSym of VariableDefinition * FieldDefinition list
     | EnumValueSym of int
     | WithSym of VariableDefinition * TypeDefinition
@@ -245,17 +248,17 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
         sym::findSym sym.FieldType t
     | [] -> [] // failwith "IE"
 
-    let absVariableType (vt: TypeReference) =
-        match vt with
-        | :? PinnedType as pt -> pt.GetElementType() :?> TypeDefinition
-        | :? TypeDefinition as td -> td
-        | _ -> failwith "IE"
+    let absVariableType (vt: TypeReference) = vt.GetElementType()
     
     match mainSym with
     | Some(VariableSym vd) ->
         let vt = absVariableType vd.VariableType
-        Some(VariableStructSym(vd, findSym vt ident.Tail))
-    | Some(WithSym (p, td)) -> 
+        let tail = ident.Tail
+        match tail with
+        | [] -> Some(VariableSym(vd))
+        | [Deref] -> Some(VariableDerefSym(vd))
+        | _ -> Some(VariableStructSym(vd, findSym vt tail))
+    | Some(WithSym (p, td)) ->
         let vt = absVariableType td
         Some(VariableDerefStructSym(p, findSym vt ident))
     | Some(EnumValueSym(_)) -> assert(ident.Tail = []); mainSym 
@@ -272,6 +275,15 @@ let findSymbolAndLoad (ctx: Ctx) ident =
     | Some(VariableDerefStructSym(vd, fdl)) ->
         (vd |> Ldloc |> ilResolve)::(List.map (Ldfld >> ilResolve) fdl)
     | Some(EnumValueSym evs) -> Ldc_I4(evs) |> ilResolve |> List.singleton
+    | _ -> failwith "IE"
+
+let findSymbolAndGetPtr (ctx: Ctx) ident =
+    match findSymbol ctx ident with
+    | Some(VariableSym vs) -> vs |> Ldloca |> ilResolve |> List.singleton
+    | Some(VariableStructSym(vd, fdl)) ->
+        (vd |> Ldloca |> ilResolve)::(List.map (Ldflda >> ilResolve) fdl)
+    | Some(VariableDerefStructSym(vd, fdl)) ->
+        (vd |> Ldloc |> ilResolve)::(List.map (Ldflda >> ilResolve) fdl)
     | _ -> failwith "IE"
 
 let valueToIl ctx v = 
@@ -305,7 +317,13 @@ let rec exprToIl ctx exprEl =
     | StrictlyGreaterThan(a, b) -> add2OpIl a b Cgt
     | LessThanOrEqual(a, b) -> [|yield! add2OpIl a b Cgt ; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
     | GreaterThanOrEqual(a, b) -> [|yield! add2OpIl a b Clt; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
-    | _ -> [||]
+    | Addr(a) ->
+        [|
+            match a with
+            | Value(VIdent i) -> yield! findSymbolAndGetPtr ctx i
+            | _ -> failwith "IE"
+        |]
+    | _ -> failwith "IE"
 
 let callParamToIl ctx cp = 
     match cp with
@@ -457,6 +475,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let getVar = findSymbol ctx >>
                      function
                      | Some(VariableSym vs) -> (vs, None)
+                     | Some(VariableDerefSym vs) -> (vs, None)
                      | Some(VariableStructSym (vs, fdl)) -> (vs, Some(fdl))
                      | _ -> failwith "IE"
                      
@@ -467,15 +486,16 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 | AssignStm(ident, expr) -> 
                     let var = getVar ident
                     match var with
-                    | (v, None) -> ([yield! exprToIl expr ; Stloc(v) |> ilResolve], [])
+                    some code for deref and assign
+                    | (v, None) | (v, Some([])) -> ([yield! exprToIl expr ; Stloc(v) |> ilResolve], [])
                     | (v, Some(fld)) ->
-                        let flda = Array.ofList fld
-                        let (fieldsTo, last) = Array.splitAt (flda.Length-1) flda
+                        // TODO change to Arrray in F# 5.0
+                        let (fieldsTo, last) = (fld.[0..fld.Length-2], List.last fld)
                         ([
                             Ldloca(v) |> ilResolve
-                            yield! Array.map (Ldflda >> ilResolve) fieldsTo
+                            yield! List.map (Ldflda >> ilResolve) fieldsTo
                             yield! exprToIl expr
-                            last.[0] |> Stfld |> ilResolve
+                            last |> Stfld |> ilResolve
                         ], [])
                 | IfStm(expr, tb, fb) ->
                     // if logic
@@ -697,6 +717,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         defTypes.Add(stdType "Integer", mb.TypeSystem.Int32)
         defTypes.Add(stdType "Byte", mb.TypeSystem.Byte)
         defTypes.Add(stdType "Boolean", mb.TypeSystem.Boolean)
+        defTypes.Add(stdType "Boolean", mb.TypeSystem.Void)
 
         printfn "%A" block.decl
         block.decl
@@ -706,6 +727,10 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                    (
                        for (name, decl) in types do
                            match decl with
+                           | TypePtr (count, typeId) ->
+                               let mutable pt = PointerType(defTypes.[typeId])
+                               for i = 2 to count do pt <- PointerType(pt)
+                               defTypes.Add(stdType name, pt)
                            | TypeEnum enumValues ->
                                enumValues |> List.iteri (fun i v -> symbols.Add (v, EnumValueSym(i))) 
                                defTypes.Add(stdType name, mb.TypeSystem.Int32)                          

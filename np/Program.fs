@@ -10,7 +10,20 @@ open NP
 [<EntryPoint>]
 let main argv =
     PasStreams.testAll
-      """
+      """program wow;
+      type
+        PI = ^Integer;
+        PPI = ^^Integer;
+      var
+        i: Integer;
+        ip: PI;
+      begin
+        i := 1;
+        ip := @i;
+        WriteLn(i);
+        ip^ := 2;
+        WriteLn(ip^);
+      end.
       """
     |> printfn "%A"
     0
