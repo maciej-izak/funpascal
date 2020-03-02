@@ -478,25 +478,28 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                      | Some(VariableDerefSym vs) -> (vs, None)
                      | Some(VariableStructSym (vs, fdl)) -> (vs, Some(fdl))
                      | _ -> failwith "IE"
+        let getVar4Assign (ident: DIdent) expr =
+                     match findSymbol ctx ident with
+                     | Some(VariableSym vs) -> [yield! expr ; Stloc(vs) |> ilResolve]
+                     | Some(VariableStructSym (vs, fld)) ->
+                        // TODO change to Arrray in F# 5.0
+                        let (fieldsTo, last) = (fld.[0..fld.Length-2], List.last fld)
+                        [
+                            Ldloca(vs) |> ilResolve
+                            yield! List.map (Ldflda >> ilResolve) fieldsTo
+                            yield! expr
+                            last |> Stfld |> ilResolve
+                        ]
+                    //some code for deref and assign
+//                     | Some(VariableDerefSym vs) -> (vs, None)
+                     | _ -> failwith "IE"
                      
         let (instructions, newSysLabels) =
                 match s with
                 | CallStm(CallExpr(ident, cp)) ->
                     ([for p in cp do yield! callParamToIl ctx p; findFunction(ident)], [])
                 | AssignStm(ident, expr) -> 
-                    let var = getVar ident
-                    match var with
-                    some code for deref and assign
-                    | (v, None) | (v, Some([])) -> ([yield! exprToIl expr ; Stloc(v) |> ilResolve], [])
-                    | (v, Some(fld)) ->
-                        // TODO change to Arrray in F# 5.0
-                        let (fieldsTo, last) = (fld.[0..fld.Length-2], List.last fld)
-                        ([
-                            Ldloca(v) |> ilResolve
-                            yield! List.map (Ldflda >> ilResolve) fieldsTo
-                            yield! exprToIl expr
-                            last |> Stfld |> ilResolve
-                        ], [])
+                    (getVar4Assign ident (exprToIl expr), [])
                 | IfStm(expr, tb, fb) ->
                     // if logic
                     let firstEnfOfStm = ref ForwardLabel
@@ -717,7 +720,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         defTypes.Add(stdType "Integer", mb.TypeSystem.Int32)
         defTypes.Add(stdType "Byte", mb.TypeSystem.Byte)
         defTypes.Add(stdType "Boolean", mb.TypeSystem.Boolean)
-        defTypes.Add(stdType "Boolean", mb.TypeSystem.Void)
+        defTypes.Add(stdType "Pointer", mb.TypeSystem.Void)
 
         printfn "%A" block.decl
         block.decl
