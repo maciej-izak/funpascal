@@ -80,6 +80,7 @@ type Symbol =
     | WithSym of VariableDefinition * TypeDefinition
 
 type SymbolLoad =
+    | ChainLoad of SymbolLoad list
     | VariableDerefLoad of VariableDefinition
     | VariableStructLoad of VariableDefinition * FieldDefinition list
     | VariableDerefStructLoad of VariableDefinition * FieldDefinition list
@@ -246,11 +247,11 @@ let private emit (ilg : Cil.ILProcessor) inst =
 let findSymbol (ctx: Ctx) (DIdent ident) =
     let mainSym = ident.Head |> function | PIName n -> ctx.FindSym n
     
-    let rec findSym ref = function
+    let rec findSym ref acc = function
     | PIName(h)::t ->
         let symbols = ctx.typeSymbols.[ref]
         let sym = symbols.[h]
-        sym::findSym sym.FieldType t
+        findSym sym.FieldType (sym::acc) t
     | [] -> [] // failwith "IE"
 
     let absVariableType (vt: TypeReference) = vt.GetElementType()
@@ -262,12 +263,12 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
         match tail with
         | [] -> VariableLoad(vd)
         | [Deref] -> VariableDerefLoad(vd)
-        | _ -> VariableStructLoad(vd, findSym vt tail)
+        | _ -> VariableStructLoad(vd, findSym vt [] tail)
     | Some(WithSym (p, td)) ->
         let vt = absVariableType td
-        VariableDerefStructLoad(p, findSym vt ident)
+        VariableDerefStructLoad(p, findSym vt [] ident)
     | Some(EnumValueSym(i)) when ident.Tail = [] -> ValueLoad(i)
-    | None -> SymbolLoadError
+    | _ -> SymbolLoadError
 
 let ilResolve = ainstr >> IlResolved
 
