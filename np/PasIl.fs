@@ -76,11 +76,16 @@ type MetaInstruction =
 
 type Symbol =
     | VariableSym of VariableDefinition
-    | VariableStructSym of VariableDefinition * FieldDefinition list
-    | VariableDerefSym of VariableDefinition
-    | VariableDerefStructSym of VariableDefinition * FieldDefinition list
     | EnumValueSym of int
     | WithSym of VariableDefinition * TypeDefinition
+
+type SymbolLoad =
+    | VariableDerefLoad of VariableDefinition
+    | VariableStructLoad of VariableDefinition * FieldDefinition list
+    | VariableDerefStructLoad of VariableDefinition * FieldDefinition list
+    | VariableLoad of VariableDefinition
+    | ValueLoad of int
+    | SymbolLoadError
 
 let caseSensitive = HashIdentity.Structural<string>
 let caseInsensitive =
@@ -255,34 +260,33 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
         let vt = absVariableType vd.VariableType
         let tail = ident.Tail
         match tail with
-        | [] -> Some(VariableSym(vd))
-        | [Deref] -> Some(VariableDerefSym(vd))
-        | _ -> Some(VariableStructSym(vd, findSym vt tail))
+        | [] -> VariableLoad(vd)
+        | [Deref] -> VariableDerefLoad(vd)
+        | _ -> VariableStructLoad(vd, findSym vt tail)
     | Some(WithSym (p, td)) ->
         let vt = absVariableType td
-        Some(VariableDerefStructSym(p, findSym vt ident))
-    | Some(EnumValueSym(_)) -> assert(ident.Tail = []); mainSym 
-    | Some(_) -> failwith "IE" 
-    | None -> None
+        VariableDerefStructLoad(p, findSym vt ident)
+    | Some(EnumValueSym(i)) when ident.Tail = [] -> ValueLoad(i)
+    | None -> SymbolLoadError
 
 let ilResolve = ainstr >> IlResolved
 
 let findSymbolAndLoad (ctx: Ctx) ident =
     match findSymbol ctx ident with
-    | Some(VariableSym vs) -> vs |> Ldloc |> ilResolve |> List.singleton
-    | Some(VariableStructSym(vd, fdl)) ->
+    | VariableLoad vs -> vs |> Ldloc |> ilResolve |> List.singleton
+    | VariableStructLoad(vd, fdl) ->
         (vd |> Ldloca |> ilResolve)::(List.map (Ldfld >> ilResolve) fdl)
-    | Some(VariableDerefStructSym(vd, fdl)) ->
+    | VariableDerefStructLoad(vd, fdl) ->
         (vd |> Ldloc |> ilResolve)::(List.map (Ldfld >> ilResolve) fdl)
-    | Some(EnumValueSym evs) -> Ldc_I4(evs) |> ilResolve |> List.singleton
+    | ValueLoad evs -> Ldc_I4(evs) |> ilResolve |> List.singleton
     | _ -> failwith "IE"
 
 let findSymbolAndGetPtr (ctx: Ctx) ident =
     match findSymbol ctx ident with
-    | Some(VariableSym vs) -> vs |> Ldloca |> ilResolve |> List.singleton
-    | Some(VariableStructSym(vd, fdl)) ->
+    | VariableLoad vs -> vs |> Ldloca |> ilResolve |> List.singleton
+    | VariableStructLoad(vd, fdl) ->
         (vd |> Ldloca |> ilResolve)::(List.map (Ldflda >> ilResolve) fdl)
-    | Some(VariableDerefStructSym(vd, fdl)) ->
+    | VariableDerefStructLoad(vd, fdl) ->
         (vd |> Ldloc |> ilResolve)::(List.map (Ldflda >> ilResolve) fdl)
     | _ -> failwith "IE"
 
@@ -474,12 +478,12 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let exprToIl = exprToIl ctx
         let getVar4ForLoop = findSymbol ctx >>
                              function
-                             | Some(VariableSym vs) -> vs
+                             | VariableLoad vs -> vs
                              | _ -> failwith "IE"
         let getVar4Assign (ident: DIdent) expr =
              match findSymbol ctx ident with
-             | Some(VariableSym vs) -> [yield! expr ; Stloc(vs) |> ilResolve]
-             | Some(VariableStructSym (vs, fld)) ->
+             | VariableLoad vs -> [yield! expr ; Stloc(vs) |> ilResolve]
+             | VariableStructLoad (vs, fld) ->
                 // TODO change to Array in F# 5.0
                 let (fieldsTo, last) = (fld.[0..fld.Length-2], List.last fld)
                 [
@@ -497,7 +501,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 (fun symbols i ->
                     let loadVarW =
                         match findSymbol ctx i with
-                        | Some(VariableStructSym (v, fld)) ->
+                        | VariableStructLoad (v, fld) ->
                             let vt = match v.VariableType with
                                      | :? TypeDefinition as td ->
                                          v.VariableType <- v.VariableType.MakePinnedType()
