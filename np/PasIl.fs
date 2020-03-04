@@ -472,27 +472,56 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let rec stmtToIl (ctx: Ctx) sysLabels (s: Statement): (MetaInstruction * BranchLabel ref list) =
         let stmtToIlList = stmtListToIlList ctx
         let exprToIl = exprToIl ctx
-        let getVar = findSymbol ctx >>
-                     function
-                     | Some(VariableSym vs) -> (vs, None)
-                     | Some(VariableDerefSym vs) -> (vs, None)
-                     | Some(VariableStructSym (vs, fdl)) -> (vs, Some(fdl))
-                     | _ -> failwith "IE"
+        let getVar4ForLoop = findSymbol ctx >>
+                             function
+                             | Some(VariableSym vs) -> vs
+                             | _ -> failwith "IE"
         let getVar4Assign (ident: DIdent) expr =
-                     match findSymbol ctx ident with
-                     | Some(VariableSym vs) -> [yield! expr ; Stloc(vs) |> ilResolve]
-                     | Some(VariableStructSym (vs, fld)) ->
-                        // TODO change to Arrray in F# 5.0
-                        let (fieldsTo, last) = (fld.[0..fld.Length-2], List.last fld)
-                        [
-                            Ldloca(vs) |> ilResolve
-                            yield! List.map (Ldflda >> ilResolve) fieldsTo
-                            yield! expr
-                            last |> Stfld |> ilResolve
-                        ]
-                    //some code for deref and assign
-//                     | Some(VariableDerefSym vs) -> (vs, None)
-                     | _ -> failwith "IE"
+             match findSymbol ctx ident with
+             | Some(VariableSym vs) -> [yield! expr ; Stloc(vs) |> ilResolve]
+             | Some(VariableStructSym (vs, fld)) ->
+                // TODO change to Array in F# 5.0
+                let (fieldsTo, last) = (fld.[0..fld.Length-2], List.last fld)
+                [
+                    Ldloca(vs) |> ilResolve
+                    yield! List.map (Ldflda >> ilResolve) fieldsTo
+                    yield! expr
+                    last |> Stfld |> ilResolve
+                ]
+            //some code for deref and assign
+            //                     | Some(VariableDerefSym vs) -> (vs, None)
+             | _ -> failwith "IE"
+        let getVar4With idents =
+            let ils = List<_>()
+            List.fold
+                (fun symbols i ->
+                    let loadVarW =
+                        match findSymbol ctx i with
+                        | Some(VariableStructSym (v, fld)) ->
+                            let vt = match v.VariableType with
+                                     | :? TypeDefinition as td ->
+                                         v.VariableType <- v.VariableType.MakePinnedType()
+                                         td
+                                     | :? PinnedType as pt -> pt.GetElementType() :?> TypeDefinition
+                                     | _ -> failwith "IE"
+                            let (_, vv) = ctx.EnsureVariable(ctx.moduleBuilder.TypeSystem.UIntPtr)
+                            // TODO optimize List.tryLast?
+                            // try last element in expr x.y.z (z is the right choice)
+                            let vt = match List.tryLast fld with | Some f -> f.FieldType :?> TypeDefinition | _ -> vt
+                            ([
+                                Ldloca(v) |> ilResolve
+                                yield! List.map (Ldflda >> ilResolve) fld
+                                Stloc(vv) |> ilResolve
+                            ],(vv, vt))
+                        | _ -> failwith "IE"
+
+                    let newSymbols = Dictionary<string, Symbol>()
+                    let (v, td) = snd loadVarW
+                    for f in td.Fields do
+                        newSymbols.Add(f.Name, WithSym(v, td))
+                    ils.Add(fst loadVarW)
+                    newSymbols::symbols
+                ) ctx.symbols idents, ils
                      
         let (instructions, newSysLabels) =
                 match s with
@@ -609,9 +638,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     ],[])
                 | ForStm (ident, initExpr, delta, finiExpr, stmt) ->
                     let exprLabel = ref ForwardLabel
-                    let (var, fld) = getVar ident
-                    if fld.IsSome then
-                      failwith "IE"
+                    let var = getVar4ForLoop ident
                     let (name, varFinal) = ctx.EnsureVariable()
                     let (loopInit, _) = AssignStm(ident, initExpr) |> List.singleton |> stmtToIlList
                     // TODO optimization for simple values (dont store in var)
@@ -639,39 +666,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         yield! incLoopVar
                         yield! condition
                     ],[])
-                | WithStm (ident, stmt) ->
-                    let ils = List<_>()
-                    let withSymbols =
-                        List.fold 
-                            (fun symbols i ->
-                                let var = getVar i
-                                let loadVarW =
-                                    match var with
-                                    | (v, Some(fld)) ->
-                                        let vt = match v.VariableType with
-                                                 | :? TypeDefinition as td ->
-                                                     v.VariableType <- v.VariableType.MakePinnedType()
-                                                     td
-                                                 | :? PinnedType as pt -> pt.GetElementType() :?> TypeDefinition
-                                                 | _ -> failwith "IE"
-                                        let (_, vv) = ctx.EnsureVariable(ctx.moduleBuilder.TypeSystem.UIntPtr)
-                                        // TODO optimize List.tryLast?
-                                        // try last element in expr x.y.z (z is the right choice)
-                                        let vt = match List.tryLast fld with | Some f -> f.FieldType :?> TypeDefinition | _ -> vt
-                                        ([
-                                            Ldloca(v) |> ilResolve
-                                            yield! List.map (Ldflda >> ilResolve) fld
-                                            Stloc(vv) |> ilResolve
-                                        ],(vv, vt))
-                                    | _ -> failwith "IE"
-                            
-                                let newSymbols = Dictionary<string, Symbol>()
-                                let (v, td) = snd loadVarW
-                                for f in td.Fields do
-                                    newSymbols.Add(f.Name, WithSym(v, td))
-                                ils.Add(fst loadVarW)
-                                newSymbols::symbols
-                            ) ctx.symbols ident
+                | WithStm (idents, stmt) ->
+                    let (withSymbols, ils) = getVar4With idents
                     let newCtx = { ctx with symbols = withSymbols }
                     // TODO check if some part is unused in ils
                     let (branch, labels) = stmtListToIlList newCtx stmt
