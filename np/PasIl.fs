@@ -83,7 +83,10 @@ type SymbolLoad =
     | ChainLoad of SymbolLoad list
     | VariableDerefLoad of VariableDefinition
     | VariableStructLoad of VariableDefinition * FieldDefinition list
+    | DerefLoad
+    | StructLoad of FieldDefinition list
     | VariableDerefStructLoad of VariableDefinition * FieldDefinition list
+    | VariablePtrLoad of VariableDefinition
     | VariableLoad of VariableDefinition
     | ValueLoad of int
     | SymbolLoadError
@@ -244,6 +247,18 @@ let private emit (ilg : Cil.ILProcessor) inst =
     | InstructionSingleton is -> instr is |> appendIfNotNull
     | InstructionList p -> p |> List.iter (instr >> appendIfNotNull) 
 
+(*
+
+        int a = 0;
+        int* p = &a;
+        {
+        // p is pinned as well as object, so create another pointer to show incrementing it.
+            int** p2 = &p;
+            Console.WriteLine( **p2 );
+        }
+
+*)
+
 let findSymbol (ctx: Ctx) (DIdent ident) =
     let mainSym = ident.Head |> function | PIName n -> ctx.FindSym n
     
@@ -252,21 +267,41 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
         let symbols = ctx.typeSymbols.[ref]
         let sym = symbols.[h]
         findSym sym.FieldType (sym::acc) t
-    | [] -> [] // failwith "IE"
+    | t -> acc, t
 
     let absVariableType (vt: TypeReference) = vt.GetElementType()
     
+    let rec resolveTail acc = function
+        | [] -> acc
+        | [Deref] -> DerefLoad::acc
+        | tail ->
+            let sl, tail = findSym vt [] tail
+            resolveTail (StructLoad(sl)::acc) tail
     match mainSym with
     | Some(VariableSym vd) ->
         let vt = absVariableType vd.VariableType
-        let tail = ident.Tail
-        match tail with
+        match ident.Tail with
         | [] -> VariableLoad(vd)
-        | [Deref] -> VariableDerefLoad(vd)
-        | _ -> VariableStructLoad(vd, findSym vt [] tail)
+        | tail ->
+            match resolveTail [] ident.Tail with
+            | [sl] -> match sl with
+                      | DerefLoad -> VariableDerefLoad(vd)
+                      | StructLoad(fl) -> VariableStructLoad(vd, fl)
+                      | _ -> failwith "IE"
+            | chain -> ChainLoad (VariableLoad(vd)::(List.rev chain))
     | Some(WithSym (p, td)) ->
         let vt = absVariableType td
-        VariableDerefStructLoad(p, findSym vt [] ident)
+        match ident.Tail with
+        | [] -> VariableLoad(vd)
+        | tail ->
+            match resolveTail [] ident.Tail with
+            | [sl] -> match sl with
+                      | DerefLoad -> VariableDerefLoad(vd)
+                      | StructLoad(fl) -> VariableStructLoad(vd, fl)
+                      | _ -> failwith "IE"
+            | chain -> ChainLoad (VariableLoad(vd)::(List.rev chain))
+        let sl, tail = findSym vt [] ident
+        VariableDerefStructLoad(p, )?
     | Some(EnumValueSym(i)) when ident.Tail = [] -> ValueLoad(i)
     | _ -> SymbolLoadError
 
