@@ -269,39 +269,53 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
         findSym sym.FieldType (sym::acc) t
     | t -> acc, t
 
-    let absVariableType (vt: TypeReference) = vt.GetElementType()
+    // type may be pinned
+    let absVariableType (vt: TypeReference) =
+        match vt with
+        | :? PinnedType as pt -> pt.ElementType
+        | _ -> vt
     
-    let rec resolveTail acc = function
-        | [] -> acc
-        | [Deref] -> DerefLoad::acc
+    let rec resolveTail acc (vt: TypeReference)  = function
+        | [] -> List.rev acc
+        | h::t ->
+            match h with
+            | Deref ->
+                let tref = vt :?> TypeSpecification
+                resolveTail (DerefLoad::acc) tref.ElementType t
+            | Ident _ -> 
+                let sl, restOfTail = findSym vt [] (h::t)
+                let vt = (List.last sl).FieldType
+                resolveTail (StructLoad(sl)::acc) vt restOfTail
+            | _ -> failwith "IE"
+         
+    let doLoadSym vd vt = function
+        | [] -> VariableLoad(vd)
         | tail ->
-            let sl, tail = findSym vt [] tail
-            resolveTail (StructLoad(sl)::acc) tail
+            match resolveTail [] vt tail with
+            | [sl] -> match sl with
+                      | DerefLoad -> VariableDerefLoad(vd)
+                      | StructLoad(fl) -> VariableStructLoad(vd, fl)
+                      | _ -> failwith "IE"
+            | chain -> ChainLoad (VariableLoad(vd)::chain)
+            
+    let doLoadSym4With vd vt =
+        match resolveTail [] vt ident with
+        | [sl] -> match sl with
+                  | StructLoad(fl) -> VariableDerefStructLoad(vd, fl)
+                  | _ -> failwith "IE"
+        | chain ->
+            let h = match chain.Head with
+                    | StructLoad fl -> fl
+                    | _ -> failwith "IE"
+            ChainLoad (VariableDerefStructLoad(vd, h)::(chain.Tail))
+            
     match mainSym with
     | Some(VariableSym vd) ->
         let vt = absVariableType vd.VariableType
-        match ident.Tail with
-        | [] -> VariableLoad(vd)
-        | tail ->
-            match resolveTail [] ident.Tail with
-            | [sl] -> match sl with
-                      | DerefLoad -> VariableDerefLoad(vd)
-                      | StructLoad(fl) -> VariableStructLoad(vd, fl)
-                      | _ -> failwith "IE"
-            | chain -> ChainLoad (VariableLoad(vd)::(List.rev chain))
-    | Some(WithSym (p, td)) ->
-        let vt = absVariableType td
-        match ident.Tail with
-        | [] -> VariableLoad(vd)
-        | tail ->
-            match resolveTail [] ident.Tail with
-            | [sl] -> match sl with
-                      | DerefLoad -> VariableDerefLoad(vd)
-                      | StructLoad(fl) -> VariableStructLoad(vd, fl)
-                      | _ -> failwith "IE"
-            | chain -> ChainLoad (VariableLoad(vd)::(List.rev chain))
-        let sl, tail = findSym vt [] ident
-        VariableDerefStructLoad(p, )?
+        doLoadSym vd vt ident.Tail
+    | Some(WithSym (vd, td)) ->
+        absVariableType td
+        |> doLoadSym4With vd
     | Some(EnumValueSym(i)) when ident.Tail = [] -> ValueLoad(i)
     | _ -> SymbolLoadError
 
@@ -528,8 +542,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     yield! expr
                     last |> Stfld |> ilResolve
                 ]
-            //some code for deref and assign
-            //                     | Some(VariableDerefSym vs) -> (vs, None)
+             | VariableDerefLoad vd -> [] // TODO some deref
              | _ -> failwith "IE"
         let getVar4With idents =
             let ils = List<_>()
