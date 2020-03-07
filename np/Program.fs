@@ -17,12 +17,16 @@ let main argv =
       var
         i: Integer;
         ip: PI;
+        ipp: PPI;
       begin
         i := 1;
         ip := @i;
         WriteLn(i);
         ip^ := 2;
         WriteLn(ip^);
+        ipp := @ip;
+        //ipp^^ := 3;
+        WriteLn(i);
       end.
       """
     |> printfn "%A"

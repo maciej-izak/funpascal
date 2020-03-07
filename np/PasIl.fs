@@ -28,8 +28,10 @@ and AtomIlInstruction =
     | Ldloca of VariableDefinition
     | Ldfld of FieldDefinition
     | Ldflda of FieldDefinition
+    | Ldind_I4
     | Stloc of VariableDefinition
     | Stfld of FieldDefinition
+    | Stind_I4
     | AddInst
     | MultiplyInst
     | MinusInst
@@ -95,7 +97,7 @@ let caseSensitive = HashIdentity.Structural<string>
 let caseInsensitive =
     HashIdentity.FromFunctions
         (fun (s: string) -> s.GetHashCode(StringComparison.InvariantCultureIgnoreCase))
-        (fun (a: string) (b: string) -> String.Equals(a, b, StringComparison.InvariantCultureIgnoreCase))
+        (fun a b -> String.Equals(a, b, StringComparison.InvariantCultureIgnoreCase))
 
 type SymbolsDict<'T>() =
     inherit Dictionary<string, 'T>()
@@ -202,8 +204,10 @@ let private ainstr = function
                     | Ldloca i     -> Instruction.Create(OpCodes.Ldloca, i)
                     | Ldfld f      -> Instruction.Create(OpCodes.Ldfld, f)
                     | Ldflda f     -> Instruction.Create(OpCodes.Ldflda, f)
+                    | Ldind_I4     -> Instruction.Create(OpCodes.Ldind_I4)
                     | Stloc i      -> Instruction.Create(OpCodes.Stloc, i)
                     | Stfld f      -> Instruction.Create(OpCodes.Stfld, f)
+                    | Stind_I4     -> Instruction.Create(OpCodes.Stind_I4)
                     | Ret          -> Instruction.Create(OpCodes.Ret)
                     | Unknown      -> Instruction.Create(OpCodes.Nop)
                     | Ceq          -> Instruction.Create(OpCodes.Ceq)
@@ -329,6 +333,11 @@ let findSymbolAndLoad (ctx: Ctx) ident =
     | VariableDerefStructLoad(vd, fdl) ->
         (vd |> Ldloc |> ilResolve)::(List.map (Ldfld >> ilResolve) fdl)
     | ValueLoad evs -> Ldc_I4(evs) |> ilResolve |> List.singleton
+    | VariableDerefLoad vd ->
+        [
+            yield Ldloc vd |> ilResolve
+            yield Ldind_I4 |> ilResolve
+        ]
     | _ -> failwith "IE"
 
 let findSymbolAndGetPtr (ctx: Ctx) ident =
@@ -443,7 +452,7 @@ let rec evalConstExpr expr =
     | Add(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 (Some (+)) (Some (+)  )
     | Multiply(e1, e2) -> eval2 e1 e2 |> evalExprOp2 None       (Some (*)  )
     | Minus(e1, e2)    -> eval2 e1 e2 |> evalExprOp2 None       (Some (-)  )
-    | Divide(e1, e2)   -> eval2 e1 e2 |> evalExprOp2 None       None
+    | Divide(e1, e2)   -> eval2 e1 e2 |> evalExprOp2 None       (Some (/)  )
     | And(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (&&&))
     | Or(e1, e2)       -> eval2 e1 e2 |> evalExprOp2 None       (Some (|||))
     | Xor(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (^^^))
@@ -455,7 +464,7 @@ let rec evalConstExpr expr =
     | UnaryPlus(e1)    -> eval1 e1 |> evalExprOp1 None (Some (~+) )
     | UnaryMinus(e1)   -> eval1 e1 |> evalExprOp1 None (Some (~-) )
     | _ -> CERUnknown
-    (* 
+    (*
     | As of ExprEl * ExprEl
     | Addr of ExprEl
     | Equal of ExprEl * ExprEl
@@ -542,7 +551,12 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     yield! expr
                     last |> Stfld |> ilResolve
                 ]
-             | VariableDerefLoad vd -> [] // TODO some deref
+             | VariableDerefLoad vd ->
+                 [
+                     Ldloc vd |> ilResolve
+                     yield! expr
+                     Stind_I4 |> ilResolve
+                 ]
              | _ -> failwith "IE"
         let getVar4With idents =
             let ils = List<_>()
