@@ -29,8 +29,10 @@ and AtomIlInstruction =
     | Ldfld of FieldDefinition
     | Ldflda of FieldDefinition
     | Ldind_I4
+    | Ldind_I
     | Stloc of VariableDefinition
     | Stfld of FieldDefinition
+    | Stind_I
     | Stind_I4
     | AddInst
     | MultiplyInst
@@ -83,7 +85,6 @@ type Symbol =
 
 type SymbolLoad =
     | ChainLoad of SymbolLoad list
-    | VariableDerefLoad of VariableDefinition
     | VariableStructLoad of VariableDefinition * FieldDefinition list
     | DerefLoad
     | StructLoad of FieldDefinition list
@@ -205,8 +206,10 @@ let private ainstr = function
                     | Ldfld f      -> Instruction.Create(OpCodes.Ldfld, f)
                     | Ldflda f     -> Instruction.Create(OpCodes.Ldflda, f)
                     | Ldind_I4     -> Instruction.Create(OpCodes.Ldind_I4)
+                    | Ldind_I      -> Instruction.Create(OpCodes.Ldind_I)
                     | Stloc i      -> Instruction.Create(OpCodes.Stloc, i)
                     | Stfld f      -> Instruction.Create(OpCodes.Stfld, f)
+                    | Stind_I      -> Instruction.Create(OpCodes.Stind_I)
                     | Stind_I4     -> Instruction.Create(OpCodes.Stind_I4)
                     | Ret          -> Instruction.Create(OpCodes.Ret)
                     | Unknown      -> Instruction.Create(OpCodes.Nop)
@@ -294,13 +297,14 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
          
     let doLoadSym vd vt = function
         | [] -> VariableLoad(vd)
-        | tail ->
-            match resolveTail [] vt tail with
-            | [sl] -> match sl with
-                      | DerefLoad -> VariableDerefLoad(vd)
-                      | StructLoad(fl) -> VariableStructLoad(vd, fl)
-                      | _ -> failwith "IE"
-            | chain -> ChainLoad (VariableLoad(vd)::chain)
+        | tail -> ChainLoad <| VariableLoad(vd)::(resolveTail [] vt tail)
+
+//            match resolveTail [] vt tail with
+//            | [sl] -> match sl with
+//                      | DerefLoad -> VariableDerefLoad(vd)
+//                      | StructLoad(fl) -> VariableStructLoad(vd, fl)
+//                      | _ -> failwith "IE"
+//            | chain -> ChainLoad (VariableLoad(vd)::chain)
             
     let doLoadSym4With vd vt =
         match resolveTail [] vt ident with
@@ -333,11 +337,12 @@ let findSymbolAndLoad (ctx: Ctx) ident =
     | VariableDerefStructLoad(vd, fdl) ->
         (vd |> Ldloc |> ilResolve)::(List.map (Ldfld >> ilResolve) fdl)
     | ValueLoad evs -> Ldc_I4(evs) |> ilResolve |> List.singleton
-    | VariableDerefLoad vd ->
-        [
-            yield Ldloc vd |> ilResolve
-            yield Ldind_I4 |> ilResolve
-        ]
+    | ChainLoad sl ->
+        sl |> List.map
+                (function
+                | VariableLoad vd -> Ldloc vd |> ilResolve
+                | DerefLoad -> Ldind_I4 |> ilResolve
+                )
     | _ -> failwith "IE"
 
 let findSymbolAndGetPtr (ctx: Ctx) ident =
