@@ -34,6 +34,7 @@ and AtomIlInstruction =
     | Stfld of FieldDefinition
     | Stind_I
     | Stind_I4
+    | Conv_I
     | AddInst
     | MultiplyInst
     | MinusInst
@@ -211,6 +212,7 @@ let private ainstr = function
                     | Stfld f      -> Instruction.Create(OpCodes.Stfld, f)
                     | Stind_I      -> Instruction.Create(OpCodes.Stind_I)
                     | Stind_I4     -> Instruction.Create(OpCodes.Stind_I4)
+                    | Conv_I       -> Instruction.Create(OpCodes.Conv_U)
                     | Ret          -> Instruction.Create(OpCodes.Ret)
                     | Unknown      -> Instruction.Create(OpCodes.Nop)
                     | Ceq          -> Instruction.Create(OpCodes.Ceq)
@@ -266,6 +268,17 @@ let private emit (ilg : Cil.ILProcessor) inst =
 
 *)
 
+// type may be pinned
+let absVariableType (vt: TypeReference) =
+    match vt with
+    | :? PinnedType as pt -> pt.ElementType
+    | _ -> vt
+
+let derefType (t: TypeReference) =
+    match t with
+    | :? PointerType as pt -> pt.ElementType
+    | _ -> failwith "Cannot dereference non pointer type"
+    
 let findSymbol (ctx: Ctx) (DIdent ident) =
     let mainSym = ident.Head |> function | PIName n -> ctx.FindSym n
     
@@ -275,12 +288,6 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
         let sym = symbols.[h]
         findSym sym.FieldType (sym::acc) t
     | t -> acc, t
-
-    // type may be pinned
-    let absVariableType (vt: TypeReference) =
-        match vt with
-        | :? PinnedType as pt -> pt.ElementType
-        | _ -> vt
     
     let rec resolveTail acc (vt: TypeReference)  = function
         | [] -> List.rev acc
@@ -545,20 +552,33 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                              | VariableLoad vs -> vs
                              | _ -> failwith "IE"
         let getVar4Assign (ident: DIdent) expr =
+             // add param for findSymbol to set purpose (like this `assign`)
              match findSymbol ctx ident with
              | VariableLoad vs -> [yield! expr ; Stloc(vs) |> ilResolve]
              | VariableStructLoad (vs, fld) ->
-                // TODO change to Array in F# 5.0
-                let (fieldsTo, last) = (fld.[0..fld.Length-2], List.last fld)
-                [
-                    Ldloca(vs) |> ilResolve
-                    yield! List.map (Ldflda >> ilResolve) fieldsTo
-                    yield! expr
-                    last |> Stfld |> ilResolve
-                ]
-             | VariableDerefLoad vd ->
+                 // TODO change to Array in F# 5.0
+                 let (fieldsTo, last) = (fld.[0..fld.Length-2], List.last fld)
                  [
-                     Ldloc vd |> ilResolve
+                     Ldloca(vs) |> ilResolve
+                     yield! List.map (Ldflda >> ilResolve) fieldsTo
+                     yield! expr
+                     last |> Stfld |> ilResolve
+                 ]
+             | ChainLoad symbols ->
+                 // TODO change to Array in F# 5.0
+                 let (fieldsTo, last) = (symbols.[0..symbols.Length-2], List.last symbols)
+                 let lastPoint = ref None
+                 [
+                     yield! List.map
+                        (fun s ->
+                         match s with
+                         | VariableLoad vs ->
+                             lastPoint := Some(absVariableType vs.VariableType)
+                             Ldloc vs |> ilResolve
+                         | DerefLoad ->
+                             lastPoint := Some(derefType (!lastPoint))
+                             
+                        ) fieldsTo
                      yield! expr
                      Stind_I4 |> ilResolve
                  ]
@@ -785,7 +805,13 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let typeSymbols = Dictionary<TypeReference,_>()
         let defTypes = Dictionary<TypeIdentifier, TypeReference>()
 
+        defTypes.Add(stdType "Int64", mb.TypeSystem.Int64)
+        defTypes.Add(stdType "UInt64", mb.TypeSystem.UInt64)
         defTypes.Add(stdType "Integer", mb.TypeSystem.Int32)
+        defTypes.Add(stdType "LongWord", mb.TypeSystem.UInt32)
+        defTypes.Add(stdType "SmallInt", mb.TypeSystem.Int16)
+        defTypes.Add(stdType "Word", mb.TypeSystem.UInt16)
+        defTypes.Add(stdType "ShortInt", mb.TypeSystem.SByte)
         defTypes.Add(stdType "Byte", mb.TypeSystem.Byte)
         defTypes.Add(stdType "Boolean", mb.TypeSystem.Boolean)
         defTypes.Add(stdType "Pointer", mb.TypeSystem.Void)
