@@ -13,6 +13,20 @@ open Microsoft.FSharp.Linq
 open Mono.Cecil
 open Mono.Cecil
 
+type IndirectKind =
+    | Ind_I
+    | Ind_I1
+    | Ind_I2
+    | Ind_I4
+    | Ind_I8
+    | Ind_U
+    | Ind_U1
+    | Ind_U2
+    | Ind_U4
+    | Ind_U8
+    | Ind_R4
+    | Ind_R8
+
 type BranchLabel =
     | LazyLabel of IlInstruction
     | Label of Instruction
@@ -28,12 +42,10 @@ and AtomIlInstruction =
     | Ldloca of VariableDefinition
     | Ldfld of FieldDefinition
     | Ldflda of FieldDefinition
-    | Ldind_I4
-    | Ldind_I
+    | Ldind of IndirectKind
     | Stloc of VariableDefinition
     | Stfld of FieldDefinition
-    | Stind_I
-    | Stind_I4
+    | Stind of IndirectKind
     | Conv_I
     | AddInst
     | MultiplyInst
@@ -206,12 +218,34 @@ let private ainstr = function
                     | Ldloca i     -> Instruction.Create(OpCodes.Ldloca, i)
                     | Ldfld f      -> Instruction.Create(OpCodes.Ldfld, f)
                     | Ldflda f     -> Instruction.Create(OpCodes.Ldflda, f)
-                    | Ldind_I4     -> Instruction.Create(OpCodes.Ldind_I4)
-                    | Ldind_I      -> Instruction.Create(OpCodes.Ldind_I)
+                    | Ldind it     -> match it with
+                                      | Ind_I -> Instruction.Create(OpCodes.Ldind_I)
+                                      | Ind_I1 -> Instruction.Create(OpCodes.Ldind_I1)
+                                      | Ind_I2 -> Instruction.Create(OpCodes.Ldind_I2)
+                                      | Ind_I4 -> Instruction.Create(OpCodes.Ldind_I4)
+                                      | Ind_I8 -> Instruction.Create(OpCodes.Ldind_I8)
+                                      | Ind_U -> Instruction.Create(OpCodes.Ldind_I)
+                                      | Ind_U1 -> Instruction.Create(OpCodes.Ldind_U1)
+                                      | Ind_U2 -> Instruction.Create(OpCodes.Ldind_U2)
+                                      | Ind_U4 -> Instruction.Create(OpCodes.Ldind_U4)
+                                      | Ind_U8 -> Instruction.Create(OpCodes.Ldind_I8)
+                                      | Ind_R4 -> Instruction.Create(OpCodes.Ldind_R4)
+                                      | Ind_R8 -> Instruction.Create(OpCodes.Ldind_R8)
                     | Stloc i      -> Instruction.Create(OpCodes.Stloc, i)
                     | Stfld f      -> Instruction.Create(OpCodes.Stfld, f)
-                    | Stind_I      -> Instruction.Create(OpCodes.Stind_I)
-                    | Stind_I4     -> Instruction.Create(OpCodes.Stind_I4)
+                    | Stind it     -> match it with
+                                      | Ind_I -> Instruction.Create(OpCodes.Stind_I)
+                                      | Ind_I1 -> Instruction.Create(OpCodes.Stind_I1)
+                                      | Ind_I2 -> Instruction.Create(OpCodes.Stind_I2)
+                                      | Ind_I4 -> Instruction.Create(OpCodes.Stind_I4)
+                                      | Ind_I8 -> Instruction.Create(OpCodes.Stind_I8)
+                                      | Ind_U -> Instruction.Create(OpCodes.Stind_I)
+                                      | Ind_U1 -> Instruction.Create(OpCodes.Stind_I1)
+                                      | Ind_U2 -> Instruction.Create(OpCodes.Stind_I2)
+                                      | Ind_U4 -> Instruction.Create(OpCodes.Stind_I4)
+                                      | Ind_U8 -> Instruction.Create(OpCodes.Stind_I8)
+                                      | Ind_R4 -> Instruction.Create(OpCodes.Stind_R4)
+                                      | Ind_R8 -> Instruction.Create(OpCodes.Stind_R8)
                     | Conv_I       -> Instruction.Create(OpCodes.Conv_U)
                     | Ret          -> Instruction.Create(OpCodes.Ret)
                     | Unknown      -> Instruction.Create(OpCodes.Nop)
@@ -347,8 +381,34 @@ let chainLoadToIl lastPoint = function
                               | _ -> failwith "IE"
         lastPoint := Some dt
         match dt.MetadataType with
-        | MetadataType.Pointer -> Ldind_I |> ilResolve
-        | MetadataType.Int32 -> Ldind_I4 |> ilResolve
+        | MetadataType.Pointer -> Ldind(Ind_I) |> ilResolve
+        | MetadataType.SByte -> Ldind(Ind_I1) |> ilResolve
+        | MetadataType.Int16 -> Ldind(Ind_I2) |> ilResolve
+        | MetadataType.Int32 -> Ldind(Ind_I4) |> ilResolve
+        | MetadataType.Int64 -> Ldind(Ind_I8) |> ilResolve
+        | MetadataType.Byte -> Ldind(Ind_U1) |> ilResolve
+        | MetadataType.UInt16 -> Ldind(Ind_U2) |> ilResolve
+        | MetadataType.UInt32 -> Ldind(Ind_U4) |> ilResolve
+        | MetadataType.UInt64 -> Ldind(Ind_U8) |> ilResolve
+        | _ -> failwith "IE"
+    | _ -> failwith "IE"
+
+let lastPointSaveToIl lastPoint = function
+    | DerefLoad ->
+        let dt = derefType <| match !lastPoint with
+                              | Some lp -> lp
+                              | _ -> failwith "IE" // context less dereference not allowed
+        lastPoint := Some dt
+        match dt.MetadataType with
+        | MetadataType.Pointer -> Stind(Ind_I) |> ilResolve
+        | MetadataType.SByte -> Stind(Ind_I1) |> ilResolve
+        | MetadataType.Int16 -> Stind(Ind_I2) |> ilResolve
+        | MetadataType.Int32 -> Stind(Ind_I4) |> ilResolve
+        | MetadataType.Int64 -> Stind(Ind_I8) |> ilResolve
+        | MetadataType.Byte -> Stind(Ind_U1) |> ilResolve
+        | MetadataType.UInt16 -> Stind(Ind_U2) |> ilResolve
+        | MetadataType.UInt32 -> Stind(Ind_U4) |> ilResolve
+        | MetadataType.UInt64 -> Stind(Ind_U8) |> ilResolve
         | _ -> failwith "IE"
     | _ -> failwith "IE"
 
@@ -584,17 +644,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                  [
                      yield! List.map (chainLoadToIl lastPoint) fieldsTo
                      yield! expr
-                     match last with
-                     | DerefLoad ->
-                         let dt = derefType <| match !lastPoint with
-                                               | Some lp -> lp
-                                               | _ -> failwith "IE" // context less dereference not allowed
-                         lastPoint := Some dt
-                         match dt.MetadataType with
-                         | MetadataType.Pointer -> Stind_I |> ilResolve
-                         | MetadataType.Int32 -> Stind_I4 |> ilResolve
-                         | _ -> failwith "IE"
-                     | _ -> failwith "IE"
+                     yield lastPointSaveToIl lastPoint last
                  ]
              | _ -> failwith "IE"
         let getVar4With idents =
