@@ -14,10 +14,12 @@ let main argv =
       type
         PI = ^Integer;
         PPI = ^^Integer;
+        PPPI = ^^^Integer;
       var
         i: Integer;
         ip: PI;
         ipp: PPI;
+        ippp: PPPI;
       begin
         i := 1;
         ip := @i;
@@ -25,8 +27,11 @@ let main argv =
         ip^ := 2;
         WriteLn(ip^);
         ipp := @ip;
-        //ipp^^ := 3;
-        WriteLn(i);
+        ipp^^ := 3;
+        WriteLn(ipp^^);
+        ippp := @ipp;
+        ippp^^^ := 4;
+        WriteLn(ippp^^^);
       end.
       """
     |> printfn "%A"

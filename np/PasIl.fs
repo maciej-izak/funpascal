@@ -294,6 +294,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
         | h::t ->
             match h with
             | Deref ->
+                // TODO check dereferencable
                 let tref = vt :?> TypeSpecification
                 resolveTail (DerefLoad::acc) tref.ElementType t
             | Ident _ -> 
@@ -336,6 +337,21 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
 
 let ilResolve = ainstr >> IlResolved
 
+let chainLoadToIl lastPoint = function
+    | VariableLoad vs ->
+        lastPoint := Some(absVariableType vs.VariableType)
+        Ldloc vs |> ilResolve
+    | DerefLoad ->
+        let dt = derefType <| match !lastPoint with
+                              | Some lp -> lp
+                              | _ -> failwith "IE"
+        lastPoint := Some dt
+        match dt.MetadataType with
+        | MetadataType.Pointer -> Ldind_I |> ilResolve
+        | MetadataType.Int32 -> Ldind_I4 |> ilResolve
+        | _ -> failwith "IE"
+    | _ -> failwith "IE"
+
 let findSymbolAndLoad (ctx: Ctx) ident =
     match findSymbol ctx ident with
     | VariableLoad vs -> vs |> Ldloc |> ilResolve |> List.singleton
@@ -345,11 +361,8 @@ let findSymbolAndLoad (ctx: Ctx) ident =
         (vd |> Ldloc |> ilResolve)::(List.map (Ldfld >> ilResolve) fdl)
     | ValueLoad evs -> Ldc_I4(evs) |> ilResolve |> List.singleton
     | ChainLoad sl ->
-        sl |> List.map
-                (function
-                | VariableLoad vd -> Ldloc vd |> ilResolve
-                | DerefLoad -> Ldind_I4 |> ilResolve
-                )
+        let lastPoint = ref None
+        sl |> List.map (chainLoadToIl lastPoint)
     | _ -> failwith "IE"
 
 let findSymbolAndGetPtr (ctx: Ctx) ident =
@@ -569,18 +582,19 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                  let (fieldsTo, last) = (symbols.[0..symbols.Length-2], List.last symbols)
                  let lastPoint = ref None
                  [
-                     yield! List.map
-                        (fun s ->
-                         match s with
-                         | VariableLoad vs ->
-                             lastPoint := Some(absVariableType vs.VariableType)
-                             Ldloc vs |> ilResolve
-                         | DerefLoad ->
-                             lastPoint := Some(derefType (!lastPoint))
-                             
-                        ) fieldsTo
+                     yield! List.map (chainLoadToIl lastPoint) fieldsTo
                      yield! expr
-                     Stind_I4 |> ilResolve
+                     match last with
+                     | DerefLoad ->
+                         let dt = derefType <| match !lastPoint with
+                                               | Some lp -> lp
+                                               | _ -> failwith "IE" // context less dereference not allowed
+                         lastPoint := Some dt
+                         match dt.MetadataType with
+                         | MetadataType.Pointer -> Stind_I |> ilResolve
+                         | MetadataType.Int32 -> Stind_I4 |> ilResolve
+                         | _ -> failwith "IE"
+                     | _ -> failwith "IE"
                  ]
              | _ -> failwith "IE"
         let getVar4With idents =
