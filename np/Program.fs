@@ -12,26 +12,17 @@ let main argv =
     PasStreams.testAll
       """program wow;
       type
-        PI = ^Integer;
-        PPI = ^^Integer;
-        PPPI = ^^^Integer;
+        TA = array[0..10] of byte;
+        TB = array[0..10, 0..5] of integer;
+        TC = array[0..10] of array[0..5] of integer;
+        TD = array[0..10, 0..5, 0..0, -1..2] of integer;
       var
-        i: Integer;
-        ip: PI;
-        ipp: PPI;
-        ippp: PPPI;
+        a: TA;
       begin
-        i := 1;
-        ip := @i;
-        WriteLn(i);
-        ip^ := 2;
-        WriteLn(ip^);
-        ipp := @ip;
-        ipp^^ := 3;
-        WriteLn(ipp^^);
-        ippp := @ipp;
-        ippp^^^ := 4;
-        WriteLn(ippp^^^);
+        //a[0] := 1;
+        //a[1] := 2;
+        //WriteLn(a[0]);
+        //WriteLn(a[1]);
       end.
       """
     |> printfn "%A"

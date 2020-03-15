@@ -11,7 +11,6 @@ open Mono.Cecil.Cil
 open Mono.Cecil.Rocks
 open Microsoft.FSharp.Linq
 open Mono.Cecil
-open Mono.Cecil
 
 type IndirectKind =
     | Ind_I
@@ -126,22 +125,26 @@ type LangCtx() as self =
         member _.GetHashCode(x) = ec.GetHashCode(x)
         member _.Equals(x,y) = ec.Equals(x, y)
 
+type TypeInfo =
+    | TypeSymbols of Dictionary<string,FieldDefinition>
+    | ArrayRange of (int * int) list
+
 type Ctx = {
         variables: Dictionary<string,VariableDefinition>
         labels: Dictionary<string, BranchLabel ref>
         symbols: Dictionary<string, Symbol> list
-        typeSymbols: Dictionary<TypeReference,Dictionary<string,FieldDefinition>>
+        typeInfo: Dictionary<TypeReference,TypeInfo>
         moduleBuilder: ModuleDefinition
         localVariables: int ref
         lang: LangCtx
         res: List<MetaInstruction>
     } with
-    static member Create variables labels symbols typeSymbols lang moduleBuilder =
+    static member Create variables labels symbols typeInfo lang moduleBuilder =
         {
             variables = variables
             labels = labels
             symbols = symbols
-            typeSymbols = typeSymbols
+            typeInfo = typeInfo
             moduleBuilder = moduleBuilder
             localVariables = ref 0
             lang = lang
@@ -300,6 +303,49 @@ let private emit (ilg : Cil.ILProcessor) inst =
             Console.WriteLine( **p2 );
         }
 
+
+        using System;
+using System.Runtime.InteropServices;
+public class C {
+
+[DllImport("kernel32.dll")]
+static extern void GetSystemTime(SystemTime systemTime);
+
+[StructLayout(LayoutKind.Sequential)]
+class SystemTime {
+    public ushort Year;
+    public ushort Month;
+    public ushort DayOfWeek;
+    public ushort Day;
+    public ushort Hour;
+    public ushort Minute;
+    public ushort Second;
+    public ushort Milsecond;
+}
+
+public static void Main(string[] args) {
+    SystemTime st = new SystemTime();
+    GetSystemTime(st);
+    Console.WriteLine(st.Year);
+}
+
+    [StructLayout(LayoutKind.Sequential)]
+public struct MyStruct {
+   [MarshalAs(UnmanagedType.ByValArray, SizeConst=128)] public short[] s1;
+}
+
+    public struct InPlaceArray
+{
+[MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+public int[] values;
+}
+
+    public unsafe void M() {
+        InPlaceArray x = new InPlaceArray();
+        x.values[3] = 9;
+    }
+}
+
 *)
 
 // type may be pinned
@@ -318,7 +364,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
     
     let rec findSym ref acc = function
     | PIName(h)::t ->
-        let symbols = ctx.typeSymbols.[ref]
+        let symbols = match ctx.typeInfo.[ref] with | TypeSymbols d -> d | _ -> failwith "IE"
         let sym = symbols.[h]
         findSym sym.FieldType (sym::acc) t
     | t -> acc, t
@@ -866,7 +912,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let variables = Dictionary<_,_>(langCtx)
         let labelsMap = Dictionary<_,_>(langCtx)
         let symbols = Dictionary<_,_>(langCtx)
-        let typeSymbols = Dictionary<TypeReference,_>()
+        let typeInfo = Dictionary<TypeReference,_>()
         let defTypes = Dictionary<TypeIdentifier, TypeReference>()
 
         defTypes.Add(stdType "Int64", mb.TypeSystem.Int64)
@@ -908,7 +954,57 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                     fieldsMap.Add(name, fd)
                                 mb.Types.Add(td)
                                 defTypes.Add(stdType name, td)
-                                typeSymbols.Add(td, fieldsMap)
+                                typeInfo.Add(td, TypeSymbols(fieldsMap))
+                           | Array(ArrayDef(_, dimensions, tname)) ->
+                                let rec doArrayDef dimensions tname dims name =
+                                    let subArrayName = ref ""
+                                    let newArrayDim ad typ: TypeReference =
+                                        let attributes = TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout
+                                        let at = TypeDefinition(ns, !subArrayName, attributes)
+                                        at.ClassSize <- 0
+                                        at.BaseType <- vt
+                                        //typ.MetadataType
+                                        let fd = FieldDefinition("items", FieldAttributes.Public, typ)
+                                        let fa = FixedArrayMarshalInfo()
+                                        fa.ElementType <- match typ.MetadataType with
+                                                          | MetadataType.Boolean -> NativeType.Boolean
+                                                          | MetadataType.SByte -> NativeType.I1
+                                                          | MetadataType.Byte -> NativeType.U1
+                                                          | MetadataType.Int16 -> NativeType.I2
+                                                          | MetadataType.UInt16 -> NativeType.U2
+                                                          | MetadataType.Int32 -> NativeType.I4
+                                                          | MetadataType.UInt32 -> NativeType.U4
+                                                          | MetadataType.Int64 -> NativeType.I8
+                                                          | MetadataType.UInt64 -> NativeType.U8
+                                                          | MetadataType.ValueType ->
+                                                              match typeInfo.TryGetValue(typ) with
+                                                              | true, ArrayRange(_) -> NativeType.FixedArray
+                                                              | _ -> failwith "IE"
+                                                          | _ -> failwith "IE"
+                                        fa.Size <- match ad with
+                                                   | DimensionExpr(ConstExpr(l),ConstExpr(h)) ->
+                                                       let l = match evalConstExpr(l) with | CERInt i -> i | _ -> failwith "IE"
+                                                       let h = match evalConstExpr(h) with | CERInt i -> i | _ -> failwith "IE"
+                                                       dims := (l,h)::!dims
+                                                       typeInfo.Add(at, ArrayRange(!dims))
+                                                       mb.Types.Add(at)
+                                                       h - l
+                                                   | _ -> failwith "IE"
+                                        fd.MarshalInfo <- fa
+                                        at.Fields.Add fd
+                                        at :> TypeReference
+
+                                    let typ = match tname with
+                                              | TIdArray(ArrayDef(_, dimensions, tname)) -> doArrayDef dimensions tname dims ""
+                                              | TIdIdent _ -> defTypes.[tname]
+                                              | _ -> failwith "IE"
+
+                                    let at = List.foldBack newArrayDim (List.tail dimensions) typ
+                                    subArrayName := name
+                                    let at = newArrayDim (List.head dimensions) at
+                                    defTypes.Add(stdType name, at)
+                                    at
+                                doArrayDef dimensions tname (ref []) name |> ignore
                            | _ -> ()
                    )
                | Variables v ->
@@ -920,6 +1016,6 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                
         for kv in variables do symbols.Add(kv.Key, VariableSym(kv.Value))
         
-        let ctx = Ctx.Create variables labelsMap [symbols] typeSymbols langCtx moduleBuilder
+        let ctx = Ctx.Create variables labelsMap [symbols] typeInfo langCtx moduleBuilder
         stmtListToIl block.stmt ctx
 end

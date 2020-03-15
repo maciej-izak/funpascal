@@ -2,6 +2,31 @@
 open np.BasicParsers
 open FParsec
 
+      // """program wow;
+      // type
+      //   PI = ^Integer;
+      //   PPI = ^^Integer;
+      //   PPPI = ^^^Integer;
+      // var
+      //   i: Integer;
+      //   ip: PI;
+      //   ipp: PPI;
+      //   ippp: PPPI;
+      // begin
+      //   i := 1;
+      //   ip := @i;
+      //   WriteLn(i);
+      //   ip^ := 2;
+      //   WriteLn(ip^);
+      //   ipp := @ip;
+      //   ipp^^ := 3;
+      //   WriteLn(ipp^^);
+      //   ippp := @ipp;
+      //   ippp^^^ := 4;
+      //   WriteLn(ippp^^^);
+      // end.
+      // """
+
       // TODO case sensitive
       // program wow;
       // type
