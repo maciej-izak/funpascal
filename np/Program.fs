@@ -16,10 +16,11 @@ let main argv =
         TB = array[0..10, 0..5] of integer;
         TC = array[0..10] of array[0..5] of integer;
         TD = array[0..10, 0..5, 0..0, -1..2] of integer;
+        TE = array[0..10, 0..2] of array[0..5, 0..0] of integer;
       var
         a: TA;
       begin
-        //a[0] := 1;
+        a[0] := 1;
         //a[1] := 2;
         //WriteLn(a[0]);
         //WriteLn(a[1]);
