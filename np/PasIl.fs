@@ -116,7 +116,7 @@ let caseInsensitive =
 type SymbolsDict<'T>() =
     inherit Dictionary<string, 'T>()
 
-type LangCtx() as self =
+type LangCtx() =
     let mutable ec = caseInsensitive
     member self.caseSensitive
         with get() = ec = caseSensitive
@@ -126,9 +126,10 @@ type LangCtx() as self =
         member _.GetHashCode(x) = ec.GetHashCode(x)
         member _.Equals(x,y) = ec.Equals(x, y)
 
+type ArrayDim = { low: int; high: int; size: int }
 type TypeInfo =
     | TypeSymbols of Dictionary<string,FieldDefinition>
-    | ArrayRange of (int * int) list
+    | ArrayRange of ArrayDim list * TypeReference
 
 type Ctx = {
         variables: Dictionary<string,VariableDefinition>
@@ -385,7 +386,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
             | Designator.Array exprs ->
                 let tref = vt :?> TypeDefinition
                 let dims = match ctx.typeInfo.TryGetValue tref with
-                           | true, ArrayRange( dims ) -> dims
+                           | true, ArrayRange( dims , _ ) -> dims
                            | _ -> failwith "IE"
                 // TODO rework this slow comparison
                 if exprs.Length > dims.Length then failwith "IE"
@@ -981,57 +982,53 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                 defTypes.Add(stdType name, td)
                                 typeInfo.Add(td, TypeSymbols(fieldsMap))
                            | Array(ArrayDef(_, dimensions, tname)) ->
-                                let dimNames = false // debug purposes
-                                let rec doArrayDef dimensions tname dims name =
-                                    let newArrayDim ad (typ: TypeReference, i: int): (TypeReference * int) =
-                                        let attributes = TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout
-                                        let name = if dimNames then name + "$" + string(i) else null
-                                        let at = TypeDefinition(ns, name, attributes)
-                                        at.ClassSize <- 0
-                                        at.BaseType <- vt
-                                        //typ.MetadataType
-                                        let fd = FieldDefinition("items", FieldAttributes.Public, typ)
-                                        let fa = FixedArrayMarshalInfo()
-                                        fa.ElementType <- match typ.MetadataType with
-                                                          | MetadataType.Boolean -> NativeType.Boolean
-                                                          | MetadataType.SByte -> NativeType.I1
-                                                          | MetadataType.Byte -> NativeType.U1
-                                                          | MetadataType.Int16 -> NativeType.I2
-                                                          | MetadataType.UInt16 -> NativeType.U2
-                                                          | MetadataType.Int32 -> NativeType.I4
-                                                          | MetadataType.UInt32 -> NativeType.U4
-                                                          | MetadataType.Int64 -> NativeType.I8
-                                                          | MetadataType.UInt64 -> NativeType.U8
-                                                          | MetadataType.ValueType ->
-                                                              match typeInfo.TryGetValue(typ) with
-                                                              | true, ArrayRange(_) -> NativeType.FixedArray
-                                                              | _ -> failwith "IE"
-                                                          | _ -> failwith "IE"
-                                        fa.Size <- match ad with
-                                                   | DimensionExpr(ConstExpr(l),ConstExpr(h)) ->
-                                                       let l = match evalConstExpr(l) with | CERInt i -> i | _ -> failwith "IE"
-                                                       let h = match evalConstExpr(h) with | CERInt i -> i | _ -> failwith "IE"
-                                                       dims := (l,h)::!dims
-                                                       typeInfo.Add(at, ArrayRange(!dims))
-                                                       mb.Types.Add(at)
-                                                       h - l
-                                                   | _ -> failwith "IE"
-                                        fd.MarshalInfo <- fa
-                                        at.Fields.Add fd
-                                        (at :> TypeReference, i + 1)
+                                let sizeOf (tr: TypeReference) =
+                                    match tr.MetadataType with
+                                    | MetadataType.SByte | MetadataType.Byte -> 1
+                                    | MetadataType.Int16 | MetadataType.UInt16 -> 2
+                                    | MetadataType.Int32 | MetadataType.UInt32 -> 4
+                                    | MetadataType.Int64 -> 8
+                                    | MetadataType.Single -> 4
+                                    | MetadataType.Double -> 8
+                                    | MetadataType.Void -> 8 // TODO 4 or 8 -> target dependent
+                                    | MetadataType.ValueType ->
+                                        match typeInfo.TryGetValue tr with
+                                        | true, ArrayRange _ -> (tr :?> TypeDefinition).ClassSize
+                                        | _ -> failwith "IE"
+                                    | _ -> failwith "IE"
 
-                                    let typ = let name = if dimNames then name + "$a$" else null
-                                              match tname with
-                                              | TIdArray(ArrayDef(_, dimensions, tname)) -> doArrayDef dimensions tname dims name
-                                              | TIdIdent _ -> defTypes.[tname]
-                                              | _ -> failwith "IE"
+                                let rec doArrayDef dimensions tname dims =
+                                    let newArrayDim ad (dims, totalSize) =
+                                        match ad with
+                                        | DimensionExpr(ConstExpr(l),ConstExpr(h)) ->
+                                            let l = match evalConstExpr(l) with | CERInt i -> i | _ -> failwith "IE"
+                                            let h = match evalConstExpr(h) with | CERInt i -> i | _ -> failwith "IE"
+                                            if l > h then failwith "IE"
+                                            let size = (h - l) + 1
+                                            ({low=l;high=h;size=size}::dims, totalSize * size)
+                                        | _ -> failwith "IE"
 
-                                    let (at,_) = List.foldBack newArrayDim dimensions (typ, 0)
-                                    if name <> null then
-                                      defTypes.Add(stdType name, at)
-                                    at
+                                    let newDims, typ =
+                                        match tname with
+                                        | TIdArray(ArrayDef(_, dimensions, tname)) -> doArrayDef dimensions tname dims
+                                        | TIdIdent _ -> dims, defTypes.[tname]
+                                        | _ -> failwith "IE"
+
+                                    (List.foldBack newArrayDim dimensions newDims, typ)
                                 // final array
-                                (doArrayDef dimensions tname (ref []) name).Name <- name
+                                let (dims, size), typ = doArrayDef dimensions tname ([], 1)
+                                let size = size * (sizeOf typ)
+                                let attributes = TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout
+                                let at = TypeDefinition(ns, name, attributes)
+                                at.ClassSize <- size
+                                at.PackingSize <- 0s;
+                                at.BaseType <- vt
+                                let fd = FieldDefinition("item0", FieldAttributes.Public, typ)
+                                at.Fields.Add fd
+                                typeInfo.Add(at, ArrayRange(dims, typ))
+                                mb.Types.Add(at)
+                                defTypes.Add(stdType name, at)
+                                //(doArrayDef dimensions tname (ref []) name).Name <- name
                            | _ -> ()
                    )
                | Variables v ->
