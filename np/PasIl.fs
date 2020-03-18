@@ -95,7 +95,7 @@ type Symbol =
     | EnumValueSym of int
     | WithSym of VariableDefinition * TypeDefinition
 
-type ArrayDim = { low: int; high: int; size: int; elemSize: int }
+type ArrayDim = { low: int; high: int; size: int; elemSize: int; elemType: TypeReference; selfType: TypeReference ref }
 
 type SymbolLoad =
     | ChainLoad of SymbolLoad list
@@ -392,16 +392,26 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
                 // TODO rework this slow comparison
                 if exprs.Length > dims.Length then failwith "IE"
                 // TODO assign sub array parts?
-                let elemLoad = List.take exprs.Length dims
+                let elems, tail = List.splitAt exprs.Length dims
+                let elemLoad = elems
                                |> List.zip exprs
                                |> fun dims -> ElemLoad (dims, elemTyp)
                 // TODO validation of dims ?
-                resolveTail (DerefLoad::elemLoad::acc) elemTyp t
+                let subElemTyp = match List.tryHead tail with | Some h -> !h.selfType | _ -> elemTyp
+                let newAcc = match ctx.typeInfo.TryGetValue subElemTyp with
+                             | true, ArrayRange _ -> elemLoad::acc
+                             | _ -> DerefLoad::elemLoad::acc
+                resolveTail newAcc subElemTyp t
 
     let doLoadSym vd vt = function
         | [] -> VariableLoad(vd)
-        | tail -> ChainLoad <| VariableLoad(vd)::(resolveTail [] vt tail)
-
+        | tail ->
+            ChainLoad <|
+                let chainTail = resolveTail [] vt tail
+                match chainTail.Head with
+                | ElemLoad _ -> VariablePtrLoad(vd)
+                | _ -> VariableLoad(vd)
+                ::chainTail
 //            match resolveTail [] vt tail with
 //            | [sl] -> match sl with
 //                      | DerefLoad -> VariableDerefLoad(vd)
@@ -498,6 +508,9 @@ and chainLoadToIl ctx lastPoint = function
     | VariableLoad vs ->
         lastPoint := Some(absVariableType vs.VariableType)
         [Ldloc vs |> ilResolve]
+    | VariablePtrLoad vs ->
+        lastPoint := Some(absVariableType vs.VariableType)
+        [Ldloca vs |> ilResolve]
     | DerefLoad ->
         let dt = derefType <| match !lastPoint with
                               | Some lp -> lp
@@ -521,6 +534,7 @@ and chainLoadToIl ctx lastPoint = function
         [
             for e, d in exprs do
                 yield! exprToIl ctx (Multiply(e, d.elemSize |> VInteger |> Value))
+                yield AddInst |> ilResolve
         ]
     | _ -> failwith "IE"
 
@@ -997,40 +1011,58 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                         | _ -> failwith "IE"
                                     | _ -> failwith "IE"
 
-                                let rec doArrayDef dimensions tname dims =
+                                let newSubType (dims, size) (typ, typSize) name =
+                                    let size = size * typSize
+                                    let attributes = TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout
+                                    let at = TypeDefinition(ns, name, attributes)
+                                    at.ClassSize <- size
+                                    at.PackingSize <- 0s;
+                                    at.BaseType <- vt
+                                    let fd = FieldDefinition("item0", FieldAttributes.Public, typ)
+                                    at.Fields.Add fd
+                                    typeInfo.Add(at, ArrayRange(dims, PointerType(typ)))
+                                    mb.Types.Add(at)
+                                    at
 
-                                    let newDims, typ, typSize =
+                                let rec doArrayDef dimensions tname dims name =
+
+                                    let newDims, typAndSize, newTyp =
                                         match tname with
-                                        | TIdArray(ArrayDef(_, dimensions, tname)) -> doArrayDef dimensions tname dims
+                                        | TIdArray(ArrayDef(_, dimensions, tname)) -> doArrayDef dimensions tname dims (name + "$a$")
                                         | TIdIdent _ ->
                                             let typ = defTypes.[tname]
-                                            (dims, typ, sizeOf typ)
+                                            dims, (typ, sizeOf typ), typ
                                         | _ -> failwith "IE"
 
-                                    let newArrayDim ad (dims, totalSize) =
+                                    let newArrayDim ad ((dims, totalSize), elemType, i, newTyp) =
                                         match ad with
                                         | DimensionExpr(ConstExpr(l),ConstExpr(h)) ->
                                             let l = match evalConstExpr(l) with | CERInt i -> i | _ -> failwith "IE"
                                             let h = match evalConstExpr(h) with | CERInt i -> i | _ -> failwith "IE"
                                             if l > h then failwith "IE"
                                             let size = (h - l) + 1
-                                            ({low=l;high=h;size=size;elemSize=totalSize*typSize}::dims, totalSize * size)
+                                            let newDim = {
+                                                low = l
+                                                high = h
+                                                size = size
+                                                elemSize = totalSize*(snd typAndSize)
+                                                elemType = newTyp
+                                                selfType = ref null
+                                            }
+                                            let dims = newDim::dims
+                                            let totalSize = totalSize * size
+                                            let dimsAndSize = (dims, totalSize)
+                                            let newTyp = (newSubType dimsAndSize typAndSize (name + "$" + string(i))) :> TypeReference
+                                            newDim.selfType := newTyp
+                                            dimsAndSize, elemType, i+1, newTyp
                                         | _ -> failwith "IE"
 
-                                    (List.foldBack newArrayDim dimensions newDims, typ, typSize)
+                                    let (res, _, _, typ) = List.foldBack newArrayDim dimensions (newDims, null, 0, newTyp)
+                                    res, typAndSize, typ
                                 // final array
-                                let (dims, size), typ, typSize = doArrayDef dimensions tname ([], 1)
-                                let size = size * typSize
-                                let attributes = TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout
-                                let at = TypeDefinition(ns, name, attributes)
-                                at.ClassSize <- size
-                                at.PackingSize <- 0s;
-                                at.BaseType <- vt
-                                let fd = FieldDefinition("item0", FieldAttributes.Public, typ)
-                                at.Fields.Add fd
-                                typeInfo.Add(at, ArrayRange(dims, PointerType(typ)))
-                                mb.Types.Add(at)
-                                defTypes.Add(stdType name, at)
+                                let _,_,typ = (doArrayDef dimensions tname ([], 1) name)
+                                typ.Name <- name
+                                defTypes.Add(stdType name, typ)
                                 //(doArrayDef dimensions tname (ref []) name).Name <- name
                            | _ -> ()
                    )
