@@ -95,11 +95,13 @@ type Symbol =
     | EnumValueSym of int
     | WithSym of VariableDefinition * TypeDefinition
 
+type ArrayDim = { low: int; high: int; size: int; elemSize: int }
+
 type SymbolLoad =
     | ChainLoad of SymbolLoad list
     | VariableStructLoad of VariableDefinition * FieldDefinition list
     | DerefLoad
-    | ElemLoad of ExprEl list
+    | ElemLoad of (ExprEl * ArrayDim) list * TypeReference
     | StructLoad of FieldDefinition list
     | VariableDerefStructLoad of VariableDefinition * FieldDefinition list
     | VariablePtrLoad of VariableDefinition
@@ -126,7 +128,6 @@ type LangCtx() =
         member _.GetHashCode(x) = ec.GetHashCode(x)
         member _.Equals(x,y) = ec.Equals(x, y)
 
-type ArrayDim = { low: int; high: int; size: int }
 type TypeInfo =
     | TypeSymbols of Dictionary<string,FieldDefinition>
     | ArrayRange of ArrayDim list * TypeReference
@@ -251,7 +252,7 @@ let private ainstr = function
                                       | Ind_U8 -> Instruction.Create(OpCodes.Stind_I8)
                                       | Ind_R4 -> Instruction.Create(OpCodes.Stind_R4)
                                       | Ind_R8 -> Instruction.Create(OpCodes.Stind_R8)
-                    | Conv_I       -> Instruction.Create(OpCodes.Conv_U)
+                    | Conv_I       -> Instruction.Create(OpCodes.Conv_I)
                     | Ret          -> Instruction.Create(OpCodes.Ret)
                     | Unknown      -> Instruction.Create(OpCodes.Nop)
                     | Ceq          -> Instruction.Create(OpCodes.Ceq)
@@ -385,24 +386,17 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
                 resolveTail (StructLoad(sl)::acc) vt restOfTail
             | Designator.Array exprs ->
                 let tref = vt :?> TypeDefinition
-                let dims = match ctx.typeInfo.TryGetValue tref with
-                           | true, ArrayRange( dims , _ ) -> dims
-                           | _ -> failwith "IE"
+                let dims, elemTyp = match ctx.typeInfo.TryGetValue tref with
+                                    | true, ArrayRange( dims , elemTyp ) -> dims, elemTyp
+                                    | _ -> failwith "IE"
                 // TODO rework this slow comparison
                 if exprs.Length > dims.Length then failwith "IE"
-                let (dims, _) = List.splitAt exprs.Length dims
-
-                let prepareDims (td: TypeReference) e d =
-                    let td = td :?> TypeDefinition
-                    if td.Fields.Count <> 1 then failwith "IE"
-                    match ctx.typeInfo.TryGetValue tref with
-                    | true, ArrayRange(_) -> ()
-                    | _ -> failwith "IE"
-                    tref.Fields.[0].FieldType
-
+                // TODO assign sub array parts?
+                let elemLoad = List.take exprs.Length dims
+                               |> List.zip exprs
+                               |> fun dims -> ElemLoad (dims, elemTyp)
                 // TODO validation of dims ?
-                let lastDimTypeRef = List.fold2 prepareDims (tref :> TypeReference) exprs dims
-                resolveTail (ElemLoad(exprs)::acc) lastDimTypeRef t
+                resolveTail (DerefLoad::elemLoad::acc) elemTyp t
 
     let doLoadSym vd vt = function
         | [] -> VariableLoad(vd)
@@ -497,29 +491,37 @@ and findSymbolAndLoad (ctx: Ctx) ident =
     | ValueLoad evs -> Ldc_I4(evs) |> ilResolve |> List.singleton
     | ChainLoad sl ->
         let lastPoint = ref None
-        sl |> List.map (chainLoadToIl ctx lastPoint)
+        sl |> List.collect (chainLoadToIl ctx lastPoint)
     | _ -> failwith "IE"
 
 and chainLoadToIl ctx lastPoint = function
     | VariableLoad vs ->
         lastPoint := Some(absVariableType vs.VariableType)
-        Ldloc vs |> ilResolve
+        [Ldloc vs |> ilResolve]
     | DerefLoad ->
         let dt = derefType <| match !lastPoint with
                               | Some lp -> lp
                               | _ -> failwith "IE"
         lastPoint := Some dt
-        match dt.MetadataType with
-        | MetadataType.Pointer -> Ldind(Ind_I) |> ilResolve
-        | MetadataType.SByte -> Ldind(Ind_I1) |> ilResolve
-        | MetadataType.Int16 -> Ldind(Ind_I2) |> ilResolve
-        | MetadataType.Int32 -> Ldind(Ind_I4) |> ilResolve
-        | MetadataType.Int64 -> Ldind(Ind_I8) |> ilResolve
-        | MetadataType.Byte -> Ldind(Ind_U1) |> ilResolve
-        | MetadataType.UInt16 -> Ldind(Ind_U2) |> ilResolve
-        | MetadataType.UInt32 -> Ldind(Ind_U4) |> ilResolve
-        | MetadataType.UInt64 -> Ldind(Ind_U8) |> ilResolve
-        | _ -> failwith "IE"
+        [
+            match dt.MetadataType with
+            | MetadataType.Pointer -> Ldind(Ind_I) |> ilResolve
+            | MetadataType.SByte -> Ldind(Ind_I1) |> ilResolve
+            | MetadataType.Int16 -> Ldind(Ind_I2) |> ilResolve
+            | MetadataType.Int32 -> Ldind(Ind_I4) |> ilResolve
+            | MetadataType.Int64 -> Ldind(Ind_I8) |> ilResolve
+            | MetadataType.Byte -> Ldind(Ind_U1) |> ilResolve
+            | MetadataType.UInt16 -> Ldind(Ind_U2) |> ilResolve
+            | MetadataType.UInt32 -> Ldind(Ind_U4) |> ilResolve
+            | MetadataType.UInt64 -> Ldind(Ind_U8) |> ilResolve
+            | _ -> failwith "IE"
+        ]
+    | ElemLoad (exprs, rt) ->
+        lastPoint := Some rt
+        [
+            for e, d in exprs do
+                yield! exprToIl ctx (Multiply(e, d.elemSize |> VInteger |> Value))
+        ]
     | _ -> failwith "IE"
 
 let lastPointSaveToIl ctx lastPoint = function
@@ -541,8 +543,6 @@ let lastPointSaveToIl ctx lastPoint = function
             | MetadataType.UInt64 -> Stind(Ind_U8) |> ilResolve
             | _ -> failwith "IE"
         ]
-    | ElemLoad exprs ->
-        [for i in exprs do yield! exprToIl ctx i]
     | _ -> failwith "IE"
 
 let callParamToIl ctx cp = 
@@ -714,7 +714,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                  let (fieldsTo, last) = (symbols.[0..symbols.Length-2], List.last symbols)
                  let lastPoint = ref None
                  [
-                     yield! List.map (chainLoadToIl ctx lastPoint) fieldsTo
+                     yield! List.collect (chainLoadToIl ctx lastPoint) fieldsTo
                      yield! expr
                      yield! lastPointSaveToIl ctx lastPoint last
                  ]
@@ -998,6 +998,15 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                     | _ -> failwith "IE"
 
                                 let rec doArrayDef dimensions tname dims =
+
+                                    let newDims, typ, typSize =
+                                        match tname with
+                                        | TIdArray(ArrayDef(_, dimensions, tname)) -> doArrayDef dimensions tname dims
+                                        | TIdIdent _ ->
+                                            let typ = defTypes.[tname]
+                                            (dims, typ, sizeOf typ)
+                                        | _ -> failwith "IE"
+
                                     let newArrayDim ad (dims, totalSize) =
                                         match ad with
                                         | DimensionExpr(ConstExpr(l),ConstExpr(h)) ->
@@ -1005,19 +1014,13 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                             let h = match evalConstExpr(h) with | CERInt i -> i | _ -> failwith "IE"
                                             if l > h then failwith "IE"
                                             let size = (h - l) + 1
-                                            ({low=l;high=h;size=size}::dims, totalSize * size)
+                                            ({low=l;high=h;size=size;elemSize=totalSize*typSize}::dims, totalSize * size)
                                         | _ -> failwith "IE"
 
-                                    let newDims, typ =
-                                        match tname with
-                                        | TIdArray(ArrayDef(_, dimensions, tname)) -> doArrayDef dimensions tname dims
-                                        | TIdIdent _ -> dims, defTypes.[tname]
-                                        | _ -> failwith "IE"
-
-                                    (List.foldBack newArrayDim dimensions newDims, typ)
+                                    (List.foldBack newArrayDim dimensions newDims, typ, typSize)
                                 // final array
-                                let (dims, size), typ = doArrayDef dimensions tname ([], 1)
-                                let size = size * (sizeOf typ)
+                                let (dims, size), typ, typSize = doArrayDef dimensions tname ([], 1)
+                                let size = size * typSize
                                 let attributes = TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout
                                 let at = TypeDefinition(ns, name, attributes)
                                 at.ClassSize <- size
@@ -1025,7 +1028,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                 at.BaseType <- vt
                                 let fd = FieldDefinition("item0", FieldAttributes.Public, typ)
                                 at.Fields.Add fd
-                                typeInfo.Add(at, ArrayRange(dims, typ))
+                                typeInfo.Add(at, ArrayRange(dims, PointerType(typ)))
                                 mb.Types.Add(at)
                                 defTypes.Add(stdType name, at)
                                 //(doArrayDef dimensions tname (ref []) name).Name <- name
