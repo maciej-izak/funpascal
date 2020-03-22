@@ -46,6 +46,8 @@ and AtomIlInstruction =
     | Stfld of FieldDefinition
     | Stind of IndirectKind
     | Conv_I
+    | Cpblk
+    | Unaligned
     | AddInst
     | MultiplyInst
     | MinusInst
@@ -99,11 +101,9 @@ type ArrayDim = { low: int; high: int; size: int; elemSize: int; elemType: TypeR
 
 type SymbolLoad =
     | ChainLoad of SymbolLoad list
-    | VariableStructLoad of VariableDefinition * FieldDefinition list
     | DerefLoad
     | ElemLoad of (ExprEl * ArrayDim) list * TypeReference
     | StructLoad of FieldDefinition list
-    | VariableDerefStructLoad of VariableDefinition * FieldDefinition list
     | VariablePtrLoad of VariableDefinition
     | VariableLoad of VariableDefinition
     | ValueLoad of int
@@ -253,6 +253,8 @@ let private ainstr = function
                                       | Ind_R4 -> Instruction.Create(OpCodes.Stind_R4)
                                       | Ind_R8 -> Instruction.Create(OpCodes.Stind_R8)
                     | Conv_I       -> Instruction.Create(OpCodes.Conv_I)
+                    | Cpblk        -> Instruction.Create(OpCodes.Cpblk)
+                    | Unaligned    -> Instruction.Create(OpCodes.Unaligned)
                     | Ret          -> Instruction.Create(OpCodes.Ret)
                     | Unknown      -> Instruction.Create(OpCodes.Nop)
                     | Ceq          -> Instruction.Create(OpCodes.Ceq)
@@ -365,8 +367,9 @@ let derefType (t: TypeReference) =
 let findSymbol (ctx: Ctx) (DIdent ident) =
     let mainSym = ident.Head |> function | PIName n -> ctx.FindSym n
     
-    let rec findSym ref acc = function
+    let rec findSym (ref: MemberReference) acc = function
     | PIName(h)::t ->
+        let ref = match ref with | :? PointerType as pt -> pt.ElementType | _ -> ref :?> TypeReference
         let symbols = match ctx.typeInfo.[ref] with | TypeSymbols d -> d | _ -> failwith "IE"
         let sym = symbols.[h]
         findSym sym.FieldType (sym::acc) t
@@ -400,7 +403,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
                 let subElemTyp = match List.tryHead tail with | Some h -> !h.selfType | _ -> elemTyp
                 let newAcc = match ctx.typeInfo.TryGetValue subElemTyp with
                              | true, ArrayRange _ -> elemLoad::acc
-                             | _ -> DerefLoad::elemLoad::acc
+                             | _ -> elemLoad::acc
                 resolveTail newAcc subElemTyp t
 
     let doLoadSym vd vt = function
@@ -420,15 +423,11 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
 //            | chain -> ChainLoad (VariableLoad(vd)::chain)
             
     let doLoadSym4With vd vt =
-        match resolveTail [] vt ident with
-        | [sl] -> match sl with
-                  | StructLoad(fl) -> VariableDerefStructLoad(vd, fl)
-                  | _ -> failwith "IE"
-        | chain ->
-            let h = match chain.Head with
-                    | StructLoad fl -> fl
-                    | _ -> failwith "IE"
-            ChainLoad (VariableDerefStructLoad(vd, h)::(chain.Tail))
+        let chain = resolveTail [] vt ident
+        match chain.Head with
+        | StructLoad fl -> ()
+        | _ -> failwith "IE"
+        ChainLoad (VariableLoad(vd)::chain)
             
     match mainSym with
     | Some(VariableSym vd) ->
@@ -444,13 +443,14 @@ let ilResolve = ainstr >> IlResolved
 
 
 let findSymbolAndGetPtr (ctx: Ctx) ident =
-    match findSymbol ctx ident with
-    | VariableLoad vs -> vs |> Ldloca |> ilResolve |> List.singleton
-    | VariableStructLoad(vd, fdl) ->
-        (vd |> Ldloca |> ilResolve)::(List.map (Ldflda >> ilResolve) fdl)
-    | VariableDerefStructLoad(vd, fdl) ->
-        (vd |> Ldloc |> ilResolve)::(List.map (Ldflda >> ilResolve) fdl)
-    | _ -> failwith "IE"
+    let sym = findSymbol ctx ident
+    let rec resolveSym acc = function
+        | VariablePtrLoad vd -> (vd |> Ldloca |> ilResolve)::acc
+        | VariableLoad vs -> (vs |> Ldloc |> ilResolve)::acc
+        | StructLoad fdl -> List.fold (fun acc f -> (Ldflda(f) |> ilResolve)::acc) acc fdl
+        | ChainLoad cl -> List.fold resolveSym acc cl
+        | _ -> failwith "IE"
+    resolveSym [] sym |> List.rev
 
 let rec exprToIl ctx exprEl =
     let inline add2OpIl a b i = [|yield! exprToIl ctx a; yield! exprToIl ctx b; yield ilResolve i|]
@@ -493,11 +493,9 @@ and valueToIl ctx v =
 
 and findSymbolAndLoad (ctx: Ctx) ident =
     match findSymbol ctx ident with
+    | VariablePtrLoad vs -> vs |> Ldloca |> ilResolve |> List.singleton
     | VariableLoad vs -> vs |> Ldloc |> ilResolve |> List.singleton
-    | VariableStructLoad(vd, fdl) ->
-        (vd |> Ldloca |> ilResolve)::(List.map (Ldfld >> ilResolve) fdl)
-    | VariableDerefStructLoad(vd, fdl) ->
-        (vd |> Ldloc |> ilResolve)::(List.map (Ldfld >> ilResolve) fdl)
+    | StructLoad fdl -> List.map (Ldfld >> ilResolve) fdl
     | ValueLoad evs -> Ldc_I4(evs) |> ilResolve |> List.singleton
     | ChainLoad sl ->
         let lastPoint = ref None
@@ -519,14 +517,14 @@ and chainLoadToIl ctx lastPoint = function
         [
             match dt.MetadataType with
             | MetadataType.Pointer -> Ldind(Ind_I) |> ilResolve
-            | MetadataType.SByte -> Ldind(Ind_I1) |> ilResolve
-            | MetadataType.Int16 -> Ldind(Ind_I2) |> ilResolve
-            | MetadataType.Int32 -> Ldind(Ind_I4) |> ilResolve
-            | MetadataType.Int64 -> Ldind(Ind_I8) |> ilResolve
-            | MetadataType.Byte -> Ldind(Ind_U1) |> ilResolve
-            | MetadataType.UInt16 -> Ldind(Ind_U2) |> ilResolve
-            | MetadataType.UInt32 -> Ldind(Ind_U4) |> ilResolve
-            | MetadataType.UInt64 -> Ldind(Ind_U8) |> ilResolve
+            | MetadataType.SByte   -> Ldind(Ind_I1) |> ilResolve
+            | MetadataType.Int16   -> Ldind(Ind_I2) |> ilResolve
+            | MetadataType.Int32   -> Ldind(Ind_I4) |> ilResolve
+            | MetadataType.Int64   -> Ldind(Ind_I8) |> ilResolve
+            | MetadataType.Byte    -> Ldind(Ind_U1) |> ilResolve
+            | MetadataType.UInt16  -> Ldind(Ind_U2) |> ilResolve
+            | MetadataType.UInt32  -> Ldind(Ind_U4) |> ilResolve
+            | MetadataType.UInt64  -> Ldind(Ind_U8) |> ilResolve
             | _ -> failwith "IE"
         ]
     | ElemLoad (exprs, rt) ->
@@ -538,12 +536,15 @@ and chainLoadToIl ctx lastPoint = function
         ]
     | _ -> failwith "IE"
 
-let lastPointSaveToIl ctx lastPoint = function
-    | DerefLoad ->
+type LastPointSave =
+    | LPDeref of TypeReference option ref
+    | LPStruct of FieldDefinition
+
+let lastPointSaveToIl = function
+    | LPDeref lastPoint ->
         let dt = derefType <| match !lastPoint with
                               | Some lp -> lp
                               | _ -> failwith "IE" // context less dereference not allowed
-        lastPoint := Some dt
         [
             match dt.MetadataType with
             | MetadataType.Pointer -> Stind(Ind_I) |> ilResolve
@@ -557,6 +558,14 @@ let lastPointSaveToIl ctx lastPoint = function
             | MetadataType.UInt64 -> Stind(Ind_U8) |> ilResolve
             | _ -> failwith "IE"
         ]
+    | LPStruct fd ->
+        [fd |> Stfld |> ilResolve]
+
+let splitStruct = function
+    | StructLoad fdl ->
+        let fld =  fdl
+        (List.map (Ldflda >> ilResolve) fdl.Tail)
+        |> List.rev, LPStruct(fld.Head)
     | _ -> failwith "IE"
 
 let callParamToIl ctx cp = 
@@ -714,56 +723,52 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
              // add param for findSymbol to set purpose (like this `assign`)
              match findSymbol ctx ident with
              | VariableLoad vs -> [yield! expr ; Stloc(vs) |> ilResolve]
-             | VariableStructLoad (vs, fld) ->
-                 // TODO change to Array in F# 5.0
-                 let (fieldsTo, last) = (fld.[0..fld.Length-2], List.last fld)
-                 [
-                     Ldloca(vs) |> ilResolve
-                     yield! List.map (Ldflda >> ilResolve) fieldsTo
-                     yield! expr
-                     last |> Stfld |> ilResolve
-                 ]
              | ChainLoad symbols ->
                  // TODO change to Array in F# 5.0
                  let (fieldsTo, last) = (symbols.[0..symbols.Length-2], List.last symbols)
                  let lastPoint = ref None
+                 let (lastFix, last) = match last with
+                                       | StructLoad _ -> splitStruct last
+                                       | ElemLoad _ -> [], LPDeref(lastPoint)
+                                       | _ -> failwith "IE"
                  [
                      yield! List.collect (chainLoadToIl ctx lastPoint) fieldsTo
+                     yield! lastFix
                      yield! expr
-                     yield! lastPointSaveToIl ctx lastPoint last
+                     yield! lastPointSaveToIl last
                  ]
              | _ -> failwith "IE"
-        let getVar4With idents =
-            let ils = List<_>()
-            List.fold
-                (fun symbols i ->
-                    let loadVarW =
-                        match findSymbol ctx i with
-                        | VariableStructLoad (v, fld) ->
-                            let vt = match v.VariableType with
-                                     | :? TypeDefinition as td ->
-                                         v.VariableType <- v.VariableType.MakePinnedType()
-                                         td
-                                     | :? PinnedType as pt -> pt.GetElementType() :?> TypeDefinition
-                                     | _ -> failwith "IE"
-                            let (_, vv) = ctx.EnsureVariable(ctx.moduleBuilder.TypeSystem.UIntPtr)
-                            // TODO optimize List.tryLast?
-                            // try last element in expr x.y.z (z is the right choice)
-                            let vt = match List.tryLast fld with | Some f -> f.FieldType :?> TypeDefinition | _ -> vt
-                            ([
-                                Ldloca(v) |> ilResolve
-                                yield! List.map (Ldflda >> ilResolve) fld
-                                Stloc(vv) |> ilResolve
-                            ],(vv, vt))
-                        | _ -> failwith "IE"
-
-                    let newSymbols = Dictionary<string, Symbol>()
-                    let (v, td) = snd loadVarW
-                    for f in td.Fields do
-                        newSymbols.Add(f.Name, WithSym(v, td))
-                    ils.Add(fst loadVarW)
-                    newSymbols::symbols
-                ) ctx.symbols idents, ils
+//        let getVar4With idents =
+//            let ils = List<_>()
+//            List.fold
+//                (fun symbols i ->
+//                    let loadVarW =
+//                        match findSymbol ctx i with
+//                        | VariableStructLoad (v, fld) ->
+//                            let vt = match v.VariableType with
+//                                     | :? TypeDefinition as td ->
+//                                         v.VariableType <- v.VariableType.MakePinnedType()
+//                                         td
+//                                     | :? PinnedType as pt -> pt.GetElementType() :?> TypeDefinition
+//                                     | _ -> failwith "IE"
+//                            let (_, vv) = ctx.EnsureVariable(ctx.moduleBuilder.TypeSystem.UIntPtr)
+//                            // TODO optimize List.tryLast?
+//                            // try last element in expr x.y.z (z is the right choice)
+//                            let vt = match List.tryLast fld with | Some f -> f.FieldType :?> TypeDefinition | _ -> vt
+//                            ([
+//                                Ldloca(v) |> ilResolve
+//                                yield! List.map (Ldflda >> ilResolve) fld
+//                                Stloc(vv) |> ilResolve
+//                            ],(vv, vt))
+//                        | _ -> failwith "IE"
+//
+//                    let newSymbols = Dictionary<string, Symbol>()
+//                    let (v, td) = snd loadVarW
+//                    for f in td.Fields do
+//                        newSymbols.Add(f.Name, WithSym(v, td))
+//                    ils.Add(fst loadVarW)
+//                    newSymbols::symbols
+//                ) ctx.symbols idents, ils
                      
         let (instructions, newSysLabels) =
                 match s with
@@ -908,15 +913,15 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         yield! incLoopVar
                         yield! condition
                     ],[])
-                | WithStm (idents, stmt) ->
-                    let (withSymbols, ils) = getVar4With idents
-                    let newCtx = { ctx with symbols = withSymbols }
-                    // TODO check if some part is unused in ils
-                    let (branch, labels) = stmtListToIlList newCtx stmt
-                    ([
-                        for i in ils do yield! i 
-                        yield! branch
-                    ],labels)
+//                | WithStm (idents, stmt) ->
+//                    let (withSymbols, ils) = getVar4With idents
+//                    let newCtx = { ctx with symbols = withSymbols }
+//                    // TODO check if some part is unused in ils
+//                    let (branch, labels) = stmtListToIlList newCtx stmt
+//                    ([
+//                        for i in ils do yield! i
+//                        yield! branch
+//                    ],labels)
                 | EmptyStm -> ([],[])
                 | _ -> ([],[])
         // TODO fix peepholes about jump to next opcode
@@ -954,6 +959,26 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let symbols = Dictionary<_,_>(langCtx)
         let typeInfo = Dictionary<TypeReference,_>()
         let defTypes = Dictionary<TypeIdentifier, TypeReference>()
+
+        let rec sizeOf (tr: TypeReference) =
+            match tr.MetadataType with
+            | MetadataType.SByte | MetadataType.Byte   -> 1
+            | MetadataType.Int16 | MetadataType.UInt16 -> 2
+            | MetadataType.Int32 | MetadataType.UInt32 -> 4
+            | MetadataType.Int64  -> 8
+            | MetadataType.Single -> 4
+            | MetadataType.Double -> 8
+            | MetadataType.Void   -> 8 // TODO 4 or 8 -> target dependent
+            | MetadataType.ValueType ->
+                match typeInfo.TryGetValue tr with
+                | true, ArrayRange _ -> (tr :?> TypeDefinition).ClassSize
+                | true, TypeSymbols _ ->
+                    // check mono_marshal_type_size -> https://github.com/dotnet/runtime/blob/487c940876b1932920454c44d2463d996cc8407c/src/mono/mono/metadata/marshal.c
+                    // check mono_type_to_unmanaged -> https://github.com/dotnet/runtime/blob/aa6d1ac74e6291b3aaaa9da60249d8c327593698/src/mono/mono/metadata/metadata.c
+                    (tr :?> TypeDefinition).Fields
+                    |> Seq.sumBy (fun f -> sizeOf f.FieldType)
+                | _ -> failwith "IE"
+            | _ -> failwith "IE"
 
         defTypes.Add(stdType "Int64", mb.TypeSystem.Int64)
         defTypes.Add(stdType "UInt64", mb.TypeSystem.UInt64)
@@ -996,21 +1021,6 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                 defTypes.Add(stdType name, td)
                                 typeInfo.Add(td, TypeSymbols(fieldsMap))
                            | Array(ArrayDef(_, dimensions, tname)) ->
-                                let sizeOf (tr: TypeReference) =
-                                    match tr.MetadataType with
-                                    | MetadataType.SByte | MetadataType.Byte -> 1
-                                    | MetadataType.Int16 | MetadataType.UInt16 -> 2
-                                    | MetadataType.Int32 | MetadataType.UInt32 -> 4
-                                    | MetadataType.Int64 -> 8
-                                    | MetadataType.Single -> 4
-                                    | MetadataType.Double -> 8
-                                    | MetadataType.Void -> 8 // TODO 4 or 8 -> target dependent
-                                    | MetadataType.ValueType ->
-                                        match typeInfo.TryGetValue tr with
-                                        | true, ArrayRange _ -> (tr :?> TypeDefinition).ClassSize
-                                        | _ -> failwith "IE"
-                                    | _ -> failwith "IE"
-
                                 let newSubType (dims, size) (typ, typSize) name =
                                     let size = size * typSize
                                     let attributes = TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout

@@ -73,7 +73,7 @@ let private compileModule (ProgramAst(name, block)) = //, methods: Method list) 
     let bb = ilBuilder.BuildIl(block, moduleName) 
     printfn "bb = %A" bb
     let mainBlock = compileBlock methodBuilder typeBuilder bb
-    mainBlock.Body.InitLocals <- true
+    //mainBlock.Body.InitLocals <- true
     // https://github.com/jbevain/cecil/issues/365
     mainBlock.Body.OptimizeMacros()
     assemblyBuilder.EntryPoint <- mainBlock
