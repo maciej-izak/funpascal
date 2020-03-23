@@ -100,14 +100,20 @@ type Symbol =
 type ArrayDim = { low: int; high: int; size: int; elemSize: int; elemType: TypeReference; selfType: TypeReference ref }
 
 type SymbolLoad =
-    | ChainLoad of SymbolLoad list
     | DerefLoad
     | ElemLoad of (ExprEl * ArrayDim) list * TypeReference
     | StructLoad of FieldDefinition list
     | VariablePtrLoad of VariableDefinition
     | VariableLoad of VariableDefinition
     | ValueLoad of int
+
+type ChainLoad =
+    | ChainLoad of SymbolLoad list
     | SymbolLoadError
+
+let chainToSLList = function
+    | ChainLoad sl -> sl
+    | SymbolLoadError -> failwith "IE"
 
 let caseSensitive = HashIdentity.Structural<string>
 let caseInsensitive =
@@ -368,6 +374,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
     let mainSym = ident.Head |> function | PIName n -> ctx.FindSym n
     
     let rec findSym (ref: MemberReference) acc = function
+    | (Designator.Array a)::t -> acc, Designator.Array(a)::t // TODO ?
     | PIName(h)::t ->
         let ref = match ref with | :? PointerType as pt -> pt.ElementType | _ -> ref :?> TypeReference
         let symbols = match ctx.typeInfo.[ref] with | TypeSymbols d -> d | _ -> failwith "IE"
@@ -406,51 +413,41 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
                              | _ -> elemLoad::acc
                 resolveTail newAcc subElemTyp t
 
-    let doLoadSym vd vt = function
-        | [] -> VariableLoad(vd)
-        | tail ->
-            ChainLoad <|
-                let chainTail = resolveTail [] vt tail
-                match chainTail.Head with
-                | ElemLoad _ -> VariablePtrLoad(vd)
-                | _ -> VariableLoad(vd)
-                ::chainTail
-//            match resolveTail [] vt tail with
-//            | [sl] -> match sl with
-//                      | DerefLoad -> VariableDerefLoad(vd)
-//                      | StructLoad(fl) -> VariableStructLoad(vd, fl)
-//                      | _ -> failwith "IE"
-//            | chain -> ChainLoad (VariableLoad(vd)::chain)
-            
-    let doLoadSym4With vd vt =
-        let chain = resolveTail [] vt ident
-        match chain.Head with
-        | StructLoad fl -> ()
-        | _ -> failwith "IE"
-        ChainLoad (VariableLoad(vd)::chain)
-            
     match mainSym with
     | Some(VariableSym vd) ->
         let vt = absVariableType vd.VariableType
-        doLoadSym vd vt ident.Tail
+        ChainLoad <|
+            let tail = resolveTail [] vt ident.Tail
+            match List.tryHead tail with
+            | Some(ElemLoad _) -> VariablePtrLoad(vd)
+            | _ -> VariableLoad(vd)
+            ::tail
     | Some(WithSym (vd, td)) ->
-        absVariableType td
-        |> doLoadSym4With vd
-    | Some(EnumValueSym(i)) when ident.Tail = [] -> ValueLoad(i)
+        let vt = absVariableType td
+        let chain = resolveTail [] vt ident
+        ChainLoad (VariableLoad(vd)::chain)
+    | Some(EnumValueSym(i)) when ident.Tail = [] -> [ValueLoad(i)] |> ChainLoad
     | _ -> SymbolLoadError
 
 let ilResolve = ainstr >> IlResolved
+let ilResolveArray = ilResolve >> List.singleton
 
+//let findSymbolAndGetPtr (ctx: Ctx) ident =
+//    let sym = findSymbol ctx ident
+//    let rec resolveSym acc = function
+//        | VariablePtrLoad vd -> (vd |> Ldloca |> ilResolve)::acc
+//        | VariableLoad vs -> (vs |> Ldloc |> ilResolve)::acc
+//        | StructLoad fdl -> List.fold (fun acc f -> (Ldflda(f) |> ilResolve)::acc) acc fdl
+//        | ChainLoad cl -> List.fold resolveSym acc cl
+//        | _ -> failwith "IE"
+//    resolveSym [] sym |> List.rev
 
-let findSymbolAndGetPtr (ctx: Ctx) ident =
-    let sym = findSymbol ctx ident
-    let rec resolveSym acc = function
-        | VariablePtrLoad vd -> (vd |> Ldloca |> ilResolve)::acc
-        | VariableLoad vs -> (vs |> Ldloc |> ilResolve)::acc
-        | StructLoad fdl -> List.fold (fun acc f -> (Ldflda(f) |> ilResolve)::acc) acc fdl
-        | ChainLoad cl -> List.fold resolveSym acc cl
-        | _ -> failwith "IE"
-    resolveSym [] sym |> List.rev
+type LastTypePoint =
+    | LTPVar of VariableDefinition * TypeReference
+    | LTPVarPtr of VariableDefinition * TypeReference
+    | LTPDeref of TypeReference
+    | LTPStruct of FieldDefinition
+    | LTPNone
 
 let rec exprToIl ctx exprEl =
     let inline add2OpIl a b i = [|yield! exprToIl ctx a; yield! exprToIl ctx b; yield ilResolve i|]
@@ -478,9 +475,9 @@ let rec exprToIl ctx exprEl =
     | GreaterThanOrEqual(a, b) -> [|yield! add2OpIl a b Clt; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
     | Addr(a) ->
         [|
-            match a with
-            | Value(VIdent i) -> yield! findSymbolAndGetPtr ctx i
-            | _ -> failwith "IE"
+//            match a with
+//            | Value(VIdent i) -> yield! findSymbolAndGetPtr ctx i
+//            | _ -> failwith "IE"
         |]
     | _ -> failwith "IE"
 
@@ -491,82 +488,102 @@ and valueToIl ctx v =
     | VString s -> Ldstr(s) |> ilResolve |> List.singleton
     | _ -> Unknown |> ilResolve |> List.singleton
 
-and findSymbolAndLoad (ctx: Ctx) ident =
-    match findSymbol ctx ident with
-    | VariablePtrLoad vs -> vs |> Ldloca |> ilResolve |> List.singleton
-    | VariableLoad vs -> vs |> Ldloc |> ilResolve |> List.singleton
-    | StructLoad fdl -> List.map (Ldfld >> ilResolve) fdl
-    | ValueLoad evs -> Ldc_I4(evs) |> ilResolve |> List.singleton
-    | ChainLoad sl ->
-        let lastPoint = ref None
-        sl |> List.collect (chainLoadToIl ctx lastPoint)
-    | _ -> failwith "IE"
-
-and chainLoadToIl ctx lastPoint = function
-    | VariableLoad vs ->
-        lastPoint := Some(absVariableType vs.VariableType)
-        [Ldloc vs |> ilResolve]
-    | VariablePtrLoad vs ->
-        lastPoint := Some(absVariableType vs.VariableType)
-        [Ldloca vs |> ilResolve]
-    | DerefLoad ->
-        let dt = derefType <| match !lastPoint with
-                              | Some lp -> lp
-                              | _ -> failwith "IE"
-        lastPoint := Some dt
-        [
+and chainReaderFactory = function
+    | LTPVar(vs, _) -> [Ldloc vs |> ilResolve]
+    | LTPVarPtr(vs, _) -> [Ldloca vs |> ilResolve]
+    | LTPStruct fld -> [Ldflda fld |> ilResolve]
+    | LTPDeref dt ->
+        if dt.MetadataType = MetadataType.ValueType then []
+        else
             match dt.MetadataType with
-            | MetadataType.Pointer -> Ldind(Ind_I) |> ilResolve
-            | MetadataType.SByte   -> Ldind(Ind_I1) |> ilResolve
-            | MetadataType.Int16   -> Ldind(Ind_I2) |> ilResolve
-            | MetadataType.Int32   -> Ldind(Ind_I4) |> ilResolve
-            | MetadataType.Int64   -> Ldind(Ind_I8) |> ilResolve
-            | MetadataType.Byte    -> Ldind(Ind_U1) |> ilResolve
-            | MetadataType.UInt16  -> Ldind(Ind_U2) |> ilResolve
-            | MetadataType.UInt32  -> Ldind(Ind_U4) |> ilResolve
-            | MetadataType.UInt64  -> Ldind(Ind_U8) |> ilResolve
+            | MetadataType.Pointer -> Ldind(Ind_I)
+            | MetadataType.SByte   -> Ldind(Ind_I1)
+            | MetadataType.Int16   -> Ldind(Ind_I2)
+            | MetadataType.Int32   -> Ldind(Ind_I4)
+            | MetadataType.Int64   -> Ldind(Ind_I8)
+            | MetadataType.Byte    -> Ldind(Ind_U1)
+            | MetadataType.UInt16  -> Ldind(Ind_U2)
+            | MetadataType.UInt32  -> Ldind(Ind_U4)
+            | MetadataType.UInt64  -> Ldind(Ind_U8)
             | _ -> failwith "IE"
-        ]
+            |> ilResolveArray
+    | LTPNone -> []
+
+and chainWriterFactory = function
+    | LTPVar(vs, _) -> [Stloc vs |> ilResolve]
+    | LTPVarPtr(vs, _) -> failwith "IE" // [Stloc vs |> ilResolve]
+    | LTPStruct fld -> [fld |> Stfld |> ilResolve]
+    | LTPDeref dt ->
+        match dt.MetadataType with
+        | MetadataType.Pointer -> Stind(Ind_I)
+        | MetadataType.SByte -> Stind(Ind_I1)
+        | MetadataType.Int16 -> Stind(Ind_I2)
+        | MetadataType.Int32 -> Stind(Ind_I4)
+        | MetadataType.Int64 -> Stind(Ind_I8)
+        | MetadataType.Byte -> Stind(Ind_U1)
+        | MetadataType.UInt16 -> Stind(Ind_U2)
+        | MetadataType.UInt32 -> Stind(Ind_U4)
+        | MetadataType.UInt64 -> Stind(Ind_U8)
+        | _ -> failwith "IE"
+        |> ilResolveArray
+    | LTPNone -> []
+
+and derefLastTypePoint = function
+    | LTPVar(_, t) -> derefType t
+    | LTPVarPtr(_, t) -> derefType t
+    | LTPDeref t -> derefType t
+    | LTPStruct fd -> derefType fd.FieldType
+    | _ -> failwith "cannot deref"
+
+and findSymbolAndLoad (ctx: Ctx) ident =
+    let lastPoint = ref LTPNone
+    findSymbol ctx ident
+    |> chainToSLList
+    |> List.collect (chainLoadToIl ctx lastPoint chainReaderFactory)
+    |> fun l -> l @ (chainReaderFactory !lastPoint)
+
+and chainLoadToIl ctx lastType factory symload =
+    let res = factory !lastType
+    match symload with
+    | VariableLoad vs ->
+        lastType := LTPVar(vs, absVariableType vs.VariableType)
+        res
+    | VariablePtrLoad vs ->
+        lastType := LTPVarPtr(vs, absVariableType vs.VariableType)
+        res
+    | DerefLoad ->
+        let dt = derefType <| derefLastTypePoint !lastType
+        lastType := LTPDeref dt
+        res
     | ElemLoad (exprs, rt) ->
-        lastPoint := Some rt
+        lastType := LTPDeref rt
         [
+            yield! res
             for e, d in exprs do
                 yield! exprToIl ctx (Multiply(e, d.elemSize |> VInteger |> Value))
                 yield AddInst |> ilResolve
         ]
-    | _ -> failwith "IE"
+    | StructLoad fds ->
+        let instr, last, count = List.fold (fun (acc, _, c) f -> (Ldflda(f) |> ilResolve)::acc, f, c+1) ([],null,0) fds
+        lastType := LTPStruct last
+        res @ (List.take (count-1) instr)
+    | ValueLoad evs ->
+        lastType := LTPNone
+        res @ (Ldc_I4(evs) |> ilResolveArray)
 
-type LastPointSave =
-    | LPDeref of TypeReference option ref
-    | LPStruct of FieldDefinition
+//let splitStruct = function
+//    | StructLoad fdl ->
+//        let fld =  fdl
+//        (List.map (Ldflda >> ilResolve) fdl.Tail)
+//        |> List.rev, LPStruct(fld.Head)
+//    | _ -> failwith "IE"
 
-let lastPointSaveToIl = function
-    | LPDeref lastPoint ->
-        let dt = derefType <| match !lastPoint with
-                              | Some lp -> lp
-                              | _ -> failwith "IE" // context less dereference not allowed
-        [
-            match dt.MetadataType with
-            | MetadataType.Pointer -> Stind(Ind_I) |> ilResolve
-            | MetadataType.SByte -> Stind(Ind_I1) |> ilResolve
-            | MetadataType.Int16 -> Stind(Ind_I2) |> ilResolve
-            | MetadataType.Int32 -> Stind(Ind_I4) |> ilResolve
-            | MetadataType.Int64 -> Stind(Ind_I8) |> ilResolve
-            | MetadataType.Byte -> Stind(Ind_U1) |> ilResolve
-            | MetadataType.UInt16 -> Stind(Ind_U2) |> ilResolve
-            | MetadataType.UInt32 -> Stind(Ind_U4) |> ilResolve
-            | MetadataType.UInt64 -> Stind(Ind_U8) |> ilResolve
-            | _ -> failwith "IE"
-        ]
-    | LPStruct fd ->
-        [fd |> Stfld |> ilResolve]
-
-let splitStruct = function
-    | StructLoad fdl ->
-        let fld =  fdl
-        (List.map (Ldflda >> ilResolve) fdl.Tail)
-        |> List.rev, LPStruct(fld.Head)
-    | _ -> failwith "IE"
+//let splitArray = function
+//    | ElemLoad fdl ->
+//        let fld =  fdl
+//        (List.map (Ldflda >> ilResolve) fdl.Tail)
+//        |> List.rev, LPStruct(fld.Head)
+//    | _ -> failwith "IE"
 
 let callParamToIl ctx cp = 
     match cp with
@@ -717,25 +734,17 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let exprToIl = exprToIl ctx
         let getVar4ForLoop = findSymbol ctx >>
                              function
-                             | VariableLoad vs -> vs
+                             | ChainLoad([VariableLoad vs]) -> vs
                              | _ -> failwith "IE"
         let getVar4Assign (ident: DIdent) expr =
              // add param for findSymbol to set purpose (like this `assign`)
              match findSymbol ctx ident with
-             | VariableLoad vs -> [yield! expr ; Stloc(vs) |> ilResolve]
              | ChainLoad symbols ->
-                 // TODO change to Array in F# 5.0
-                 let (fieldsTo, last) = (symbols.[0..symbols.Length-2], List.last symbols)
-                 let lastPoint = ref None
-                 let (lastFix, last) = match last with
-                                       | StructLoad _ -> splitStruct last
-                                       | ElemLoad _ -> [], LPDeref(lastPoint)
-                                       | _ -> failwith "IE"
+                 let ltp = ref LTPNone
                  [
-                     yield! List.collect (chainLoadToIl ctx lastPoint) fieldsTo
-                     yield! lastFix
+                     yield! List.collect (chainLoadToIl ctx ltp chainReaderFactory) symbols
                      yield! expr
-                     yield! lastPointSaveToIl last
+                     yield! chainWriterFactory !ltp
                  ]
              | _ -> failwith "IE"
 //        let getVar4With idents =
@@ -1030,7 +1039,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                     at.BaseType <- vt
                                     let fd = FieldDefinition("item0", FieldAttributes.Public, typ)
                                     at.Fields.Add fd
-                                    typeInfo.Add(at, ArrayRange(dims, PointerType(typ)))
+                                    typeInfo.Add(at, ArrayRange(dims, typ))
                                     mb.Types.Add(at)
                                     at
 

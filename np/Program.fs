@@ -21,9 +21,13 @@ let main argv =
         TA = array[0..10] of TFoo;
       var
         a: TA;
+        i: integer;
       begin
-        a[0].x := 1;
+        //a[0].x := 1;
         //a[1].s[0] := 2;
+        a[10].s[0] := 69;
+        for i := 0 to 10 do
+          WriteLn(a[i].s[0]);
       end.
       """
     |> printfn "%A"
