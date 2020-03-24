@@ -25,6 +25,7 @@ type IndirectKind =
     | Ind_U8
     | Ind_R4
     | Ind_R8
+    | Ind_Ref
 
 type BranchLabel =
     | LazyLabel of IlInstruction
@@ -47,7 +48,7 @@ and AtomIlInstruction =
     | Stind of IndirectKind
     | Conv_I
     | Cpblk
-    | Unaligned
+    | Unaligned of byte
     | AddInst
     | MultiplyInst
     | MinusInst
@@ -135,7 +136,7 @@ type LangCtx() =
         member _.Equals(x,y) = ec.Equals(x, y)
 
 type TypeInfo =
-    | TypeSymbols of Dictionary<string,FieldDefinition>
+    | TypeSymbols of Dictionary<string,FieldDefinition> * int
     | ArrayRange of ArrayDim list * TypeReference
 
 type Ctx = {
@@ -243,6 +244,7 @@ let private ainstr = function
                                       | Ind_U8 -> Instruction.Create(OpCodes.Ldind_I8)
                                       | Ind_R4 -> Instruction.Create(OpCodes.Ldind_R4)
                                       | Ind_R8 -> Instruction.Create(OpCodes.Ldind_R8)
+                                      | Ind_Ref -> Instruction.Create(OpCodes.Ldind_Ref)
                     | Stloc i      -> Instruction.Create(OpCodes.Stloc, i)
                     | Stfld f      -> Instruction.Create(OpCodes.Stfld, f)
                     | Stind it     -> match it with
@@ -258,9 +260,10 @@ let private ainstr = function
                                       | Ind_U8 -> Instruction.Create(OpCodes.Stind_I8)
                                       | Ind_R4 -> Instruction.Create(OpCodes.Stind_R4)
                                       | Ind_R8 -> Instruction.Create(OpCodes.Stind_R8)
+                                      | Ind_Ref -> Instruction.Create(OpCodes.Stind_Ref)
                     | Conv_I       -> Instruction.Create(OpCodes.Conv_I)
                     | Cpblk        -> Instruction.Create(OpCodes.Cpblk)
-                    | Unaligned    -> Instruction.Create(OpCodes.Unaligned)
+                    | Unaligned i  -> Instruction.Create(OpCodes.Unaligned, i)
                     | Ret          -> Instruction.Create(OpCodes.Ret)
                     | Unknown      -> Instruction.Create(OpCodes.Nop)
                     | Ceq          -> Instruction.Create(OpCodes.Ceq)
@@ -377,7 +380,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
     | (Designator.Array a)::t -> acc, Designator.Array(a)::t // TODO ?
     | PIName(h)::t ->
         let ref = match ref with | :? PointerType as pt -> pt.ElementType | _ -> ref :?> TypeReference
-        let symbols = match ctx.typeInfo.[ref] with | TypeSymbols d -> d | _ -> failwith "IE"
+        let symbols = match ctx.typeInfo.[ref] with | TypeSymbols (d,_) -> d | _ -> failwith "IE"
         let sym = symbols.[h]
         findSym sym.FieldType (sym::acc) t
     | t -> acc, t
@@ -488,10 +491,10 @@ and valueToIl ctx v =
     | VString s -> Ldstr(s) |> ilResolve |> List.singleton
     | _ -> Unknown |> ilResolve |> List.singleton
 
-and chainReaderFactory = function
+and chainReaderFactory asValue = function
     | LTPVar(vs, _) -> [Ldloc vs |> ilResolve]
     | LTPVarPtr(vs, _) -> [Ldloca vs |> ilResolve]
-    | LTPStruct fld -> [Ldflda fld |> ilResolve]
+    | LTPStruct fld -> [ fld |> (if asValue then Ldfld else Ldflda) |> ilResolve]
     | LTPDeref dt ->
         if dt.MetadataType = MetadataType.ValueType then []
         else
@@ -509,23 +512,33 @@ and chainReaderFactory = function
             |> ilResolveArray
     | LTPNone -> []
 
-and chainWriterFactory = function
+and chainWriterFactory (ctx: Ctx) = function
     | LTPVar(vs, _) -> [Stloc vs |> ilResolve]
-    | LTPVarPtr(vs, _) -> failwith "IE" // [Stloc vs |> ilResolve]
+    | LTPVarPtr _ -> failwith "IE" // [Stloc vs |> ilResolve]
     | LTPStruct fld -> [fld |> Stfld |> ilResolve]
     | LTPDeref dt ->
-        match dt.MetadataType with
-        | MetadataType.Pointer -> Stind(Ind_I)
-        | MetadataType.SByte -> Stind(Ind_I1)
-        | MetadataType.Int16 -> Stind(Ind_I2)
-        | MetadataType.Int32 -> Stind(Ind_I4)
-        | MetadataType.Int64 -> Stind(Ind_I8)
-        | MetadataType.Byte -> Stind(Ind_U1)
-        | MetadataType.UInt16 -> Stind(Ind_U2)
-        | MetadataType.UInt32 -> Stind(Ind_U4)
-        | MetadataType.UInt64 -> Stind(Ind_U8)
-        | _ -> failwith "IE"
-        |> ilResolveArray
+        if dt.MetadataType = MetadataType.ValueType then
+            let dt = dt :?> TypeDefinition
+            let size = match ctx.typeInfo.TryGetValue dt with | true, TypeSymbols (_, size) -> size | _ -> failwith "IE"
+            [
+                Ldc_I4(size) |> ilResolve
+//                if dt.PackingSize = 1s then
+//                    Unaligned(byte(dt.PackingSize)) |> ilResolve
+                Cpblk |> ilResolve
+            ]
+        else
+            match dt.MetadataType with
+            | MetadataType.Pointer -> Stind(Ind_I)
+            | MetadataType.SByte -> Stind(Ind_I1)
+            | MetadataType.Int16 -> Stind(Ind_I2)
+            | MetadataType.Int32 -> Stind(Ind_I4)
+            | MetadataType.Int64 -> Stind(Ind_I8)
+            | MetadataType.Byte -> Stind(Ind_U1)
+            | MetadataType.UInt16 -> Stind(Ind_U2)
+            | MetadataType.UInt32 -> Stind(Ind_U4)
+            | MetadataType.UInt64 -> Stind(Ind_U8)
+            | _ -> failwith "IE"
+            |> ilResolveArray
     | LTPNone -> []
 
 and derefLastTypePoint = function
@@ -539,8 +552,8 @@ and findSymbolAndLoad (ctx: Ctx) ident =
     let lastPoint = ref LTPNone
     findSymbol ctx ident
     |> chainToSLList
-    |> List.collect (chainLoadToIl ctx lastPoint chainReaderFactory)
-    |> fun l -> l @ (chainReaderFactory !lastPoint)
+    |> List.collect (chainLoadToIl ctx lastPoint (chainReaderFactory false))
+    |> fun l -> l @ (chainReaderFactory true !lastPoint)
 
 and chainLoadToIl ctx lastType factory symload =
     let res = factory !lastType
@@ -742,9 +755,9 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
              | ChainLoad symbols ->
                  let ltp = ref LTPNone
                  [
-                     yield! List.collect (chainLoadToIl ctx ltp chainReaderFactory) symbols
+                     yield! List.collect (chainLoadToIl ctx ltp (chainReaderFactory false)) symbols
                      yield! expr
-                     yield! chainWriterFactory !ltp
+                     yield! chainWriterFactory ctx !ltp
                  ]
              | _ -> failwith "IE"
 //        let getVar4With idents =
@@ -969,7 +982,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let typeInfo = Dictionary<TypeReference,_>()
         let defTypes = Dictionary<TypeIdentifier, TypeReference>()
 
-        let rec sizeOf (tr: TypeReference) =
+        let rec sizeOf (tr: TypeReference) (td: TypeDefinition) =
+            let sizeOfTD (td: TypeDefinition) = td.Fields |> Seq.sumBy (fun f -> sizeOf f.FieldType null)
             match tr.MetadataType with
             | MetadataType.SByte | MetadataType.Byte   -> 1
             | MetadataType.Int16 | MetadataType.UInt16 -> 2
@@ -984,8 +998,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 | true, TypeSymbols _ ->
                     // check mono_marshal_type_size -> https://github.com/dotnet/runtime/blob/487c940876b1932920454c44d2463d996cc8407c/src/mono/mono/metadata/marshal.c
                     // check mono_type_to_unmanaged -> https://github.com/dotnet/runtime/blob/aa6d1ac74e6291b3aaaa9da60249d8c327593698/src/mono/mono/metadata/metadata.c
-                    (tr :?> TypeDefinition).Fields
-                    |> Seq.sumBy (fun f -> sizeOf f.FieldType)
+                    sizeOfTD(tr :?> TypeDefinition)
+                | _ when td <> null -> sizeOfTD td
                 | _ -> failwith "IE"
             | _ -> failwith "IE"
 
@@ -1028,7 +1042,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                     fieldsMap.Add(name, fd)
                                 mb.Types.Add(td)
                                 defTypes.Add(stdType name, td)
-                                typeInfo.Add(td, TypeSymbols(fieldsMap))
+                                typeInfo.Add(td, TypeSymbols(fieldsMap, sizeOf td td))
                            | Array(ArrayDef(_, dimensions, tname)) ->
                                 let newSubType (dims, size) (typ, typSize) name =
                                     let size = size * typSize
@@ -1050,7 +1064,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                         | TIdArray(ArrayDef(_, dimensions, tname)) -> doArrayDef dimensions tname dims (name + "$a$")
                                         | TIdIdent _ ->
                                             let typ = defTypes.[tname]
-                                            dims, (typ, sizeOf typ), typ
+                                            dims, (typ, sizeOf typ null), typ
                                         | _ -> failwith "IE"
 
                                     let newArrayDim ad ((dims, totalSize), elemType, i, newTyp) =
