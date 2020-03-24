@@ -18,10 +18,12 @@ let main argv =
           s: TSubA;
           y: integer;
         end;
+        PFoo = ^TFoo;
         TA = array[0..10] of TFoo;
       var
         a: TA;
         i: integer;
+        f: PFoo;
       begin
         //a[0].x := 1;
         //a[1].s[0] := 2;
@@ -35,6 +37,8 @@ let main argv =
         a[10].s[0] := 1;
         a[10].y := 1;
         a[0] := a[9];
+        f := @a[0];
+        f^.x := 69;
         for i := 0 to 10 do begin
           WriteLn(a[i].x);
           WriteLn(a[i].s[0]);

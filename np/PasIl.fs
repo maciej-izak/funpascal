@@ -435,16 +435,6 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
 let ilResolve = ainstr >> IlResolved
 let ilResolveArray = ilResolve >> List.singleton
 
-//let findSymbolAndGetPtr (ctx: Ctx) ident =
-//    let sym = findSymbol ctx ident
-//    let rec resolveSym acc = function
-//        | VariablePtrLoad vd -> (vd |> Ldloca |> ilResolve)::acc
-//        | VariableLoad vs -> (vs |> Ldloc |> ilResolve)::acc
-//        | StructLoad fdl -> List.fold (fun acc f -> (Ldflda(f) |> ilResolve)::acc) acc fdl
-//        | ChainLoad cl -> List.fold resolveSym acc cl
-//        | _ -> failwith "IE"
-//    resolveSym [] sym |> List.rev
-
 type LastTypePoint =
     | LTPVar of VariableDefinition * TypeReference
     | LTPVarPtr of VariableDefinition * TypeReference
@@ -478,9 +468,9 @@ let rec exprToIl ctx exprEl =
     | GreaterThanOrEqual(a, b) -> [|yield! add2OpIl a b Clt; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
     | Addr(a) ->
         [|
-//            match a with
-//            | Value(VIdent i) -> yield! findSymbolAndGetPtr ctx i
-//            | _ -> failwith "IE"
+            match a with
+            | Value(VIdent i) -> yield! findSymbolAndGetPtr ctx i
+            | _ -> failwith "IE"
         |]
     | _ -> failwith "IE"
 
@@ -548,12 +538,16 @@ and derefLastTypePoint = function
     | LTPStruct fd -> derefType fd.FieldType
     | _ -> failwith "cannot deref"
 
-and findSymbolAndLoad (ctx: Ctx) ident =
+and findSymbolInternal value (ctx: Ctx) ident =
     let lastPoint = ref LTPNone
     findSymbol ctx ident
     |> chainToSLList
     |> List.collect (chainLoadToIl ctx lastPoint (chainReaderFactory false))
-    |> fun l -> l @ (chainReaderFactory true !lastPoint)
+    |> fun l -> l @ (chainReaderFactory value !lastPoint)
+
+and findSymbolAndLoad = findSymbolInternal true
+
+and findSymbolAndGetPtr = findSymbolInternal false
 
 and chainLoadToIl ctx lastType factory symload =
     let res = factory !lastType
@@ -565,7 +559,7 @@ and chainLoadToIl ctx lastType factory symload =
         lastType := LTPVarPtr(vs, absVariableType vs.VariableType)
         res
     | DerefLoad ->
-        let dt = derefType <| derefLastTypePoint !lastType
+        let dt = derefLastTypePoint !lastType
         lastType := LTPDeref dt
         res
     | ElemLoad (exprs, rt) ->
