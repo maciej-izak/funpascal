@@ -40,12 +40,15 @@ let main argv =
         a[0] := a[9];
         f := @a[0];
         f^.x := 69;
-        f.x := 69;
         for i := 0 to 10 do begin
           WriteLn(a[i].x);
           WriteLn(a[i].s[0]);
           WriteLn(a[i].y);
-        end
+        end;
+        f.x := 70;
+        WriteLn(f.x);
+        with f^ do
+          WriteLn(x);
       end.
       """
     |> printfn "%A"

@@ -96,7 +96,7 @@ type MetaInstruction =
 type Symbol =
     | VariableSym of VariableDefinition
     | EnumValueSym of int
-    | WithSym of VariableDefinition * TypeDefinition
+    | WithSym of VariableDefinition * TypeReference
 
 type ArrayDim = { low: int; high: int; size: int; elemSize: int; elemType: TypeReference; selfType: TypeReference ref }
 
@@ -756,21 +756,26 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         | ChainLoad symbols ->
                             let ltp = ref LTPNone
                             let cl = List.collect (chainLoadToIl ctx ltp (chainReaderFactory false false)) symbols
-                            let vt = match !ltp with | LTPVar(_,t) -> t | LTPStruct f -> f.FieldType | _ -> failwith "IE"
+                            let vt = match !ltp with // TODO allow structs only ? (ValueType as records/classes only)
+                                     | LTPVar(_,t) -> t
+                                     | LTPStruct f -> f.FieldType
+                                     | LTPDeref dt when dt.MetadataType = MetadataType.ValueType -> dt
+                                     | _ -> failwith "IE"
                             // TODO check type of vt for with ?
-                            let (_, vv) = ctx.EnsureVariable(ctx.moduleBuilder.TypeSystem.UIntPtr)
                             let vt = vt :?> TypeDefinition
+                            let pvt = PointerType(vt)
+                            let (_, vv) = ctx.EnsureVariable(pvt)
                             ([
                                 yield! cl
                                 yield! chainReaderFactory false true !ltp
                                 Stloc(vv) |> ilResolve
-                            ], (vv, vt))
+                            ], (vv, vt, pvt))
                         | _ -> failwith "IE"
 
                     let newSymbols = Dictionary<string, Symbol>()
-                    let (v, td) = snd loadVarW
+                    let (v, td, ptd) = snd loadVarW
                     for f in td.Fields do
-                        newSymbols.Add(f.Name, WithSym(v, td))
+                        newSymbols.Add(f.Name, WithSym(v, ptd))
                     ils.Add(fst loadVarW)
                     newSymbols::symbols
                 ) ctx.symbols idents, ils
