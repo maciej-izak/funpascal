@@ -104,7 +104,6 @@ type SymbolLoad =
     | DerefLoad
     | ElemLoad of (ExprEl * ArrayDim) list * TypeReference
     | StructLoad of FieldDefinition list
-    | VariablePtrLoad of VariableDefinition
     | VariableLoad of VariableDefinition
     | ValueLoad of int
 
@@ -379,6 +378,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
     let rec findSym (ref: MemberReference) acc = function
     | (Designator.Array a)::t -> acc, Designator.Array(a)::t // TODO ?
     | PIName(h)::t ->
+        // TODO ? here is solved auto records dereference (x.y instead of x^.y) and dereference for array elements
         let ref = match ref with | :? PointerType as pt -> pt.ElementType | _ -> ref :?> TypeReference
         let symbols = match ctx.typeInfo.[ref] with | TypeSymbols (d,_) -> d | _ -> failwith "IE"
         let sym = symbols.[h]
@@ -421,9 +421,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
         let vt = absVariableType vd.VariableType
         ChainLoad <|
             let tail = resolveTail [] vt ident.Tail
-            match List.tryHead tail with
-            | Some(ElemLoad _) -> VariablePtrLoad(vd)
-            | _ -> VariableLoad(vd)
+            VariableLoad(vd)
             ::tail
     | Some(WithSym (vd, td)) ->
         let vt = absVariableType td
@@ -437,7 +435,6 @@ let ilResolveArray = ilResolve >> List.singleton
 
 type LastTypePoint =
     | LTPVar of VariableDefinition * TypeReference
-    | LTPVarPtr of VariableDefinition * TypeReference
     | LTPDeref of TypeReference
     | LTPStruct of FieldDefinition
     | LTPNone
@@ -481,10 +478,11 @@ and valueToIl ctx v =
     | VString s -> Ldstr(s) |> ilResolve |> List.singleton
     | _ -> Unknown |> ilResolve |> List.singleton
 
-and chainReaderFactory asValue = function
-    | LTPVar(vs, _) -> [Ldloc vs |> ilResolve]
-    | LTPVarPtr(vs, _) -> [Ldloca vs |> ilResolve]
-    | LTPStruct fld -> [ fld |> (if asValue then Ldfld else Ldflda) |> ilResolve]
+and chainReaderFactory asValue addr ltp =
+    let valOrPtr v p (t: TypeReference) = (if asValue || (t :? PointerType && addr = false) then v else p) |> ilResolveArray
+    match ltp with
+    | LTPVar(vs, vt) -> valOrPtr (Ldloc vs) (Ldloca vs) vt
+    | LTPStruct fld -> valOrPtr (Ldfld fld) (Ldflda fld) fld.FieldType
     | LTPDeref dt ->
         if dt.MetadataType = MetadataType.ValueType then []
         else
@@ -504,7 +502,6 @@ and chainReaderFactory asValue = function
 
 and chainWriterFactory (ctx: Ctx) = function
     | LTPVar(vs, _) -> [Stloc vs |> ilResolve]
-    | LTPVarPtr _ -> failwith "IE" // [Stloc vs |> ilResolve]
     | LTPStruct fld -> [fld |> Stfld |> ilResolve]
     | LTPDeref dt ->
         if dt.MetadataType = MetadataType.ValueType then
@@ -533,30 +530,26 @@ and chainWriterFactory (ctx: Ctx) = function
 
 and derefLastTypePoint = function
     | LTPVar(_, t) -> derefType t
-    | LTPVarPtr(_, t) -> derefType t
     | LTPDeref t -> derefType t
     | LTPStruct fd -> derefType fd.FieldType
     | _ -> failwith "cannot deref"
 
-and findSymbolInternal value (ctx: Ctx) ident =
+and findSymbolInternal value addr (ctx: Ctx) ident =
     let lastPoint = ref LTPNone
     findSymbol ctx ident
     |> chainToSLList
-    |> List.collect (chainLoadToIl ctx lastPoint (chainReaderFactory false))
-    |> fun l -> l @ (chainReaderFactory value !lastPoint)
+    |> List.collect (chainLoadToIl ctx lastPoint (chainReaderFactory false false))
+    |> fun l -> l @ (chainReaderFactory value addr !lastPoint)
 
-and findSymbolAndLoad = findSymbolInternal true
+and findSymbolAndLoad = findSymbolInternal true false
 
-and findSymbolAndGetPtr = findSymbolInternal false
+and findSymbolAndGetPtr = findSymbolInternal false true
 
 and chainLoadToIl ctx lastType factory symload =
     let res = factory !lastType
     match symload with
     | VariableLoad vs ->
         lastType := LTPVar(vs, absVariableType vs.VariableType)
-        res
-    | VariablePtrLoad vs ->
-        lastType := LTPVarPtr(vs, absVariableType vs.VariableType)
         res
     | DerefLoad ->
         let dt = derefLastTypePoint !lastType
@@ -749,42 +742,38 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
              | ChainLoad symbols ->
                  let ltp = ref LTPNone
                  [
-                     yield! List.collect (chainLoadToIl ctx ltp (chainReaderFactory false)) symbols
+                     yield! List.collect (chainLoadToIl ctx ltp (chainReaderFactory false false)) symbols
                      yield! expr
                      yield! chainWriterFactory ctx !ltp
                  ]
              | _ -> failwith "IE"
-//        let getVar4With idents =
-//            let ils = List<_>()
-//            List.fold
-//                (fun symbols i ->
-//                    let loadVarW =
-//                        match findSymbol ctx i with
-//                        | VariableStructLoad (v, fld) ->
-//                            let vt = match v.VariableType with
-//                                     | :? TypeDefinition as td ->
-//                                         v.VariableType <- v.VariableType.MakePinnedType()
-//                                         td
-//                                     | :? PinnedType as pt -> pt.GetElementType() :?> TypeDefinition
-//                                     | _ -> failwith "IE"
-//                            let (_, vv) = ctx.EnsureVariable(ctx.moduleBuilder.TypeSystem.UIntPtr)
-//                            // TODO optimize List.tryLast?
-//                            // try last element in expr x.y.z (z is the right choice)
-//                            let vt = match List.tryLast fld with | Some f -> f.FieldType :?> TypeDefinition | _ -> vt
-//                            ([
-//                                Ldloca(v) |> ilResolve
-//                                yield! List.map (Ldflda >> ilResolve) fld
-//                                Stloc(vv) |> ilResolve
-//                            ],(vv, vt))
-//                        | _ -> failwith "IE"
-//
-//                    let newSymbols = Dictionary<string, Symbol>()
-//                    let (v, td) = snd loadVarW
-//                    for f in td.Fields do
-//                        newSymbols.Add(f.Name, WithSym(v, td))
-//                    ils.Add(fst loadVarW)
-//                    newSymbols::symbols
-//                ) ctx.symbols idents, ils
+        let getVar4With idents =
+            let ils = List<_>()
+            List.fold
+                (fun symbols i ->
+                    let loadVarW =
+                        match findSymbol ctx i with
+                        | ChainLoad symbols ->
+                            let ltp = ref LTPNone
+                            let cl = List.collect (chainLoadToIl ctx ltp (chainReaderFactory false false)) symbols
+                            let vt = match !ltp with | LTPVar(_,t) -> t | LTPStruct f -> f.FieldType | _ -> failwith "IE"
+                            // TODO check type of vt for with ?
+                            let (_, vv) = ctx.EnsureVariable(ctx.moduleBuilder.TypeSystem.UIntPtr)
+                            let vt = vt :?> TypeDefinition
+                            ([
+                                yield! cl
+                                yield! chainReaderFactory false true !ltp
+                                Stloc(vv) |> ilResolve
+                            ], (vv, vt))
+                        | _ -> failwith "IE"
+
+                    let newSymbols = Dictionary<string, Symbol>()
+                    let (v, td) = snd loadVarW
+                    for f in td.Fields do
+                        newSymbols.Add(f.Name, WithSym(v, td))
+                    ils.Add(fst loadVarW)
+                    newSymbols::symbols
+                ) ctx.symbols idents, ils
                      
         let (instructions, newSysLabels) =
                 match s with
@@ -929,15 +918,15 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         yield! incLoopVar
                         yield! condition
                     ],[])
-//                | WithStm (idents, stmt) ->
-//                    let (withSymbols, ils) = getVar4With idents
-//                    let newCtx = { ctx with symbols = withSymbols }
-//                    // TODO check if some part is unused in ils
-//                    let (branch, labels) = stmtListToIlList newCtx stmt
-//                    ([
-//                        for i in ils do yield! i
-//                        yield! branch
-//                    ],labels)
+                | WithStm (idents, stmt) ->
+                    let (withSymbols, ils) = getVar4With idents
+                    let newCtx = { ctx with symbols = withSymbols }
+                    // TODO check if some part is unused in ils
+                    let (branch, labels) = stmtListToIlList newCtx stmt
+                    ([
+                        for i in ils do yield! i
+                        yield! branch
+                    ],labels)
                 | EmptyStm -> ([],[])
                 | _ -> ([],[])
         // TODO fix peepholes about jump to next opcode
