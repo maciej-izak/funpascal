@@ -2,6 +2,47 @@
 open np.BasicParsers
 open FParsec
 
+      // program wow;
+      // type
+      //   TSubA = array[0..0] of integer;
+      //   TFoo = packed record
+      //     x: byte;
+      //     s: TSubA;
+      //     y: integer;
+      //   end;
+      //   PFoo = ^TFoo;
+      //   PPFoo = ^PFoo;
+      //   TA = array[0..10] of TFoo;
+      // var
+      //   a: TA;
+      //   i: integer;
+      //   f: PFoo;
+      // begin
+      //   //a[0].x := 1;
+      //   //a[1].s[0] := 2;
+      //   a[1].x := 2;
+      //   a[1].s[0] := 2;
+      //   a[1].y := 2;
+      //   a[9].x := $FF;
+      //   a[9].s[0] := $FFFFFFFF;
+      //   a[9].y := $FFFFFFFF;
+      //   a[10].x := 1;
+      //   a[10].s[0] := 1;
+      //   a[10].y := 1;
+      //   a[0] := a[9];
+      //   f := @a[0];
+      //   f^.x := 69;
+      //   for i := 0 to 10 do begin
+      //     WriteLn(a[i].x);
+      //     WriteLn(a[i].s[0]);
+      //     WriteLn(a[i].y);
+      //   end;
+      //   f.x := 70;
+      //   WriteLn(f.x);
+      //   with f^ do
+      //     WriteLn(x);
+      // end.
+
       // TODO
       // type
       //   TA = array[0..10] of byte;

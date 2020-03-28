@@ -10,7 +10,6 @@ open Mono.Cecil
 open Mono.Cecil.Cil
 open Mono.Cecil.Rocks
 open Microsoft.FSharp.Linq
-open Mono.Cecil
 
 type IndirectKind =
     | Ind_I
@@ -95,8 +94,10 @@ type MetaInstruction =
 
 type Symbol =
     | VariableSym of VariableDefinition
+    | MethodSym of MethodReference
     | EnumValueSym of int
     | WithSym of VariableDefinition * TypeReference
+    | UnknownSym
 
 type ArrayDim = { low: int; high: int; size: int; elemSize: int; elemType: TypeReference; selfType: TypeReference ref }
 
@@ -106,6 +107,7 @@ type SymbolLoad =
     | StructLoad of FieldDefinition list
     | VariableLoad of VariableDefinition
     | ValueLoad of int
+    | CallableLoad of MethodReference
 
 type ChainLoad =
     | ChainLoad of SymbolLoad list
@@ -416,18 +418,21 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
                              | _ -> elemLoad::acc
                 resolveTail newAcc subElemTyp t
 
+    let mainSym = defaultArg mainSym UnknownSym
+
     match mainSym with
-    | Some(VariableSym vd) ->
+    | VariableSym vd ->
         let vt = absVariableType vd.VariableType
         ChainLoad <|
             let tail = resolveTail [] vt ident.Tail
             VariableLoad(vd)
             ::tail
-    | Some(WithSym (vd, td)) ->
+    | WithSym (vd, td) ->
         let vt = absVariableType td
         let chain = resolveTail [] vt ident
         ChainLoad (VariableLoad(vd)::chain)
-    | Some(EnumValueSym(i)) when ident.Tail = [] -> [ValueLoad(i)] |> ChainLoad
+    | EnumValueSym(i) when ident.Tail = [] -> [ValueLoad(i)] |> ChainLoad
+    | MethodSym r -> [CallableLoad r] |> ChainLoad
     | _ -> SymbolLoadError
 
 let ilResolve = ainstr >> IlResolved
@@ -720,14 +725,13 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let writeLineSMethod = 
         typeof<System.Console>.GetMethod("WriteLine", [| typeof<string> |]) |> moduleBuilder.ImportReference     
 
-    let findFunction (DIdent ident) =
-        assert(ident.Length = 1)
-        let h = ident.Head
-        let f = match h with
-                | PIName n when n = "WriteLn" -> writeLineMethod
-                | PIName n when n = "WriteLnS" -> writeLineSMethod
-                | _ -> null
-        Call(f) |> ilResolve
+    let findFunction (ctx: Ctx) ident =
+        let callChain = findSymbol ctx ident
+        // TODO more advanced calls like foo().x().z^ := 10
+        let mr = match callChain with
+                 | ChainLoad([CallableLoad cl]) -> cl
+                 | _ -> failwith "Not supported"
+        Call(mr) |> ilResolve
             
     let rec stmtToIl (ctx: Ctx) sysLabels (s: Statement): (MetaInstruction * BranchLabel ref list) =
         let stmtToIlList = stmtListToIlList ctx
@@ -783,7 +787,10 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let (instructions, newSysLabels) =
                 match s with
                 | CallStm(CallExpr(ident, cp)) ->
-                    ([for p in cp do yield! callParamToIl ctx p; findFunction(ident)], [])
+                    ([
+                        for p in cp do yield! callParamToIl ctx p
+                        findFunction ctx ident
+                     ], [])
                 | AssignStm(ident, expr) -> 
                     (getVar4Assign ident (exprToIl expr), [])
                 | IfStm(expr, tb, fb) ->
@@ -962,7 +969,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let findType =
         typeIdToStr
 
-    member _.BuildIl(block: Block, ns) =
+    member self.BuildIl(block: Block, ns, tb) =
         let langCtx = LangCtx()
         let variables = Dictionary<_,_>(langCtx)
         let labelsMap = Dictionary<_,_>(langCtx)
@@ -1001,6 +1008,9 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         defTypes.Add(stdType "Byte", mb.TypeSystem.Byte)
         defTypes.Add(stdType "Boolean", mb.TypeSystem.Boolean)
         defTypes.Add(stdType "Pointer", mb.TypeSystem.Void)
+
+        symbols.Add("WriteLn", MethodSym writeLineMethod)
+        symbols.Add("WriteLnS", MethodSym writeLineSMethod)
 
         printfn "%A" block.decl
         block.decl
@@ -1092,6 +1102,24 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                    |> List.collect (fun (l, t) -> l |> List.map (fun v -> (v, defTypes.[t])))
                    |> List.iter (fun (v, t) -> (v, VariableDefinition(t)) |> variables.Add)
                | Labels labels -> (for l in labels do labelsMap.Add(l, ref (UserLabel l)))
+               | ProcAndFunc((name, _, _), d) ->
+                   let name = match name with
+                              | Some n -> n
+                              | _ -> failwith "name expected"
+                   let methodBuilder =
+                       let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
+                       let methodName = name
+                       MethodDefinition(methodName, methodAttributes, moduleBuilder.TypeSystem.Void)
+                   let stmts = match d with
+                               | Some (d, s) -> s
+                               | _ -> failwith "no body def"
+                   let mainBlock = compileBlock methodBuilder tb (self.BuildIl(Block.Create([], stmts),ns,tb))
+                   mainBlock.Body.InitLocals <- true
+                   // https://github.com/jbevain/cecil/issues/365
+                   mainBlock.Body.OptimizeMacros()
+                   symbols.Add(name, MethodSym(mainBlock :> MethodReference))
+
+                   ()
                | _ -> ())
                
         for kv in variables do symbols.Add(kv.Key, VariableSym(kv.Value))
