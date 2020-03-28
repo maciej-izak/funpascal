@@ -37,11 +37,14 @@ and AtomIlInstruction =
     | Unknown
     | Call of MethodReference
     | Ldc_I4 of int
+    | Ldarg of ParameterDefinition
+    | Ldarga of ParameterDefinition
     | Ldloc of VariableDefinition
     | Ldloca of VariableDefinition
     | Ldfld of FieldDefinition
     | Ldflda of FieldDefinition
     | Ldind of IndirectKind
+    | Starg of ParameterDefinition
     | Stloc of VariableDefinition
     | Stfld of FieldDefinition
     | Stind of IndirectKind
@@ -93,6 +96,7 @@ type MetaInstruction =
     | InstructionList of IlInstruction list
 
 type Symbol =
+    | VariableParamSym of (ParameterDefinition * TypeReference * bool)
     | VariableSym of VariableDefinition
     | MethodSym of MethodReference
     | EnumValueSym of int
@@ -101,11 +105,15 @@ type Symbol =
 
 type ArrayDim = { low: int; high: int; size: int; elemSize: int; elemType: TypeReference; selfType: TypeReference ref }
 
+type VariableLoadKind =
+    | LoadParam of (ParameterDefinition * TypeReference * bool)
+    | LoadVar of VariableDefinition
+
 type SymbolLoad =
     | DerefLoad
     | ElemLoad of (ExprEl * ArrayDim) list * TypeReference
     | StructLoad of FieldDefinition list
-    | VariableLoad of VariableDefinition
+    | VariableLoad of VariableLoadKind
     | ValueLoad of int
     | CallableLoad of MethodReference
 
@@ -228,6 +236,8 @@ let private ainstr = function
                     | NegInst      -> Instruction.Create(OpCodes.Neg)
                     | Call mi      -> Instruction.Create(OpCodes.Call, mi)
                     | Ldc_I4 n     -> Instruction.Create(OpCodes.Ldc_I4, n)
+                    | Ldarg i      -> Instruction.Create(OpCodes.Ldarg, i)
+                    | Ldarga i     -> Instruction.Create(OpCodes.Ldarga, i)
                     | Ldloc i      -> Instruction.Create(OpCodes.Ldloc, i)
                     | Ldloca i     -> Instruction.Create(OpCodes.Ldloca, i)
                     | Ldfld f      -> Instruction.Create(OpCodes.Ldfld, f)
@@ -246,6 +256,7 @@ let private ainstr = function
                                       | Ind_R4 -> Instruction.Create(OpCodes.Ldind_R4)
                                       | Ind_R8 -> Instruction.Create(OpCodes.Ldind_R8)
                                       | Ind_Ref -> Instruction.Create(OpCodes.Ldind_Ref)
+                    | Starg i      -> Instruction.Create(OpCodes.Starg, i)
                     | Stloc i      -> Instruction.Create(OpCodes.Stloc, i)
                     | Stfld f      -> Instruction.Create(OpCodes.Stfld, f)
                     | Stind it     -> match it with
@@ -418,21 +429,19 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
                              | _ -> elemLoad::acc
                 resolveTail newAcc subElemTyp t
 
+    let varLoadChain vt dlist vd =
+        let t = absVariableType vt
+        let tail = resolveTail [] t dlist
+        ChainLoad(VariableLoad(vd)::tail)
+
     let mainSym = defaultArg mainSym UnknownSym
 
     match mainSym with
-    | VariableSym vd ->
-        let vt = absVariableType vd.VariableType
-        ChainLoad <|
-            let tail = resolveTail [] vt ident.Tail
-            VariableLoad(vd)
-            ::tail
-    | WithSym (vd, td) ->
-        let vt = absVariableType td
-        let chain = resolveTail [] vt ident
-        ChainLoad (VariableLoad(vd)::chain)
+    | VariableSym vd -> LoadVar vd |> varLoadChain vd.VariableType ident.Tail
+    | WithSym (vd, td) -> LoadVar vd |> varLoadChain td ident
     | EnumValueSym(i) when ident.Tail = [] -> [ValueLoad(i)] |> ChainLoad
     | MethodSym r -> [CallableLoad r] |> ChainLoad
+    | VariableParamSym ((i,t,r) as p) -> LoadParam p |> varLoadChain t ident.Tail
     | _ -> SymbolLoadError
 
 let ilResolve = ainstr >> IlResolved
@@ -440,6 +449,7 @@ let ilResolveArray = ilResolve >> List.singleton
 
 type LastTypePoint =
     | LTPVar of VariableDefinition * TypeReference
+    | LTPParam of ParameterDefinition * TypeReference * bool
     | LTPDeref of TypeReference
     | LTPStruct of FieldDefinition
     | LTPNone
@@ -487,6 +497,7 @@ and chainReaderFactory asValue addr ltp =
     let valOrPtr v p (t: TypeReference) = (if asValue || (t :? PointerType && addr = false) then v else p) |> ilResolveArray
     match ltp with
     | LTPVar(vs, vt) -> valOrPtr (Ldloc vs) (Ldloca vs) vt
+    | LTPParam(i,t,r) -> valOrPtr (Ldarg i) (Ldarga i) t
     | LTPStruct fld -> valOrPtr (Ldfld fld) (Ldflda fld) fld.FieldType
     | LTPDeref dt ->
         if dt.MetadataType = MetadataType.ValueType then []
@@ -507,6 +518,7 @@ and chainReaderFactory asValue addr ltp =
 
 and chainWriterFactory (ctx: Ctx) = function
     | LTPVar(vs, _) -> [Stloc vs |> ilResolve]
+    | LTPParam(i, _, _) -> [Starg i |> ilResolve]
     | LTPStruct fld -> [fld |> Stfld |> ilResolve]
     | LTPDeref dt ->
         if dt.MetadataType = MetadataType.ValueType then
@@ -554,7 +566,9 @@ and chainLoadToIl ctx lastType factory symload =
     let res = factory !lastType
     match symload with
     | VariableLoad vs ->
-        lastType := LTPVar(vs, absVariableType vs.VariableType)
+        lastType := match vs with
+                    | LoadVar vs -> LTPVar(vs, absVariableType vs.VariableType)
+                    | LoadParam p -> LTPParam p
         res
     | DerefLoad ->
         let dt = derefLastTypePoint !lastType
@@ -738,7 +752,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let exprToIl = exprToIl ctx
         let getVar4ForLoop = findSymbol ctx >>
                              function
-                             | ChainLoad([VariableLoad vs]) -> vs
+                             | ChainLoad([VariableLoad(LoadVar(vs))]) -> vs
                              | _ -> failwith "IE"
         let getVar4Assign (ident: DIdent) expr =
              // add param for findSymbol to set purpose (like this `assign`)
@@ -762,6 +776,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                             let cl = List.collect (chainLoadToIl ctx ltp (chainReaderFactory false false)) symbols
                             let vt = match !ltp with // TODO allow structs only ? (ValueType as records/classes only)
                                      | LTPVar(_,t) -> t
+                                     | LTPParam(_,t,_) -> t
                                      | LTPStruct f -> f.FieldType
                                      | LTPDeref dt when dt.MetadataType = MetadataType.ValueType -> dt
                                      | _ -> failwith "IE"
@@ -969,11 +984,11 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let findType =
         typeIdToStr
 
-    member self.BuildIl(block: Block, ns, tb) =
+    member self.BuildIl(block: Block, ns, tb, ?symbols) =
         let langCtx = LangCtx()
         let variables = Dictionary<_,_>(langCtx)
         let labelsMap = Dictionary<_,_>(langCtx)
-        let symbols = Dictionary<_,_>(langCtx)
+        let symbols = defaultArg symbols (Dictionary<_,_>(langCtx))
         let typeInfo = Dictionary<TypeReference,_>()
         let defTypes = Dictionary<TypeIdentifier, TypeReference>()
 
@@ -1102,7 +1117,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                    |> List.collect (fun (l, t) -> l |> List.map (fun v -> (v, defTypes.[t])))
                    |> List.iter (fun (v, t) -> (v, VariableDefinition(t)) |> variables.Add)
                | Labels labels -> (for l in labels do labelsMap.Add(l, ref (UserLabel l)))
-               | ProcAndFunc((name, _, _), d) ->
+               | ProcAndFunc((name, mRes, mPara), d) ->
                    let name = match name with
                               | Some n -> n
                               | _ -> failwith "name expected"
@@ -1110,10 +1125,24 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                        let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
                        let methodName = name
                        MethodDefinition(methodName, methodAttributes, moduleBuilder.TypeSystem.Void)
-                   let stmts = match d with
-                               | Some (d, s) -> s
-                               | _ -> failwith "no body def"
-                   let mainBlock = compileBlock methodBuilder tb (self.BuildIl(Block.Create([], stmts),ns,tb))
+                   let decls, stmts = match d with
+                                      | Some (d, s) -> d, s
+                                      | _ -> failwith "no body def"
+                   let newSymbols = Dictionary<_,_>(langCtx)
+                   let ps = defaultArg mPara []
+                            |> List.collect
+                               (fun (k, (ps, t)) ->
+                                let t = defTypes.[t]
+                                [for p in ps do
+                                    let (typ, byref) = match k with
+                                                       | Some(Var) -> ByReferenceType(t) :> TypeReference, true
+                                                       | _ -> t, false
+                                    let pd = ParameterDefinition(p, ParameterAttributes.None, typ)
+                                    newSymbols.Add(p, VariableParamSym(pd, t, byref))
+                                    yield pd]
+                               )
+                   let mainBlock = compileBlock methodBuilder tb (self.BuildIl(Block.Create(decls, stmts),ns,tb,newSymbols))
+                   List.iter mainBlock.Parameters.Add ps
                    mainBlock.Body.InitLocals <- true
                    // https://github.com/jbevain/cecil/issues/365
                    mainBlock.Body.OptimizeMacros()

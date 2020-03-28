@@ -12,13 +12,19 @@ let main argv =
     PasStreams.testAll
       """program wow;
 
-        procedure foo;
+        procedure foo(var a: byte);
         begin
-          WriteLnS('foo');
+          WriteLn(a);
+          a := a + 1;
+          WriteLn(a);
         end;
 
+      var
+        x: byte;
       begin
-        foo();
+        x := 1;
+        foo(x);
+        foo(x);
       end.
       """
     |> printfn "%A"
