@@ -497,7 +497,14 @@ and chainReaderFactory asValue addr ltp =
     let valOrPtr v p (t: TypeReference) = (if asValue || (t :? PointerType && addr = false) then v else p) |> ilResolveArray
     match ltp with
     | LTPVar(vs, vt) -> valOrPtr (Ldloc vs) (Ldloca vs) vt
-    | LTPParam(i,t,r) -> valOrPtr (Ldarg i) (Ldarga i) t
+    | LTPParam(i,t,r) -> match r with // handle by ref params
+                         | false -> valOrPtr (Ldarg i) (Ldarga i) t
+                         | true ->
+                             [
+                                Ldarg i |> ilResolve
+                                if asValue then
+                                    yield! chainReaderFactory asValue addr (LTPDeref t)
+                             ]
     | LTPStruct fld -> valOrPtr (Ldfld fld) (Ldflda fld) fld.FieldType
     | LTPDeref dt ->
         if dt.MetadataType = MetadataType.ValueType then []
@@ -518,7 +525,9 @@ and chainReaderFactory asValue addr ltp =
 
 and chainWriterFactory (ctx: Ctx) = function
     | LTPVar(vs, _) -> [Stloc vs |> ilResolve]
-    | LTPParam(i, _, _) -> [Starg i |> ilResolve]
+    | LTPParam(i, t, r) -> match r with // handle by ref params
+                           | false -> [Starg i |> ilResolve]
+                           | true -> chainWriterFactory ctx (LTPDeref t)
     | LTPStruct fld -> [fld |> Stfld |> ilResolve]
     | LTPDeref dt ->
         if dt.MetadataType = MetadataType.ValueType then
@@ -604,10 +613,15 @@ and chainLoadToIl ctx lastType factory symload =
 //        |> List.rev, LPStruct(fld.Head)
 //    | _ -> failwith "IE"
 
-let callParamToIl ctx cp = 
+let callParamToIl ctx cp idx (mr: MethodReference) =
     match cp with
     | ParamExpr expr -> List.ofArray (exprToIl ctx expr)
-    | ParamIdent id -> findSymbolAndLoad ctx id
+    | ParamIdent id ->
+        let param = mr.Parameters.[idx]
+        if param.ParameterType :? ByReferenceType then
+            findSymbolAndGetPtr ctx id
+        else
+            findSymbolAndLoad ctx id
 
 // type internal Marker = interface end
 // let t = typeof<Marker>.DeclaringType
@@ -745,7 +759,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let mr = match callChain with
                  | ChainLoad([CallableLoad cl]) -> cl
                  | _ -> failwith "Not supported"
-        Call(mr) |> ilResolve
+        mr, Call(mr) |> ilResolve
             
     let rec stmtToIl (ctx: Ctx) sysLabels (s: Statement): (MetaInstruction * BranchLabel ref list) =
         let stmtToIlList = stmtListToIlList ctx
@@ -760,6 +774,10 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
              | ChainLoad symbols ->
                  let ltp = ref LTPNone
                  [
+                     yield! match symbols.Head with // for non value types we need extra value on stack (for stind.x)
+                            | VariableLoad(LoadParam (i,t,r)) when r && t.MetadataType <> MetadataType.ValueType ->
+                                Ldarg i |> ilResolveArray
+                            | _ -> []
                      yield! List.collect (chainLoadToIl ctx ltp (chainReaderFactory false false)) symbols
                      yield! expr
                      yield! chainWriterFactory ctx !ltp
@@ -802,9 +820,12 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let (instructions, newSysLabels) =
                 match s with
                 | CallStm(CallExpr(ident, cp)) ->
+                    let mr, f = findFunction ctx ident
                     ([
-                        for p in cp do yield! callParamToIl ctx p
-                        findFunction ctx ident
+                        yield! cp
+                        |> List.mapi (fun i p -> callParamToIl ctx p i mr)
+                        |> List.concat
+                        yield f
                      ], [])
                 | AssignStm(ident, expr) -> 
                     (getVar4Assign ident (exprToIl expr), [])
@@ -984,12 +1005,12 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let findType =
         typeIdToStr
 
-    member self.BuildIl(block: Block, ns, tb, ?symbols) =
+    member self.BuildIl(block: Block, ns, tb, ?symbols, ?typeInfo) =
         let langCtx = LangCtx()
         let variables = Dictionary<_,_>(langCtx)
         let labelsMap = Dictionary<_,_>(langCtx)
         let symbols = defaultArg symbols (Dictionary<_,_>(langCtx))
-        let typeInfo = Dictionary<TypeReference,_>()
+        let typeInfo = defaultArg typeInfo (Dictionary<TypeReference,_>())
         let defTypes = Dictionary<TypeIdentifier, TypeReference>()
 
         let rec sizeOf (tr: TypeReference) (td: TypeDefinition) =
@@ -1141,7 +1162,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                     newSymbols.Add(p, VariableParamSym(pd, t, byref))
                                     yield pd]
                                )
-                   let mainBlock = compileBlock methodBuilder tb (self.BuildIl(Block.Create(decls, stmts),ns,tb,newSymbols))
+                   let mainBlock = compileBlock methodBuilder tb (self.BuildIl(Block.Create(decls, stmts),ns,tb,newSymbols,typeInfo))
                    List.iter mainBlock.Parameters.Add ps
                    mainBlock.Body.InitLocals <- true
                    // https://github.com/jbevain/cecil/issues/365

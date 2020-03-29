@@ -12,19 +12,55 @@ let main argv =
     PasStreams.testAll
       """program wow;
 
-        procedure foo(var a: byte);
+        procedure foo(a: ShortInt);
         begin
           WriteLn(a);
-          a := a + 1;
+          a := a - 1;
           WriteLn(a);
+        end;
+
+        type TFoo = packed record
+          a, b : integer;
+        end;
+
+        type TA = array[0..2] of TFoo;
+
+        procedure foo2(var f: TFoo);
+        begin
+          WriteLn(f.a);
+          WriteLn(f.b);
+          f.a := f.a * 10;
+          f.b := f.b * 10;
+        end;
+
+        procedure foo3(var a: TA);
+        begin
+          WriteLn(a[1].a);
+          WriteLn(a[1].b);
+          a[1].a := a[1].a * 10;
+          a[1].b := a[1].b * 10;
         end;
 
       var
         x: byte;
+        f: TFoo;
+        a: TA;
       begin
-        x := 1;
+        x := -1;
         foo(x);
         foo(x);
+        f.a := 1;
+        f.b := 2;
+        foo2(f);
+        foo2(f);
+        a[1].a := 3;
+        a[1].b := 4;
+        WriteLn(a[1].a);
+        WriteLn(a[1].b);
+        foo3(a);
+        foo3(a);
+        WriteLn(a[1].a);
+        WriteLn(a[1].b);
       end.
       """
     |> printfn "%A"
