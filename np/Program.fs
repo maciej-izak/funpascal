@@ -53,8 +53,10 @@ let main argv =
         f.b := 2;
         foo2(f);
         foo2(f);
-        a[1].a := 3;
-        a[1].b := 4;
+        with a[1] do begin
+          a := 3;
+          b := 4;
+        end;
         WriteLn(a[1].a);
         WriteLn(a[1].b);
         foo3(a);
