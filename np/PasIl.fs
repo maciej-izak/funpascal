@@ -1026,11 +1026,12 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let findType =
         typeIdToStr
 
-    member self.BuildIl(block: Block, ns, tb, mainScope, ?symbols, ?typeInfo) =
+    member self.BuildIl(block: Block, ns, (tb: TypeDefinition), mainScope, symbols, ?typeInfo) =
         let langCtx = LangCtx()
         let variables = Dictionary<_,_>(langCtx)
         let labelsMap = Dictionary<_,_>(langCtx)
-        let symbols = defaultArg symbols (Dictionary<_,_>(langCtx))
+        let newSymbols = Dictionary<_,_>(langCtx)
+        let symbols = newSymbols::symbols
         let typeInfo = defaultArg typeInfo (Dictionary<TypeReference,_>())
         let defTypes = Dictionary<TypeIdentifier, TypeReference>()
 
@@ -1066,8 +1067,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         defTypes.Add(stdType "Boolean", mb.TypeSystem.Boolean)
         defTypes.Add(stdType "Pointer", mb.TypeSystem.Void)
 
-        symbols.Add("WriteLn", MethodSym writeLineMethod)
-        symbols.Add("WriteLnS", MethodSym writeLineSMethod)
+        newSymbols.Add("WriteLn", MethodSym writeLineMethod)
+        newSymbols.Add("WriteLnS", MethodSym writeLineSMethod)
 
         printfn "%A" block.decl
         block.decl
@@ -1082,7 +1083,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                for i = 2 to count do pt <- PointerType(pt)
                                defTypes.Add(stdType name, pt)
                            | TypeEnum enumValues ->
-                               enumValues |> List.iteri (fun i v -> symbols.Add (v, EnumValueSym(i))) 
+                               enumValues |> List.iteri (fun i v -> newSymbols.Add (v, EnumValueSym(i)))
                                defTypes.Add(stdType name, mb.TypeSystem.Int32)                          
                            | Record (packed, fields) -> 
                                 let td = TypeDefinition(ns, name, TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout)
@@ -1161,11 +1162,16 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         | false -> fun (v, t) ->
                                     VariableDefinition t
                                     |> LocalVariable
-                                    |> fun vk -> addVar v vk
+                                    |> fun vk ->
+                                        newSymbols.Add(v, VariableSym vk)
+                                        addVar v vk
                         | true -> fun (v, t) ->
-                                    FieldDefinition(v, FieldAttributes.Public ||| FieldAttributes.Static, t)
-                                    |> GlobalVariable
-                                    |> fun vk -> addVar v vk
+                                    let fd = FieldDefinition(v, FieldAttributes.Public ||| FieldAttributes.Static, t)
+                                    fd |> GlobalVariable
+                                    |> fun vk ->
+                                        newSymbols.Add(v, VariableSym vk)
+                                        tb.Fields.Add fd
+                                        addVar v vk
                    v
                    |> List.collect (fun (l, t) -> l |> List.map (fun v -> (v, defTypes.[t])))
                    |> List.iter addVar
@@ -1181,7 +1187,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                    let decls, stmts = match d with
                                       | Some (d, s) -> d, s
                                       | _ -> failwith "no body def"
-                   let newSymbols = Dictionary<_,_>(langCtx)
+                   let newMethodSymbols = Dictionary<_,_>(langCtx)
                    let ps = defaultArg mPara []
                             |> List.collect
                                (fun (k, (ps, t)) ->
@@ -1191,26 +1197,18 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                                        | Some(Var) -> ByReferenceType(t) :> TypeReference, true
                                                        | _ -> t, false
                                     let pd = ParameterDefinition(p, ParameterAttributes.None, typ)
-                                    newSymbols.Add(p, VariableParamSym(pd, t, byref))
+                                    newMethodSymbols.Add(p, VariableParamSym(pd, t, byref))
                                     yield pd]
                                )
-                   let mainBlock = compileBlock methodBuilder tb (self.BuildIl(Block.Create(decls, stmts),ns,tb,false,newSymbols,typeInfo))
+                   newSymbols.Add(name, MethodSym(methodBuilder :> MethodReference))
+                   let mainBlock = compileBlock methodBuilder tb (self.BuildIl(Block.Create(decls, stmts),ns,tb,false,newMethodSymbols::symbols,typeInfo))
                    List.iter mainBlock.Parameters.Add ps
                    mainBlock.Body.InitLocals <- true
                    // https://github.com/jbevain/cecil/issues/365
                    mainBlock.Body.OptimizeMacros()
-                   symbols.Add(name, MethodSym(mainBlock :> MethodReference))
-
                    ()
                | _ -> ())
                
-        for KeyValue(name, vk) in variables do
-            match vk with
-            | LocalVariable _ -> symbols.Add(name, VariableSym vk)
-            | GlobalVariable v ->
-                symbols.Add(name, VariableSym vk)
-                tb.Fields.Add v
-        
-        let ctx = Ctx.Create variables labelsMap [symbols] typeInfo langCtx moduleBuilder
+        let ctx = Ctx.Create variables labelsMap symbols typeInfo langCtx moduleBuilder
         stmtListToIl block.stmt ctx
 end

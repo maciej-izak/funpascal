@@ -12,8 +12,11 @@ let main argv =
     PasStreams.testAll
       """program wow;
 
+        var x: byte;
+
         procedure foo(a: ShortInt);
         begin
+          x := 101;
           WriteLn(a);
           a := a - 1;
           WriteLn(a);
@@ -27,6 +30,7 @@ let main argv =
 
         procedure foo2(var f: TFoo);
         begin
+          x := 102;
           WriteLn(f.a);
           WriteLn(f.b);
           f.a := f.a * 10;
@@ -35,6 +39,7 @@ let main argv =
 
         procedure foo3(var a: TA);
         begin
+          x := 103;
           WriteLn(a[1].a);
           WriteLn(a[1].b);
           a[1].a := a[1].a * 10;
@@ -42,17 +47,19 @@ let main argv =
         end;
 
       var
-        x: byte;
         f: TFoo;
         a: TA;
       begin
         x := -1;
+        WriteLn(x);
         foo(x);
         foo(x);
+        WriteLn(x);
         f.a := 1;
         f.b := 2;
         foo2(f);
         foo2(f);
+        WriteLn(x);
         with a[1] do begin
           a := 3;
           b := 4;
@@ -63,6 +70,7 @@ let main argv =
         foo3(a);
         WriteLn(a[1].a);
         WriteLn(a[1].b);
+        WriteLn(x);
       end.
       """
     |> printfn "%A"
