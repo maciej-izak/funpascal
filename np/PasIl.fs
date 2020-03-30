@@ -616,6 +616,9 @@ and chainLoadToIl ctx lastType factory symload =
     | ValueLoad evs ->
         lastType := LTPNone
         res @ (Ldc_I4(evs) |> ilResolveArray)
+    | CallableLoad mr ->
+        if mr.ReturnType.MetadataType = MetadataType.Void then failwith "IE"
+        Call(mr) |> ilResolveArray
 
 //let splitStruct = function
 //    | StructLoad fdl ->
@@ -1009,16 +1012,25 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
             ]
         (instructions, !lastSysLabels)
     
-    let stmtListToIl sl (ctx: Ctx) =
+    let stmtListToIl sl (ctx: Ctx) (res: VariableDefinition) =
         ctx.variables.Values
         |> Seq.iter (function
                      | LocalVariable v -> ctx.res.Add(DeclareLocal(v))
                      | _ -> ())
         let (instr, labels) = stmtListToIlList ctx sl
         ctx.res.Add(instr |> InstructionList)
-        let ret = Ret |> ilResolve
-        Ctx.resolveSysLabels (Some ret) labels
-        ctx.res.Add(ret |> InstructionSingleton)
+        let finalStart = match res with
+                         | null -> Ret
+                         | _ -> Ldloc res
+                         |> ilResolve
+        Ctx.resolveSysLabels (Some finalStart) labels
+        ctx.res.Add(
+                       [
+                        finalStart
+                        if res <> null then
+                            Ret |> ilResolve
+                       ] |> InstructionList
+                   )
         ctx.res
 
     let vt = mb.ImportReference(typeof<ValueType>)
@@ -1026,7 +1038,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let findType =
         typeIdToStr
 
-    member self.BuildIl(block: Block, ns, (tb: TypeDefinition), mainScope, symbols, ?typeInfo) =
+    member self.BuildIl(block: Block, ns, (tb: TypeDefinition), mainScope, symbols, ?typeInfo, ?resVar) =
         let langCtx = LangCtx()
         let variables = Dictionary<_,_>(langCtx)
         let labelsMap = Dictionary<_,_>(langCtx)
@@ -1034,6 +1046,15 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let symbols = newSymbols::symbols
         let typeInfo = defaultArg typeInfo (Dictionary<TypeReference,_>())
         let defTypes = Dictionary<TypeIdentifier, TypeReference>()
+
+        let result = match resVar with
+                     | Some (name, Some(v)) ->
+                        variables.Add(name, v)
+                        match v with
+                        | LocalVariable v -> v
+                        | _ -> null
+                     | Some (_, _) -> failwith "IE"
+                     | _ -> null
 
         let rec sizeOf (tr: TypeReference) (td: TypeDefinition) =
             let sizeOfTD (td: TypeDefinition) = td.Fields |> Seq.sumBy (fun f -> sizeOf f.FieldType null)
@@ -1180,14 +1201,22 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                    let name = match name with
                               | Some n -> n
                               | _ -> failwith "name expected"
+                   let newMethodSymbols = Dictionary<_,_>(langCtx)
+                   let mRes, rVar = match mRes with
+                                    | Some r ->
+                                          let res = defTypes.[TIdIdent(r)]
+                                          let resultVar = VariableDefinition res |> LocalVariable
+                                          newMethodSymbols.Add("result", resultVar |> VariableSym)
+                                          res, Some resultVar
+                                    | _ -> moduleBuilder.TypeSystem.Void, None
+
                    let methodBuilder =
                        let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
                        let methodName = name
-                       MethodDefinition(methodName, methodAttributes, moduleBuilder.TypeSystem.Void)
+                       MethodDefinition(methodName, methodAttributes, mRes)
                    let decls, stmts = match d with
                                       | Some (d, s) -> d, s
                                       | _ -> failwith "no body def"
-                   let newMethodSymbols = Dictionary<_,_>(langCtx)
                    let ps = defaultArg mPara []
                             |> List.collect
                                (fun (k, (ps, t)) ->
@@ -1200,8 +1229,9 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                     newMethodSymbols.Add(p, VariableParamSym(pd, t, byref))
                                     yield pd]
                                )
+
                    newSymbols.Add(name, MethodSym(methodBuilder :> MethodReference))
-                   let mainBlock = compileBlock methodBuilder tb (self.BuildIl(Block.Create(decls, stmts),ns,tb,false,newMethodSymbols::symbols,typeInfo))
+                   let mainBlock = compileBlock methodBuilder tb (self.BuildIl(Block.Create(decls, stmts),ns,tb,false,newMethodSymbols::symbols,typeInfo,("result",rVar)))
                    List.iter mainBlock.Parameters.Add ps
                    mainBlock.Body.InitLocals <- true
                    // https://github.com/jbevain/cecil/issues/365
@@ -1210,5 +1240,5 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                | _ -> ())
                
         let ctx = Ctx.Create variables labelsMap symbols typeInfo langCtx moduleBuilder
-        stmtListToIl block.stmt ctx
+        stmtListToIl block.stmt ctx result
 end
