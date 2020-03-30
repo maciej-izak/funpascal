@@ -66,6 +66,7 @@ and AtomIlInstruction =
     | Rem
     | NotInst
     | NegInst
+    | Pop
     | Ret
     | Ceq
     | Clt
@@ -290,6 +291,7 @@ let private ainstr = function
                     | Conv_I       -> Instruction.Create(OpCodes.Conv_I)
                     | Cpblk        -> Instruction.Create(OpCodes.Cpblk)
                     | Unaligned i  -> Instruction.Create(OpCodes.Unaligned, i)
+                    | Pop          -> Instruction.Create(OpCodes.Pop)
                     | Ret          -> Instruction.Create(OpCodes.Ret)
                     | Unknown      -> Instruction.Create(OpCodes.Nop)
                     | Ceq          -> Instruction.Create(OpCodes.Ceq)
@@ -518,13 +520,15 @@ and callParamToIl ctx cp idx (mr: MethodReference) =
         else
             findSymbolAndLoad ctx id
 
-and doCall (ctx: Ctx) (CallExpr(ident, cp)) =
+and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
     let mr, f = findFunction ctx ident
     [
         yield! cp
         |> List.mapi (fun i p -> callParamToIl ctx p i mr)
         |> List.concat
         yield f
+        if popResult && mr.ReturnType.MetadataType <> MetadataType.Void then
+            yield Pop |> ilResolve
      ]
 
 and valueToIl ctx v =
@@ -532,7 +536,7 @@ and valueToIl ctx v =
     | VInteger i -> Ldc_I4(i) |> ilResolve |> List.singleton
     | VIdent i -> findSymbolAndLoad ctx i
     | VString s -> Ldstr(s) |> ilResolve |> List.singleton
-    | VCallResult(ce) -> doCall ctx ce
+    | VCallResult(ce) -> doCall ctx ce false
     | _ -> failwith "IE"
 
 and chainReaderFactory asValue addr ltp =
@@ -850,7 +854,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                      
         let (instructions, newSysLabels) =
                 match s with
-                | CallStm ce -> (doCall ctx ce, [])
+                | CallStm ce -> (doCall ctx ce true, [])
                 | AssignStm(ident, expr) -> 
                     (getVar4Assign ident (exprToIl expr), [])
                 | IfStm(expr, tb, fb) ->

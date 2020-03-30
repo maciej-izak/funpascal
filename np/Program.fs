@@ -14,10 +14,12 @@ let main argv =
 
       function foo(a: byte): integer;
       begin
+        WriteLnS('Hello from foo!');
         result := 88 + a;
       end;
 
       begin
+        foo(3);
         WriteLn(foo(2));
       end.
       """
