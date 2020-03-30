@@ -12,13 +12,13 @@ let main argv =
     PasStreams.testAll
       """program wow;
 
-      function foo: integer;
+      function foo(a: byte): integer;
       begin
-        result := 88;
+        result := 88 + a;
       end;
 
       begin
-        WriteLn(foo);
+        WriteLn(foo(2));
       end.
       """
     |> printfn "%A"

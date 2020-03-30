@@ -468,6 +468,14 @@ type LastTypePoint =
     | LTPStruct of FieldDefinition
     | LTPNone
 
+let findFunction (ctx: Ctx) ident =
+        let callChain = findSymbol ctx ident
+        // TODO more advanced calls like foo().x().z^ := 10
+        let mr = match callChain with
+                 | ChainLoad([CallableLoad cl]) -> cl
+                 | _ -> failwith "Not supported"
+        mr, Call(mr) |> ilResolve
+
 let rec exprToIl ctx exprEl =
     let inline add2OpIl a b i = [|yield! exprToIl ctx a; yield! exprToIl ctx b; yield ilResolve i|]
     let inline add1OpIl a i = [|yield! exprToIl ctx a; yield ilResolve i|]
@@ -500,12 +508,32 @@ let rec exprToIl ctx exprEl =
         |]
     | _ -> failwith "IE"
 
+and callParamToIl ctx cp idx (mr: MethodReference) =
+    match cp with
+    | ParamExpr expr -> List.ofArray (exprToIl ctx expr)
+    | ParamIdent id ->
+        let param = mr.Parameters.[idx]
+        if param.ParameterType :? ByReferenceType then
+            findSymbolAndGetPtr ctx id
+        else
+            findSymbolAndLoad ctx id
+
+and doCall (ctx: Ctx) (CallExpr(ident, cp)) =
+    let mr, f = findFunction ctx ident
+    [
+        yield! cp
+        |> List.mapi (fun i p -> callParamToIl ctx p i mr)
+        |> List.concat
+        yield f
+     ]
+
 and valueToIl ctx v =
     match v with
     | VInteger i -> Ldc_I4(i) |> ilResolve |> List.singleton
     | VIdent i -> findSymbolAndLoad ctx i
     | VString s -> Ldstr(s) |> ilResolve |> List.singleton
-    | _ -> Unknown |> ilResolve |> List.singleton
+    | VCallResult(ce) -> doCall ctx ce
+    | _ -> failwith "IE"
 
 and chainReaderFactory asValue addr ltp =
     let valOrPtr v p (t: TypeReference) = (if asValue || (t :? PointerType && addr = false) then v else p) |> ilResolveArray
@@ -633,16 +661,6 @@ and chainLoadToIl ctx lastType factory symload =
 //        (List.map (Ldflda >> ilResolve) fdl.Tail)
 //        |> List.rev, LPStruct(fld.Head)
 //    | _ -> failwith "IE"
-
-let callParamToIl ctx cp idx (mr: MethodReference) =
-    match cp with
-    | ParamExpr expr -> List.ofArray (exprToIl ctx expr)
-    | ParamIdent id ->
-        let param = mr.Parameters.[idx]
-        if param.ParameterType :? ByReferenceType then
-            findSymbolAndGetPtr ctx id
-        else
-            findSymbolAndLoad ctx id
 
 // type internal Marker = interface end
 // let t = typeof<Marker>.DeclaringType
@@ -774,14 +792,6 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let writeLineSMethod = 
         typeof<System.Console>.GetMethod("WriteLine", [| typeof<string> |]) |> moduleBuilder.ImportReference     
 
-    let findFunction (ctx: Ctx) ident =
-        let callChain = findSymbol ctx ident
-        // TODO more advanced calls like foo().x().z^ := 10
-        let mr = match callChain with
-                 | ChainLoad([CallableLoad cl]) -> cl
-                 | _ -> failwith "Not supported"
-        mr, Call(mr) |> ilResolve
-            
     let rec stmtToIl (ctx: Ctx) sysLabels (s: Statement): (MetaInstruction * BranchLabel ref list) =
         let stmtToIlList = stmtListToIlList ctx
         let exprToIl = exprToIl ctx
@@ -840,14 +850,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                      
         let (instructions, newSysLabels) =
                 match s with
-                | CallStm(CallExpr(ident, cp)) ->
-                    let mr, f = findFunction ctx ident
-                    ([
-                        yield! cp
-                        |> List.mapi (fun i p -> callParamToIl ctx p i mr)
-                        |> List.concat
-                        yield f
-                     ], [])
+                | CallStm ce -> (doCall ctx ce, [])
                 | AssignStm(ident, expr) -> 
                     (getVar4Assign ident (exprToIl expr), [])
                 | IfStm(expr, tb, fb) ->
