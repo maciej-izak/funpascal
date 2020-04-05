@@ -6,6 +6,7 @@ open System.Collections.Generic
 open System.Linq.Expressions
 open System.Linq
 open System.Reflection.Metadata
+open System.Text
 open Mono.Cecil
 open Mono.Cecil.Cil
 open Mono.Cecil.Rocks
@@ -161,26 +162,63 @@ type TypeInfo =
     | TypeSymbols of Dictionary<string,FieldDefinition> * int
     | ArrayRange of ArrayDim list * TypeReference
 
+type ModuleDetails = {
+        moduleBuilder: ModuleDefinition
+        vt: TypeReference
+        mb: ModuleDefinition
+        ns: string
+        tb: TypeDefinition
+        anonSizeTypes: Dictionary<int, TypeDefinition>
+    } with
+    static member Create moduleBuilder vt mb ns tb =
+        {
+            moduleBuilder = moduleBuilder
+            vt = vt
+            mb = mb
+            ns = ns
+            tb = tb
+            anonSizeTypes = Dictionary<_, _>()
+        }
+
+    member self.SelectAnonSizeType size =
+        match self.anonSizeTypes.TryGetValue size with
+        | true, t -> t
+        | _ ->
+            let attributes = TypeAttributes.ExplicitLayout ||| TypeAttributes.AnsiClass ||| TypeAttributes.Sealed ||| TypeAttributes.Public
+            let at = TypeDefinition(self.ns, null, attributes)
+            at.ClassSize <- size
+            at.PackingSize <- 0s;
+            at.BaseType <- self.vt
+            self.mb.Types.Add(at)
+            at
+
+    member self.AddBytesConst (bytes: byte[]) =
+        let ast = self.SelectAnonSizeType bytes.Length
+        let fd = FieldDefinition(null, FieldAttributes.Public ||| FieldAttributes.Static ||| FieldAttributes.HasFieldRVA, ast)
+        fd.InitialValue <- bytes
+        self.tb.Fields.Add fd
+        fd
+
 type Ctx = {
         variables: Dictionary<string,VariableKind>
         labels: Dictionary<string, BranchLabel ref>
         symbols: Dictionary<string, Symbol> list
         typeInfo: Dictionary<TypeReference,TypeInfo>
-        moduleBuilder: ModuleDefinition
         localVariables: int ref
         lang: LangCtx
         res: List<MetaInstruction>
+        details: ModuleDetails
     } with
-    static member Create variables labels symbols typeInfo lang moduleBuilder =
+    static member Create variables labels symbols typeInfo lang details =
         {
             variables = variables
             labels = labels
             symbols = symbols
             typeInfo = typeInfo
-            moduleBuilder = moduleBuilder
             localVariables = ref 0
             lang = lang
             res = List<MetaInstruction>()
+            details = details
         }
     member self.FindSym sym =
         self.symbols |> List.tryPick (fun st -> match st.TryGetValue sym with | true, v -> Some v | _ -> None)
@@ -194,7 +232,7 @@ type Ctx = {
 //                     | true, value ->
 //                         value
 //                     | _ ->
-        let varDef = defaultArg kind self.moduleBuilder.TypeSystem.Int32 |> VariableDefinition
+        let varDef = defaultArg kind self.details.moduleBuilder.TypeSystem.Int32 |> VariableDefinition
         let varKind = varDef |> LocalVariable
         self.res.Add(DeclareLocal(varDef))
         self.variables.Add(key, varKind)
@@ -535,7 +573,10 @@ and valueToIl ctx v =
     match v with
     | VInteger i -> Ldc_I4(i) |> ilResolve |> List.singleton
     | VIdent i -> findSymbolAndLoad ctx i
-    | VString s -> Ldstr(s) |> ilResolve |> List.singleton
+    | VString s ->
+        Encoding.ASCII.GetBytes (s + "\000")
+        |> ctx.details.AddBytesConst
+        |> Ldsflda |> ilResolve |> List.singleton
     | VCallResult(ce) -> doCall ctx ce false
     | _ -> failwith "IE"
 
@@ -791,10 +832,15 @@ let (|IlNotEqual|_|) (items: IlInstruction[]) =
 
 type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let mb = moduleBuilder
+    let strType = PointerType(mb.TypeSystem.Void)
     let writeLineMethod = 
         typeof<System.Console>.GetMethod("WriteLine", [| typeof<int32> |]) |> moduleBuilder.ImportReference
     let writeLineSMethod = 
-        typeof<System.Console>.GetMethod("WriteLine", [| typeof<string> |]) |> moduleBuilder.ImportReference     
+        typeof<System.Console>.GetMethod("WriteLine", [| typeof<string> |]) |> moduleBuilder.ImportReference
+    let allocMem =
+        typeof<System.Runtime.InteropServices.Marshal>.GetMethod("AllocCoTaskMem")  |> moduleBuilder.ImportReference
+    let freeMem =
+        typeof<System.Runtime.InteropServices.Marshal>.GetMethod("FreeCoTaskMem")  |> moduleBuilder.ImportReference
 
     let rec stmtToIl (ctx: Ctx) sysLabels (s: Statement): (MetaInstruction * BranchLabel ref list) =
         let stmtToIlList = stmtListToIlList ctx
@@ -1020,10 +1066,15 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         (instructions, !lastSysLabels)
     
     let stmtListToIl sl (ctx: Ctx) (res: VariableDefinition) =
-        ctx.variables.Values
-        |> Seq.iter (function
-                     | LocalVariable v -> ctx.res.Add(DeclareLocal(v))
-                     | _ -> ())
+        let finalizeVariables =
+            ctx.variables.Values
+            |> Seq.collect
+               (function
+                | LocalVariable v ->
+                     ctx.res.Add(DeclareLocal(v))
+                     match v.VariableType with
+                     | strType -> []//stmtListToIlList ctx (IfStm())
+                | GlobalVariable v -> [])
         let (instr, labels) = stmtListToIlList ctx sl
         ctx.res.Add(instr |> InstructionList)
         let finalStart = match res with
@@ -1093,10 +1144,13 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         defTypes.Add(stdType "ShortInt", mb.TypeSystem.SByte)
         defTypes.Add(stdType "Byte", mb.TypeSystem.Byte)
         defTypes.Add(stdType "Boolean", mb.TypeSystem.Boolean)
-        defTypes.Add(stdType "Pointer", mb.TypeSystem.Void)
+        defTypes.Add(stdType "Pointer", PointerType(mb.TypeSystem.Void))
+        defTypes.Add(TIdString, strType)
 
         newSymbols.Add("WriteLn", MethodSym writeLineMethod)
         newSymbols.Add("WriteLnS", MethodSym writeLineSMethod)
+        newSymbols.Add("GetMem", MethodSym allocMem)
+        newSymbols.Add("FreeMem", MethodSym freeMem)
 
         printfn "%A" block.decl
         block.decl
@@ -1246,6 +1300,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                    ()
                | _ -> ())
                
-        let ctx = Ctx.Create variables labelsMap symbols typeInfo langCtx moduleBuilder
+        let ctx =
+            ModuleDetails.Create moduleBuilder vt mb ns tb
+            |> Ctx.Create variables labelsMap symbols typeInfo langCtx
         stmtListToIl block.stmt ctx result
 end

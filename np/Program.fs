@@ -11,16 +11,10 @@ open NP
 let main argv =
     PasStreams.testAll
       """program wow;
-
-      function foo(a: byte): integer;
+      var
+        s: string;
       begin
-        WriteLnS('Hello from foo!');
-        result := 88 + a;
-      end;
-
-      begin
-        foo(3);
-        WriteLn(foo(2));
+        s := 'hello';
       end.
       """
     |> printfn "%A"
