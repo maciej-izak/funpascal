@@ -2,6 +2,19 @@
 open np.BasicParsers
 open FParsec
 
+      // program wow;
+
+      // function foo(a: byte): integer;
+      // begin
+      //   WriteLnS('Hello from foo!');
+      //   result := 88 + a;
+      // end;
+
+      // begin
+      //   foo(3);
+      //   WriteLn(foo(2));
+      // end.
+
 
       // program wow;
       //   var x: byte;
