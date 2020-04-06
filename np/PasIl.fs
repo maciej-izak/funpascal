@@ -67,6 +67,7 @@ and AtomIlInstruction =
     | Rem
     | NotInst
     | NegInst
+    | Dup
     | Pop
     | Ret
     | Ceq
@@ -132,7 +133,7 @@ type SymbolLoad =
     | CallableLoad of MethodReference
 
 type ChainLoad =
-    | ChainLoad of SymbolLoad list
+    | ChainLoad of (SymbolLoad list * TypeReference)
     | SymbolLoadError
 
 let chainToSLList = function
@@ -169,8 +170,11 @@ type ModuleDetails = {
         ns: string
         tb: TypeDefinition
         anonSizeTypes: Dictionary<int, TypeDefinition>
+        strType: TypeReference
+        alloc: MethodReference
+        free: MethodReference
     } with
-    static member Create moduleBuilder vt mb ns tb =
+    static member Create moduleBuilder vt mb ns tb st a f =
         {
             moduleBuilder = moduleBuilder
             vt = vt
@@ -178,6 +182,9 @@ type ModuleDetails = {
             ns = ns
             tb = tb
             anonSizeTypes = Dictionary<_, _>()
+            strType = st
+            alloc = a
+            free = f
         }
 
     member self.SelectAnonSizeType size =
@@ -329,6 +336,7 @@ let private ainstr = function
                     | Conv_I       -> Instruction.Create(OpCodes.Conv_I)
                     | Cpblk        -> Instruction.Create(OpCodes.Cpblk)
                     | Unaligned i  -> Instruction.Create(OpCodes.Unaligned, i)
+                    | Dup          -> Instruction.Create(OpCodes.Dup)
                     | Pop          -> Instruction.Create(OpCodes.Pop)
                     | Ret          -> Instruction.Create(OpCodes.Ret)
                     | Unknown      -> Instruction.Create(OpCodes.Nop)
@@ -453,7 +461,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
     | t -> acc, t
     
     let rec resolveTail acc (vt: TypeReference)  = function
-        | [] -> List.rev acc
+        | [] -> (List.rev acc, vt)
         | h::t ->
             match h with
             | Deref ->
@@ -485,16 +493,16 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
 
     let varLoadChain vt dlist vd =
         let t = absVariableType vt
-        let tail = resolveTail [] t dlist
-        ChainLoad(VariableLoad(vd)::tail)
+        let (tail, finalType) = resolveTail [] t dlist
+        ChainLoad(VariableLoad(vd)::tail, finalType)
 
     let mainSym = defaultArg mainSym UnknownSym
 
     match mainSym with
     | VariableSym v -> LoadVar v |> varLoadChain (v.Type()) ident.Tail
     | WithSym (v, td) -> LoadVar v |> varLoadChain td ident
-    | EnumValueSym(i) when ident.Tail = [] -> [ValueLoad(i)] |> ChainLoad
-    | MethodSym r -> [CallableLoad r] |> ChainLoad
+    | EnumValueSym(i) when ident.Tail = [] -> ChainLoad([ValueLoad(i)], ctx.details.mb.TypeSystem.Int32)
+    | MethodSym r ->  ChainLoad([CallableLoad r], r.ReturnType)
     | VariableParamSym ((i,t,r) as p) -> LoadParam p |> varLoadChain t ident.Tail
     | _ -> SymbolLoadError
 
@@ -512,51 +520,82 @@ let findFunction (ctx: Ctx) ident =
         let callChain = findSymbol ctx ident
         // TODO more advanced calls like foo().x().z^ := 10
         let mr = match callChain with
-                 | ChainLoad([CallableLoad cl]) -> cl
+                 | ChainLoad([CallableLoad cl], _) -> cl
                  | _ -> failwith "Not supported"
         mr, Call(mr) |> ilResolve
 
+type ValueKind =
+    | VKString of IlInstruction list
+    | VKInt of IlInstruction list
+    | VKOther of IlInstruction list
+
 let rec exprToIl ctx exprEl =
-    let inline add2OpIl a b i = [|yield! exprToIl ctx a; yield! exprToIl ctx b; yield ilResolve i|]
-    let inline add1OpIl a i = [|yield! exprToIl ctx a; yield ilResolve i|]
-    match exprEl with
-    | Value v -> [|yield! valueToIl ctx v|]
-    | Add(a, b) -> add2OpIl a b AddInst
-    | Multiply(a, b) -> add2OpIl a b MultiplyInst
-    | Minus(a, b) -> add2OpIl a b MinusInst
-    | Divide(a, b) -> add2OpIl a b DivideInst
-    | And(a, b) -> add2OpIl a b AndInst
-    | Or(a, b) -> add2OpIl a b OrInst
-    | Xor(a, b) -> add2OpIl a b XorInst
-    | Mod(a, b) -> add2OpIl a b Rem
-    | Div(a, b) -> add2OpIl a b DivideInst
-    | Shl(a, b) -> add2OpIl a b ShlInst
-    | Shr(a, b) -> add2OpIl a b ShrInst
-    | Not(a) -> add1OpIl a NotInst
-    | UnaryMinus(a) -> add1OpIl a NegInst
-    | Equal(a, b) -> add2OpIl a b Ceq
-    | NotEqual(a, b) -> [|yield! add2OpIl a b Ceq; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
-    | StrictlyLessThan(a, b) -> add2OpIl a b Clt
-    | StrictlyGreaterThan(a, b) -> add2OpIl a b Cgt
-    | LessThanOrEqual(a, b) -> [|yield! add2OpIl a b Cgt ; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
-    | GreaterThanOrEqual(a, b) -> [|yield! add2OpIl a b Clt; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
-    | Addr(a) ->
-        [|
-            match a with
-            | Value(VIdent i) -> yield! findSymbolAndGetPtr ctx i
+    let rec exprToMetaExpr el =
+        let inline add2OpIl a b i =
+            match exprToMetaExpr a, exprToMetaExpr b with
+            | VKInt a, VKInt b ->
+                [
+                    yield! a
+                    yield! b
+                    yield ilResolve i
+                ] |> VKOther
             | _ -> failwith "IE"
-        |]
+        let inline add1OpIl a i =
+            match exprToMetaExpr a with
+            | VKInt a -> [ yield! a; yield ilResolve i ] |> VKOther
+            | _ -> failwith "IE"
+        match el with
+        | Value v -> valueToValueKind ctx v
+        | Add(a, b) -> add2OpIl a b AddInst
+        | Multiply(a, b) -> add2OpIl a b MultiplyInst
+        | Minus(a, b) -> add2OpIl a b MinusInst
+        | Divide(a, b) -> add2OpIl a b DivideInst
+        | And(a, b) -> add2OpIl a b AndInst
+        | Or(a, b) -> add2OpIl a b OrInst
+        | Xor(a, b) -> add2OpIl a b XorInst
+        | Mod(a, b) -> add2OpIl a b Rem
+        | Div(a, b) -> add2OpIl a b DivideInst
+        | Shl(a, b) -> add2OpIl a b ShlInst
+        | Shr(a, b) -> add2OpIl a b ShrInst
+        | Not(a) -> add1OpIl a NotInst
+        | UnaryMinus(a) -> add1OpIl a NegInst
+        | Equal(a, b) -> add2OpIl a b Ceq
+        | NotEqual(a, b) ->
+            match add2OpIl a b Ceq with
+            | VKOther o -> [ yield! o; ilResolve (Ldc_I4(0)); ilResolve Ceq ] |> VKOther
+            | _ -> failwith "IE"
+        | StrictlyLessThan(a, b) -> add2OpIl a b Clt
+        | StrictlyGreaterThan(a, b) -> add2OpIl a b Cgt
+        | LessThanOrEqual(a, b) ->
+            match add2OpIl a b Cgt with
+            | VKOther o -> [ yield! o; ilResolve (Ldc_I4(0)); ilResolve Ceq ] |> VKOther
+            | _ -> failwith "IE"
+        | GreaterThanOrEqual(a, b) ->
+            match add2OpIl a b Clt with
+            | VKOther o -> [ yield! o; ilResolve (Ldc_I4(0)); ilResolve Ceq ] |> VKOther
+            | _ -> failwith "IE"
+        | Addr(a) ->
+            [
+                match a with
+                | Value(VIdent i) -> yield! (findSymbolAndGetPtr ctx i |> fst)
+                | _ -> failwith "IE"
+            ] |> VKOther
+        | _ -> failwith "IE"
+
+    match exprToMetaExpr exprEl with
+    | VKOther o -> o
+    | VKString s -> s
     | _ -> failwith "IE"
 
 and callParamToIl ctx cp idx (mr: MethodReference) =
     match cp with
-    | ParamExpr expr -> List.ofArray (exprToIl ctx expr)
+    | ParamExpr expr -> exprToIl ctx expr
     | ParamIdent id ->
         let param = mr.Parameters.[idx]
         if param.ParameterType :? ByReferenceType then
-            findSymbolAndGetPtr ctx id
+            findSymbolAndGetPtr ctx id |> fst
         else
-            findSymbolAndLoad ctx id
+            findSymbolAndLoad ctx id |> fst
 
 and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
     let mr, f = findFunction ctx ident
@@ -569,15 +608,30 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
             yield Pop |> ilResolve
      ]
 
-and valueToIl ctx v =
+and valueToValueKind ctx v =
     match v with
-    | VInteger i -> Ldc_I4(i) |> ilResolve |> List.singleton
-    | VIdent i -> findSymbolAndLoad ctx i
+    | VInteger i -> VKInt (Ldc_I4(i) |> ilResolve |> List.singleton)
+    | VIdent i ->
+        let il, t = findSymbolAndLoad ctx i
+        VKOther il
     | VString s ->
-        Encoding.ASCII.GetBytes (s + "\000")
-        |> ctx.details.AddBytesConst
-        |> Ldsflda |> ilResolve |> List.singleton
-    | VCallResult(ce) -> doCall ctx ce false
+        let strBytes = Encoding.ASCII.GetBytes (s + "\000")
+        let _,v = ctx.EnsureVariable(ctx.details.strType)
+        [
+            Ldc_I4 strBytes.Length |> ilResolve
+            Call ctx.details.alloc |> ilResolve
+            Dup |> ilResolve
+            Stloc v |> ilResolve
+            strBytes
+            |> ctx.details.AddBytesConst
+            |> Ldsflda |> ilResolve
+            Ldc_I4 strBytes.Length |> ilResolve
+            Unaligned 1uy |> ilResolve
+            Cpblk |> ilResolve
+            Ldloc v |> ilResolve
+        ]
+        |> VKString
+    | VCallResult(ce) -> doCall ctx ce false |> VKOther
     | _ -> failwith "IE"
 
 and chainReaderFactory asValue addr ltp =
@@ -653,10 +707,12 @@ and derefLastTypePoint = function
 
 and findSymbolInternal value addr (ctx: Ctx) ident =
     let lastPoint = ref LTPNone
-    findSymbol ctx ident
-    |> chainToSLList
+    let sl, t = findSymbol ctx ident
+                |> chainToSLList
+    sl
     |> List.collect (chainLoadToIl ctx lastPoint (chainReaderFactory false false))
     |> fun l -> l @ (chainReaderFactory value addr !lastPoint)
+    ,t
 
 and findSymbolAndLoad = findSymbolInternal true false
 
@@ -847,12 +903,12 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let exprToIl = exprToIl ctx
         let getVar4ForLoop = findSymbol ctx >>
                              function
-                             | ChainLoad([VariableLoad(LoadVar(LocalVariable vs))]) -> vs
+                             | ChainLoad([VariableLoad(LoadVar(LocalVariable vs))], _) -> vs
                              | _ -> failwith "IE"
         let getVar4Assign (ident: DIdent) expr =
              // add param for findSymbol to set purpose (like this `assign`)
              match findSymbol ctx ident with
-             | ChainLoad symbols ->
+             | ChainLoad(symbols,_) ->
                  let ltp = ref LTPNone
                  [
                      yield! match symbols.Head with // for non value types we need extra value on stack (for stind.x)
@@ -870,7 +926,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 (fun symbols i ->
                     let loadVarW =
                         match findSymbol ctx i with
-                        | ChainLoad symbols ->
+                        | ChainLoad (symbols, _) ->
                             let ltp = ref LTPNone
                             let cl = List.collect (chainLoadToIl ctx ltp (chainReaderFactory false false)) symbols
                             let vt = match !ltp with // TODO allow structs only ? (ValueType as records/classes only)
@@ -985,9 +1041,9 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                      , [yield! labels ; yield lastEndOfStm])
                 | WhileStm (expr, stmt) ->
                     let condition = exprToIl expr
-                    let conditionLabel = ref (LazyLabel(condition.[0]))
+                    let conditionLabel = ref (LazyLabel(condition.Head))
                     let (whileBranch, whileLabels) = stmtToIlList stmt
-                    Ctx.resolveSysLabels (Array.tryHead condition) whileLabels
+                    Ctx.resolveSysLabels (List.tryHead condition) whileLabels
                     ([
                         yield IlBr(conditionLabel)
                         yield! whileBranch
@@ -995,13 +1051,13 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         yield IlBrtrue(ref (LazyLabel
                                                 (match List.tryHead whileBranch with
                                                 | Some h -> h
-                                                | _ -> condition.[0])))
+                                                | _ -> condition.Head)))
                     ],[])
                 | RepeatStm (stmt, expr) ->
                     let condition = exprToIl expr
                     // let conditionLabel = ref (LazyLabel(condition.[0]))
                     let (repeatBranch, whileLabels) = stmtToIlList stmt
-                    Ctx.resolveSysLabels (Array.tryHead condition) whileLabels
+                    Ctx.resolveSysLabels (List.tryHead condition) whileLabels
                     ([
                         yield! repeatBranch
                         yield! condition
@@ -1073,8 +1129,17 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 | LocalVariable v ->
                      ctx.res.Add(DeclareLocal(v))
                      match v.VariableType with
-                     | strType -> []//stmtListToIlList ctx (IfStm())
-                | GlobalVariable v -> [])
+                     | t when t = (strType :> TypeReference) -> []//stmtListToIlList ctx (IfStm())
+                     | _ -> []
+                | GlobalVariable v ->
+                     match v.FieldType with
+                     | t when t = (strType :> TypeReference) ->
+                         [
+                             Ldsfld v |> ilResolve
+                             Call ctx.details.free |> ilResolve
+                         ]
+                     | _ -> []
+                )
         let (instr, labels) = stmtListToIlList ctx sl
         ctx.res.Add(instr |> InstructionList)
         let finalStart = match res with
@@ -1084,6 +1149,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         Ctx.resolveSysLabels (Some finalStart) labels
         ctx.res.Add(
                        [
+                        yield! finalizeVariables
                         finalStart
                         if res <> null then
                             Ret |> ilResolve
@@ -1301,7 +1367,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                | _ -> ())
                
         let ctx =
-            ModuleDetails.Create moduleBuilder vt mb ns tb
+            ModuleDetails.Create moduleBuilder vt mb ns tb strType allocMem freeMem
             |> Ctx.Create variables labelsMap symbols typeInfo langCtx
         stmtListToIl block.stmt ctx result
 end
