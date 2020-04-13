@@ -54,6 +54,7 @@ and AtomIlInstruction =
     | Stind of IndirectKind
     | Conv_I
     | Cpblk
+    | Cpobj of TypeReference
     | Unaligned of byte
     | AddInst
     | MultiplyInst
@@ -163,40 +164,50 @@ type TypeInfo =
     | TypeSymbols of Dictionary<string,FieldDefinition> * int
     | ArrayRange of ArrayDim list * TypeReference
 
+type SystemTypes = {
+        string: TypeReference
+        char: TypeReference
+        value: TypeReference
+    }
+
+type SystemProc = {
+        GetMem: MethodReference
+        FreeMem: MethodReference
+    }
+
 type ModuleDetails = {
         moduleBuilder: ModuleDefinition
-        vt: TypeReference
-        mb: ModuleDefinition
         ns: string
         tb: TypeDefinition
         anonSizeTypes: Dictionary<int, TypeDefinition>
-        strType: TypeReference
-        alloc: MethodReference
-        free: MethodReference
+        sysTypes: SystemTypes
+        sysProc: SystemProc
     } with
-    static member Create moduleBuilder vt mb ns tb st a f =
+    static member Create moduleBuilder ns tb sysTypes sysProc =
         {
             moduleBuilder = moduleBuilder
-            vt = vt
-            mb = mb
             ns = ns
             tb = tb
             anonSizeTypes = Dictionary<_, _>()
-            strType = st
-            alloc = a
-            free = f
+            sysTypes = sysTypes
+            sysProc = sysProc
         }
+
+    static member NewSizedType ns (mb: ModuleDefinition) vt size =
+            let attributes = TypeAttributes.ExplicitLayout ||| TypeAttributes.AnsiClass ||| TypeAttributes.Sealed ||| TypeAttributes.Public
+            let at = TypeDefinition(ns, null, attributes)
+            at.ClassSize <- size
+            at.PackingSize <- 0s;
+            at.BaseType <- vt
+            mb.Types.Add(at)
+            at
 
     member self.SelectAnonSizeType size =
         match self.anonSizeTypes.TryGetValue size with
         | true, t -> t
         | _ ->
-            let attributes = TypeAttributes.ExplicitLayout ||| TypeAttributes.AnsiClass ||| TypeAttributes.Sealed ||| TypeAttributes.Public
-            let at = TypeDefinition(self.ns, null, attributes)
-            at.ClassSize <- size
-            at.PackingSize <- 0s;
-            at.BaseType <- self.vt
-            self.mb.Types.Add(at)
+            let at = ModuleDetails.NewSizedType self.ns self.moduleBuilder self.sysTypes.value size
+            self.anonSizeTypes.Add(size, at)
             at
 
     member self.AddBytesConst (bytes: byte[]) =
@@ -335,6 +346,7 @@ let private ainstr = function
                                       | Ind_Ref -> Instruction.Create(OpCodes.Stind_Ref)
                     | Conv_I       -> Instruction.Create(OpCodes.Conv_I)
                     | Cpblk        -> Instruction.Create(OpCodes.Cpblk)
+                    | Cpobj t      -> Instruction.Create(OpCodes.Cpobj, t)
                     | Unaligned i  -> Instruction.Create(OpCodes.Unaligned, i)
                     | Dup          -> Instruction.Create(OpCodes.Dup)
                     | Pop          -> Instruction.Create(OpCodes.Pop)
@@ -501,7 +513,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
     match mainSym with
     | VariableSym v -> LoadVar v |> varLoadChain (v.Type()) ident.Tail
     | WithSym (v, td) -> LoadVar v |> varLoadChain td ident
-    | EnumValueSym(i) when ident.Tail = [] -> ChainLoad([ValueLoad(i)], ctx.details.mb.TypeSystem.Int32)
+    | EnumValueSym(i) when ident.Tail = [] -> ChainLoad([ValueLoad(i)], ctx.details.moduleBuilder.TypeSystem.Int32)
     | MethodSym r ->  ChainLoad([CallableLoad r], r.ReturnType)
     | VariableParamSym ((i,t,r) as p) -> LoadParam p |> varLoadChain t ident.Tail
     | _ -> SymbolLoadError
@@ -527,6 +539,7 @@ let findFunction (ctx: Ctx) ident =
 type ValueKind =
     | VKString of IlInstruction list
     | VKInt of IlInstruction list
+    | VKIdent of IlInstruction list * TypeReference
     | VKOther of IlInstruction list
 
 let rec exprToIl ctx exprEl =
@@ -538,6 +551,12 @@ let rec exprToIl ctx exprEl =
                     yield! a
                     yield! b
                     yield ilResolve i
+                ] |> VKOther
+            | VKIdent (a, at), VKString b when at = ctx.details.sysTypes.string ->
+                [
+                    yield! a
+                    yield! b
+                    Cpobj(at) |> ilResolve
                 ] |> VKOther
             | _ -> failwith "IE"
         let inline add1OpIl a i =
@@ -585,6 +604,7 @@ let rec exprToIl ctx exprEl =
     match exprToMetaExpr exprEl with
     | VKOther o -> o
     | VKString s -> s
+    | VKInt i -> i
     | _ -> failwith "IE"
 
 and callParamToIl ctx cp idx (mr: MethodReference) =
@@ -613,22 +633,26 @@ and valueToValueKind ctx v =
     | VInteger i -> VKInt (Ldc_I4(i) |> ilResolve |> List.singleton)
     | VIdent i ->
         let il, t = findSymbolAndLoad ctx i
-        VKOther il
+        VKIdent(il, t)
     | VString s ->
         let strBytes = Encoding.ASCII.GetBytes (s + "\000")
-        let _,v = ctx.EnsureVariable(ctx.details.strType)
+        let _,v = ctx.EnsureVariable(ctx.details.sysTypes.string)
         [
-            Ldc_I4 strBytes.Length |> ilResolve
-            Call ctx.details.alloc |> ilResolve
-            Dup |> ilResolve
-            Stloc v |> ilResolve
             strBytes
             |> ctx.details.AddBytesConst
             |> Ldsflda |> ilResolve
-            Ldc_I4 strBytes.Length |> ilResolve
-            Unaligned 1uy |> ilResolve
-            Cpblk |> ilResolve
-            Ldloc v |> ilResolve
+            // TODO Ref count strin -> below some simple dynamic allocation for further rework
+//            Ldc_I4 strBytes.Length |> ilResolve
+//            Call ctx.details.GetMem |> ilResolve
+//            Dup |> ilResolve
+//            Stloc v |> ilResolve
+//            strBytes
+//            |> ctx.details.AddBytesConst
+//            |> Ldsflda |> ilResolve
+//            Ldc_I4 strBytes.Length |> ilResolve
+//            // Unaligned 1uy |> ilResolve // ??? https://stackoverflow.com/questions/24122973/what-should-i-pin-when-working-on-arrays/24127524
+//            Cpblk |> ilResolve
+//            Ldloc v |> ilResolve
         ]
         |> VKString
     | VCallResult(ce) -> doCall ctx ce false |> VKOther
@@ -888,7 +912,6 @@ let (|IlNotEqual|_|) (items: IlInstruction[]) =
 
 type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let mb = moduleBuilder
-    let strType = PointerType(mb.TypeSystem.Void)
     let writeLineMethod = 
         typeof<System.Console>.GetMethod("WriteLine", [| typeof<int32> |]) |> moduleBuilder.ImportReference
     let writeLineSMethod = 
@@ -1129,14 +1152,14 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 | LocalVariable v ->
                      ctx.res.Add(DeclareLocal(v))
                      match v.VariableType with
-                     | t when t = (strType :> TypeReference) -> []//stmtListToIlList ctx (IfStm())
+                     | t when t = ctx.details.sysTypes.string -> []//stmtListToIlList ctx (IfStm())
                      | _ -> []
                 | GlobalVariable v ->
                      match v.FieldType with
-                     | t when t = (strType :> TypeReference) ->
+                     | t when t = ctx.details.sysTypes.string ->
                          [
-                             Ldsfld v |> ilResolve
-                             Call ctx.details.free |> ilResolve
+//                             Ldsfld v |> ilResolve
+//                             Call ctx.details.FreeMem |> ilResolve
                          ]
                      | _ -> []
                 )
@@ -1161,6 +1184,36 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
 
     let findType =
         typeIdToStr
+
+    let createStdTypes ns (dt: Dictionary<TypeIdentifier, TypeReference>) =
+        dt.Add(stdType "Int64", mb.TypeSystem.Int64)
+        dt.Add(stdType "UInt64", mb.TypeSystem.UInt64)
+        dt.Add(stdType "Integer", mb.TypeSystem.Int32)
+        dt.Add(stdType "LongWord", mb.TypeSystem.UInt32)
+        dt.Add(stdType "SmallInt", mb.TypeSystem.Int16)
+        dt.Add(stdType "Word", mb.TypeSystem.UInt16)
+        dt.Add(stdType "ShortInt", mb.TypeSystem.SByte)
+        dt.Add(stdType "Byte", mb.TypeSystem.Byte)
+        dt.Add(stdType "Boolean", mb.TypeSystem.Boolean)
+        dt.Add(stdType "Pointer", PointerType(mb.TypeSystem.Void))
+        let charType = ModuleDetails.NewSizedType ns mb vt 1
+        dt.Add(stdType "Char", charType)
+        let strType = ModuleDetails.NewSizedType ns mb vt 256
+        dt.Add(TIdString, strType)
+        {
+            string = strType
+            char = charType
+            value = vt
+        }
+//        let strDim = {
+//                        low = 1
+//                        high = 255
+//                        size = size
+//                        elemSize = totalSize*(snd typAndSize)
+//                        elemType = newTyp
+//                        selfType = ref null
+//                     }
+//        dt.Add(strType, ArrayRange(dims, typ))
 
     member self.BuildIl(block: Block, ns, (tb: TypeDefinition), mainScope, symbols, ?typeInfo, ?resVar) =
         let langCtx = LangCtx()
@@ -1201,22 +1254,17 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 | _ -> failwith "IE"
             | _ -> failwith "IE"
 
-        defTypes.Add(stdType "Int64", mb.TypeSystem.Int64)
-        defTypes.Add(stdType "UInt64", mb.TypeSystem.UInt64)
-        defTypes.Add(stdType "Integer", mb.TypeSystem.Int32)
-        defTypes.Add(stdType "LongWord", mb.TypeSystem.UInt32)
-        defTypes.Add(stdType "SmallInt", mb.TypeSystem.Int16)
-        defTypes.Add(stdType "Word", mb.TypeSystem.UInt16)
-        defTypes.Add(stdType "ShortInt", mb.TypeSystem.SByte)
-        defTypes.Add(stdType "Byte", mb.TypeSystem.Byte)
-        defTypes.Add(stdType "Boolean", mb.TypeSystem.Boolean)
-        defTypes.Add(stdType "Pointer", PointerType(mb.TypeSystem.Void))
-        defTypes.Add(TIdString, strType)
+        let systemTypes = createStdTypes ns defTypes
 
         newSymbols.Add("WriteLn", MethodSym writeLineMethod)
         newSymbols.Add("WriteLnS", MethodSym writeLineSMethod)
         newSymbols.Add("GetMem", MethodSym allocMem)
         newSymbols.Add("FreeMem", MethodSym freeMem)
+
+        let systemProc = {
+            GetMem = allocMem
+            FreeMem = freeMem
+        }
 
         printfn "%A" block.decl
         block.decl
@@ -1367,7 +1415,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                | _ -> ())
                
         let ctx =
-            ModuleDetails.Create moduleBuilder vt mb ns tb strType allocMem freeMem
+            ModuleDetails.Create moduleBuilder ns tb systemTypes systemProc
             |> Ctx.Create variables labelsMap symbols typeInfo langCtx
         stmtListToIl block.stmt ctx result
 end

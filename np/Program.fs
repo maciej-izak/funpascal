@@ -11,10 +11,24 @@ open NP
 let main argv =
     PasStreams.testAll
       """program wow;
+
+      procedure AppendStr(var Dest: string; const Source: string);
+      var
+        DestLen, i: Integer;
+      begin
+      //DestLen := Length(Dest);
+      i := 0;
+      repeat
+        Inc(i);
+        Dest[DestLen + i] := Source[i];
+      until Source[i] = #0;
+      end;
+
       var
         s: string;
       begin
         s := 'hello';
+        s := s + ' Maciej';
       end.
       """
     |> printfn "%A"
