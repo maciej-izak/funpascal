@@ -220,6 +220,7 @@ type ModuleDetails = {
 type Ctx = {
         variables: Dictionary<string,VariableKind>
         labels: Dictionary<string, BranchLabel ref>
+        types: Dictionary<TypeIdentifier, TypeReference> list
         symbols: Dictionary<string, Symbol> list
         typeInfo: Dictionary<TypeReference,TypeInfo>
         localVariables: int ref
@@ -227,10 +228,11 @@ type Ctx = {
         res: List<MetaInstruction>
         details: ModuleDetails
     } with
-    static member Create variables labels symbols typeInfo lang details =
+    static member Create variables labels types symbols typeInfo lang details =
         {
             variables = variables
             labels = labels
+            types = types
             symbols = symbols
             typeInfo = typeInfo
             localVariables = ref 0
@@ -544,9 +546,21 @@ type ValueKind =
 
 let rec exprToIl ctx exprEl =
     let rec exprToMetaExpr el =
-        let inline add2OpIl a b i =
+        let add2OpIl a b i =
             match exprToMetaExpr a, exprToMetaExpr b with
             | VKInt a, VKInt b ->
+                [
+                    yield! a
+                    yield! b
+                    yield ilResolve i
+                ] |> VKOther
+            | VKIdent (a, at), VKInt b ->
+                [
+                    yield! a
+                    yield! b
+                    yield ilResolve i
+                ] |> VKOther
+            | VKInt a, VKIdent (b, bt) ->
                 [
                     yield! a
                     yield! b
@@ -910,6 +924,10 @@ let (|IlNotEqual|_|) (items: IlInstruction[]) =
             when i1.OpCode = OpCodes.Ceq && i2.OpCode = OpCodes.Ldc_I4 && i3.OpCode = OpCodes.Ceq -> Some(IlNotEqual) 
         | _ -> None
 
+type BuildScope =
+    | MainScope of (string * TypeDefinition)
+    | LocalScope of Ctx
+
 type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let mb = moduleBuilder
     let writeLineMethod = 
@@ -1185,7 +1203,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let findType =
         typeIdToStr
 
-    let createStdTypes ns (dt: Dictionary<TypeIdentifier, TypeReference>) =
+    let createStdTypes ns (dt: Dictionary<TypeIdentifier, TypeReference>) (ti: Dictionary<TypeReference, TypeInfo>) =
         dt.Add(stdType "Int64", mb.TypeSystem.Int64)
         dt.Add(stdType "UInt64", mb.TypeSystem.UInt64)
         dt.Add(stdType "Integer", mb.TypeSystem.Int32)
@@ -1198,40 +1216,55 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         dt.Add(stdType "Pointer", PointerType(mb.TypeSystem.Void))
         let charType = ModuleDetails.NewSizedType ns mb vt 1
         dt.Add(stdType "Char", charType)
-        let strType = ModuleDetails.NewSizedType ns mb vt 256
+        let strType = (ModuleDetails.NewSizedType ns mb vt 256) :> TypeReference
         dt.Add(TIdString, strType)
+        // allow to use string as array
+        let strDim = {
+                        low = 1
+                        high = 256
+                        size = 256
+                        elemSize = 1
+                        elemType = charType
+                        selfType = ref strType
+                     }
+        ti.Add(strType, ArrayRange([strDim], strType))
         {
             string = strType
             char = charType
             value = vt
         }
-//        let strDim = {
-//                        low = 1
-//                        high = 255
-//                        size = size
-//                        elemSize = totalSize*(snd typAndSize)
-//                        elemType = newTyp
-//                        selfType = ref null
-//                     }
-//        dt.Add(strType, ArrayRange(dims, typ))
 
-    member self.BuildIl(block: Block, ns, (tb: TypeDefinition), mainScope, symbols, ?typeInfo, ?resVar) =
-        let langCtx = LangCtx()
-        let variables = Dictionary<_,_>(langCtx)
-        let labelsMap = Dictionary<_,_>(langCtx)
-        let newSymbols = Dictionary<_,_>(langCtx)
-        let symbols = newSymbols::symbols
-        let typeInfo = defaultArg typeInfo (Dictionary<TypeReference,_>())
-        let defTypes = Dictionary<TypeIdentifier, TypeReference>()
-
+    member self.BuildIl(block: Block, buildScope, ?resVar) =
+        let ctx = match buildScope with
+                  | MainScope (ns, tb) ->
+                    let typeInfo = Dictionary<TypeReference,_>()
+                    let langCtx = LangCtx()
+                    let variables = Dictionary<_,_>(langCtx)
+                    let labelsMap = Dictionary<_,_>(langCtx)
+                    let newSymbols = Dictionary<_,_>(langCtx)
+                    let defTypes = Dictionary<TypeIdentifier, TypeReference>()
+                    let systemTypes = createStdTypes ns defTypes typeInfo
+                    let systemProc = {
+                        GetMem = allocMem
+                        FreeMem = freeMem
+                    }
+                    newSymbols.Add("WriteLn", MethodSym writeLineMethod)
+                    newSymbols.Add("WriteLnS", MethodSym writeLineSMethod)
+                    newSymbols.Add("GetMem", MethodSym allocMem)
+                    newSymbols.Add("FreeMem", MethodSym freeMem)
+                    ModuleDetails.Create moduleBuilder ns tb systemTypes systemProc
+                    |> Ctx.Create variables labelsMap [defTypes] [newSymbols] typeInfo langCtx
+                  | LocalScope ctx -> ctx
+        let defTypes = ctx.types.Head
+        let newSymbols = ctx.symbols.Head
         let result = match resVar with
                      | Some (name, Some(v)) ->
-                        variables.Add(name, v)
+                        ctx.variables.Add(name, v)
                         match v with
                         | LocalVariable v -> v
                         | _ -> null
-                     | Some (_, _) -> failwith "IE"
-                     | _ -> null
+                     | Some (_, None) -> null // no result (void)
+                     | _ -> null // main program
 
         let rec sizeOf (tr: TypeReference) (td: TypeDefinition) =
             let sizeOfTD (td: TypeDefinition) = td.Fields |> Seq.sumBy (fun f -> sizeOf f.FieldType null)
@@ -1244,7 +1277,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
             | MetadataType.Double -> 8
             | MetadataType.Void   -> 8 // TODO 4 or 8 -> target dependent
             | MetadataType.ValueType ->
-                match typeInfo.TryGetValue tr with
+                match ctx.typeInfo.TryGetValue tr with
                 | true, ArrayRange _ -> (tr :?> TypeDefinition).ClassSize
                 | true, TypeSymbols _ ->
                     // check mono_marshal_type_size -> https://github.com/dotnet/runtime/blob/487c940876b1932920454c44d2463d996cc8407c/src/mono/mono/metadata/marshal.c
@@ -1253,18 +1286,6 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 | _ when td <> null -> sizeOfTD td
                 | _ -> failwith "IE"
             | _ -> failwith "IE"
-
-        let systemTypes = createStdTypes ns defTypes
-
-        newSymbols.Add("WriteLn", MethodSym writeLineMethod)
-        newSymbols.Add("WriteLnS", MethodSym writeLineSMethod)
-        newSymbols.Add("GetMem", MethodSym allocMem)
-        newSymbols.Add("FreeMem", MethodSym freeMem)
-
-        let systemProc = {
-            GetMem = allocMem
-            FreeMem = freeMem
-        }
 
         printfn "%A" block.decl
         block.decl
@@ -1280,9 +1301,9 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                defTypes.Add(stdType name, pt)
                            | TypeEnum enumValues ->
                                enumValues |> List.iteri (fun i v -> newSymbols.Add (v, EnumValueSym(i)))
-                               defTypes.Add(stdType name, mb.TypeSystem.Int32)                          
+                               defTypes.Add(stdType name, mb.TypeSystem.Int32)
                            | Record (packed, fields) -> 
-                                let td = TypeDefinition(ns, name, TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout)
+                                let td = TypeDefinition(ctx.details.ns, name, TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout)
                                 td.ClassSize <- 0
                                 td.BaseType <- vt
                                 td.PackingSize <- if packed then 1s else 0s
@@ -1294,19 +1315,14 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                     fieldsMap.Add(name, fd)
                                 mb.Types.Add(td)
                                 defTypes.Add(stdType name, td)
-                                typeInfo.Add(td, TypeSymbols(fieldsMap, sizeOf td td))
+                                ctx.typeInfo.Add(td, TypeSymbols(fieldsMap, sizeOf td td))
                            | Array(ArrayDef(_, dimensions, tname)) ->
                                 let newSubType (dims, size) (typ, typSize) name =
                                     let size = size * typSize
-                                    let attributes = TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout
-                                    let at = TypeDefinition(ns, name, attributes)
-                                    at.ClassSize <- size
-                                    at.PackingSize <- 0s;
-                                    at.BaseType <- vt
-                                    let fd = FieldDefinition("item0", FieldAttributes.Public, typ)
-                                    at.Fields.Add fd
-                                    typeInfo.Add(at, ArrayRange(dims, typ))
-                                    mb.Types.Add(at)
+                                    let at = ModuleDetails.NewSizedType ctx.details.ns mb vt size
+                                    FieldDefinition("item0", FieldAttributes.Public, typ)
+                                    |> at.Fields.Add
+                                    ctx.typeInfo.Add(at, ArrayRange(dims, typ))
                                     at
 
                                 let rec doArrayDef dimensions tname dims name =
@@ -1353,30 +1369,30 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                    )
                | Variables v ->
                    let addVar =
-                        let addVar v vk = (v, vk) |> variables.Add
-                        match mainScope with
-                        | false -> fun (v, t) ->
-                                    VariableDefinition t
-                                    |> LocalVariable
-                                    |> fun vk ->
-                                        newSymbols.Add(v, VariableSym vk)
-                                        addVar v vk
-                        | true -> fun (v, t) ->
-                                    let fd = FieldDefinition(v, FieldAttributes.Public ||| FieldAttributes.Static, t)
-                                    fd |> GlobalVariable
-                                    |> fun vk ->
-                                        newSymbols.Add(v, VariableSym vk)
-                                        tb.Fields.Add fd
-                                        addVar v vk
+                        let addVar v vk = (v, vk) |> ctx.variables.Add
+                        match buildScope with
+                        | LocalScope _ -> fun (v, t) ->
+                                            VariableDefinition t
+                                            |> LocalVariable
+                                            |> fun vk ->
+                                                newSymbols.Add(v, VariableSym vk)
+                                                addVar v vk
+                        | MainScope _ -> fun (v, t) ->
+                                            let fd = FieldDefinition(v, FieldAttributes.Public ||| FieldAttributes.Static, t)
+                                            fd |> GlobalVariable
+                                            |> fun vk ->
+                                                newSymbols.Add(v, VariableSym vk)
+                                                ctx.details.tb.Fields.Add fd
+                                                addVar v vk
                    v
                    |> List.collect (fun (l, t) -> l |> List.map (fun v -> (v, defTypes.[t])))
                    |> List.iter addVar
-               | Labels labels -> (for l in labels do labelsMap.Add(l, ref (UserLabel l)))
+               | Labels labels -> (for l in labels do ctx.labels.Add(l, ref (UserLabel l)))
                | ProcAndFunc((name, mRes, mPara), d) ->
                    let name = match name with
                               | Some n -> n
                               | _ -> failwith "name expected"
-                   let newMethodSymbols = Dictionary<_,_>(langCtx)
+                   let newMethodSymbols = Dictionary<_,_>(ctx.lang)
                    let mRes, rVar = match mRes with
                                     | Some r ->
                                           let res = defTypes.[TIdIdent(r)]
@@ -1406,16 +1422,15 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                )
 
                    newSymbols.Add(name, MethodSym(methodBuilder :> MethodReference))
-                   let mainBlock = compileBlock methodBuilder tb (self.BuildIl(Block.Create(decls, stmts),ns,tb,false,newMethodSymbols::symbols,typeInfo,("result",rVar)))
+                   let scope = LocalScope { ctx with symbols = newMethodSymbols::ctx.symbols }
+                   let mainBlock = self.BuildIl(Block.Create(decls, stmts),scope,("result",rVar))
+                                   |> compileBlock methodBuilder ctx.details.tb
                    List.iter mainBlock.Parameters.Add ps
                    mainBlock.Body.InitLocals <- true
                    // https://github.com/jbevain/cecil/issues/365
                    mainBlock.Body.OptimizeMacros()
                    ()
                | _ -> ())
-               
-        let ctx =
-            ModuleDetails.Create moduleBuilder ns tb systemTypes systemProc
-            |> Ctx.Create variables labelsMap symbols typeInfo langCtx
+
         stmtListToIl block.stmt ctx result
 end
