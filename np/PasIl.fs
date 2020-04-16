@@ -111,10 +111,23 @@ with
         | LocalVariable v -> v.VariableType
         | GlobalVariable v -> v.FieldType
 
+type Intrinsic =
+    | Inc
+    | Dec
+
+type MethodSym =
+    | Referenced of MethodReference
+    | Intrinsic of Intrinsic
+with
+    member self.ReturnType =
+        match self with
+        | Referenced mr -> mr.ReturnType
+        | Intrinsic _ -> null
+
 type Symbol =
     | VariableParamSym of (ParameterDefinition * TypeReference * bool)
     | VariableSym of VariableKind
-    | MethodSym of MethodReference
+    | MethodSym of MethodSym
     | EnumValueSym of int
     | WithSym of VariableKind * TypeReference
     | UnknownSym
@@ -131,7 +144,7 @@ type SymbolLoad =
     | StructLoad of FieldDefinition list
     | VariableLoad of VariableLoadKind
     | ValueLoad of int
-    | CallableLoad of MethodReference
+    | CallableLoad of MethodSym
 
 type ChainLoad =
     | ChainLoad of (SymbolLoad list * TypeReference)
@@ -168,6 +181,7 @@ type SystemTypes = {
         string: TypeReference
         char: TypeReference
         value: TypeReference
+        pointer: TypeReference
     }
 
 type SystemProc = {
@@ -460,7 +474,7 @@ let derefType (t: TypeReference) =
     match t with
     | :? PointerType as pt -> pt.ElementType
     | _ -> failwith "Cannot dereference non pointer type"
-    
+
 let findSymbol (ctx: Ctx) (DIdent ident) =
     let mainSym = ident.Head |> function | PIName n -> ctx.FindSym n
     
@@ -533,50 +547,29 @@ type LastTypePoint =
 let findFunction (ctx: Ctx) ident =
         let callChain = findSymbol ctx ident
         // TODO more advanced calls like foo().x().z^ := 10
-        let mr = match callChain with
-                 | ChainLoad([CallableLoad cl], _) -> cl
-                 | _ -> failwith "Not supported"
-        mr, Call(mr) |> ilResolve
+        match callChain with
+        | ChainLoad([CallableLoad cl], _) -> cl
+        | _ -> failwith "Not supported"
+        |> fun ms ->
+           match ms with
+           | Referenced mr -> ms, Some(Call(mr) |> ilResolve)
+           | Intrinsic _ -> ms, None
 
-type ValueKind =
-    | VKString of IlInstruction list
-    | VKInt of IlInstruction list
-    | VKIdent of IlInstruction list * TypeReference
-    | VKOther of IlInstruction list
+type ValueKind = ValueKind of IlInstruction list * TypeReference
 
-let rec exprToIl ctx exprEl =
+let rec exprToIl (ctx: Ctx) exprEl =
     let rec exprToMetaExpr el =
         let add2OpIl a b i =
             match exprToMetaExpr a, exprToMetaExpr b with
-            | VKInt a, VKInt b ->
-                [
+            | ValueKind(a, at), ValueKind(b, bt) ->
+                ([
                     yield! a
                     yield! b
                     yield ilResolve i
-                ] |> VKOther
-            | VKIdent (a, at), VKInt b ->
-                [
-                    yield! a
-                    yield! b
-                    yield ilResolve i
-                ] |> VKOther
-            | VKInt a, VKIdent (b, bt) ->
-                [
-                    yield! a
-                    yield! b
-                    yield ilResolve i
-                ] |> VKOther
-            | VKIdent (a, at), VKString b when at = ctx.details.sysTypes.string ->
-                [
-                    yield! a
-                    yield! b
-                    Cpobj(at) |> ilResolve
-                ] |> VKOther
-            | _ -> failwith "IE"
+                ], at) |> ValueKind
         let inline add1OpIl a i =
             match exprToMetaExpr a with
-            | VKInt a -> [ yield! a; yield ilResolve i ] |> VKOther
-            | _ -> failwith "IE"
+            | ValueKind(a, at) -> ValueKind([ yield! a; yield ilResolve i], ctx.details.moduleBuilder.TypeSystem.Int32)
         match el with
         | Value v -> valueToValueKind ctx v
         | Add(a, b) -> add2OpIl a b AddInst
@@ -595,31 +588,25 @@ let rec exprToIl ctx exprEl =
         | Equal(a, b) -> add2OpIl a b Ceq
         | NotEqual(a, b) ->
             match add2OpIl a b Ceq with
-            | VKOther o -> [ yield! o; ilResolve (Ldc_I4(0)); ilResolve Ceq ] |> VKOther
-            | _ -> failwith "IE"
+            | ValueKind(o, ot) -> ([ yield! o; ilResolve (Ldc_I4(0)); ilResolve Ceq ], ctx.details.moduleBuilder.TypeSystem.Boolean) |> ValueKind
         | StrictlyLessThan(a, b) -> add2OpIl a b Clt
         | StrictlyGreaterThan(a, b) -> add2OpIl a b Cgt
         | LessThanOrEqual(a, b) ->
             match add2OpIl a b Cgt with
-            | VKOther o -> [ yield! o; ilResolve (Ldc_I4(0)); ilResolve Ceq ] |> VKOther
-            | _ -> failwith "IE"
+            | ValueKind(o, ot) -> ([ yield! o; ilResolve (Ldc_I4(0)); ilResolve Ceq ], ctx.details.moduleBuilder.TypeSystem.Boolean) |> ValueKind
         | GreaterThanOrEqual(a, b) ->
             match add2OpIl a b Clt with
-            | VKOther o -> [ yield! o; ilResolve (Ldc_I4(0)); ilResolve Ceq ] |> VKOther
-            | _ -> failwith "IE"
+            | ValueKind(o, ot) -> ([ yield! o; ilResolve (Ldc_I4(0)); ilResolve Ceq ], ctx.details.moduleBuilder.TypeSystem.Boolean) |> ValueKind
         | Addr(a) ->
-            [
+            ([
                 match a with
                 | Value(VIdent i) -> yield! (findSymbolAndGetPtr ctx i |> fst)
                 | _ -> failwith "IE"
-            ] |> VKOther
+            ], ctx.details.sysTypes.pointer) |> ValueKind
         | _ -> failwith "IE"
 
     match exprToMetaExpr exprEl with
-    | VKOther o -> o
-    | VKString s -> s
-    | VKInt i -> i
-    | _ -> failwith "IE"
+    | ValueKind (a, at) -> a
 
 and callParamToIl ctx cp idx (mr: MethodReference) =
     match cp with
@@ -633,25 +620,38 @@ and callParamToIl ctx cp idx (mr: MethodReference) =
 
 and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
     let mr, f = findFunction ctx ident
-    [
-        yield! cp
-        |> List.mapi (fun i p -> callParamToIl ctx p i mr)
-        |> List.concat
-        yield f
-        if popResult && mr.ReturnType.MetadataType <> MetadataType.Void then
-            yield Pop |> ilResolve
-     ]
+    match mr, f with
+    | Referenced mr, Some f ->
+        ([
+            yield! cp
+            |> List.mapi (fun i p -> callParamToIl ctx p i mr)
+            |> List.concat
+            yield f
+            if popResult && mr.ReturnType.MetadataType <> MetadataType.Void then
+                yield Pop |> ilResolve
+         ], mr.ReturnType)
+    | Intrinsic i, _ ->
+        match i, cp with
+        | Inc, [ParamIdent(id)] ->
+            ([
+             yield! findSymbolAndGetPtr ctx id |> fst
+             Dup |> ilResolve
+             Ldind(Ind_I4) |> ilResolve
+             Ldc_I4 1 |> ilResolve
+             AddInst |> ilResolve
+             Stind(Ind_I4) |> ilResolve
+            ], ctx.details.moduleBuilder.TypeSystem.Void)
+        | _ -> failwith "IE"
+    | _ -> failwith "IE"
 
 and valueToValueKind ctx v =
     match v with
-    | VInteger i -> VKInt (Ldc_I4(i) |> ilResolve |> List.singleton)
-    | VIdent i ->
-        let il, t = findSymbolAndLoad ctx i
-        VKIdent(il, t)
+    | VInteger i -> ValueKind(Ldc_I4(i) |> ilResolveArray, ctx.details.moduleBuilder.TypeSystem.Int32)
+    | VIdent i -> findSymbolAndLoad ctx i |> ValueKind
     | VString s ->
         let strBytes = Encoding.ASCII.GetBytes (s + "\000")
         let _,v = ctx.EnsureVariable(ctx.details.sysTypes.string)
-        [
+        ([
             strBytes
             |> ctx.details.AddBytesConst
             |> Ldsflda |> ilResolve
@@ -667,9 +667,9 @@ and valueToValueKind ctx v =
 //            // Unaligned 1uy |> ilResolve // ??? https://stackoverflow.com/questions/24122973/what-should-i-pin-when-working-on-arrays/24127524
 //            Cpblk |> ilResolve
 //            Ldloc v |> ilResolve
-        ]
-        |> VKString
-    | VCallResult(ce) -> doCall ctx ce false |> VKOther
+        ], ctx.details.sysTypes.string)
+        |> ValueKind
+    | VCallResult(ce) -> doCall ctx ce false |> ValueKind
     | _ -> failwith "IE"
 
 and chainReaderFactory asValue addr ltp =
@@ -783,7 +783,7 @@ and chainLoadToIl ctx lastType factory symload =
     | ValueLoad evs ->
         lastType := LTPNone
         res @ (Ldc_I4(evs) |> ilResolveArray)
-    | CallableLoad mr ->
+    | CallableLoad (Referenced mr) ->
         if mr.ReturnType.MetadataType = MetadataType.Void then failwith "IE"
         Call(mr) |> ilResolveArray
 
@@ -997,7 +997,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                      
         let (instructions, newSysLabels) =
                 match s with
-                | CallStm ce -> (doCall ctx ce true, [])
+                | CallStm ce -> (fst (doCall ctx ce true), [])
                 | AssignStm(ident, expr) -> 
                     (getVar4Assign ident (exprToIl expr), [])
                 | IfStm(expr, tb, fb) ->
@@ -1213,7 +1213,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         dt.Add(stdType "ShortInt", mb.TypeSystem.SByte)
         dt.Add(stdType "Byte", mb.TypeSystem.Byte)
         dt.Add(stdType "Boolean", mb.TypeSystem.Boolean)
-        dt.Add(stdType "Pointer", PointerType(mb.TypeSystem.Void))
+        let ptrType = PointerType(mb.TypeSystem.Void)
+        dt.Add(stdType "Pointer", ptrType)
         let charType = ModuleDetails.NewSizedType ns mb vt 1
         dt.Add(stdType "Char", charType)
         let strType = (ModuleDetails.NewSizedType ns mb vt 256) :> TypeReference
@@ -1232,6 +1233,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
             string = strType
             char = charType
             value = vt
+            pointer = ptrType
         }
 
     member self.BuildIl(block: Block, buildScope, ?resVar) =
@@ -1248,10 +1250,12 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         GetMem = allocMem
                         FreeMem = freeMem
                     }
-                    newSymbols.Add("WriteLn", MethodSym writeLineMethod)
-                    newSymbols.Add("WriteLnS", MethodSym writeLineSMethod)
-                    newSymbols.Add("GetMem", MethodSym allocMem)
-                    newSymbols.Add("FreeMem", MethodSym freeMem)
+                    newSymbols.Add("WriteLn", Referenced writeLineMethod |> MethodSym )
+                    newSymbols.Add("WriteLnS", Referenced writeLineSMethod |> MethodSym)
+                    newSymbols.Add("GetMem", Referenced allocMem |> MethodSym)
+                    newSymbols.Add("FreeMem", Referenced freeMem |> MethodSym)
+                    newSymbols.Add("Inc", Intrinsic Inc |> MethodSym)
+                    newSymbols.Add("Dec", Intrinsic Dec |> MethodSym)
                     ModuleDetails.Create moduleBuilder ns tb systemTypes systemProc
                     |> Ctx.Create variables labelsMap [defTypes] [newSymbols] typeInfo langCtx
                   | LocalScope ctx -> ctx
@@ -1421,7 +1425,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                     yield pd]
                                )
 
-                   newSymbols.Add(name, MethodSym(methodBuilder :> MethodReference))
+                   newSymbols.Add(name, Referenced (methodBuilder :> MethodReference) |> MethodSym)
                    let scope = LocalScope { ctx with symbols = newMethodSymbols::ctx.symbols }
                    let mainBlock = self.BuildIl(Block.Create(decls, stmts),scope,("result",rVar))
                                    |> compileBlock methodBuilder ctx.details.tb
