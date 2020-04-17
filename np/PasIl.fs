@@ -595,13 +595,15 @@ type ValueKind = ValueKind of IlInstruction list * TypeReference
 let rec exprToIl (ctx: Ctx) exprEl expectedType =
     let rec exprToMetaExpr el et =
         let add2OpIl a b i =
-            match exprToMetaExpr a et, exprToMetaExpr b et with
-            | ValueKind(a, at), ValueKind(b, bt) ->
-                ([
-                    yield! a
-                    yield! b
-                    yield ilResolve i
-                ], at) |> ValueKind
+            match exprToMetaExpr a et with
+            | ValueKind(a, at) ->
+                match exprToMetaExpr b at with
+                | ValueKind(b, bt) ->
+                    ([
+                        yield! a
+                        yield! b
+                        yield ilResolve i
+                    ], at) |> ValueKind
         let inline add1OpIl a i =
             match exprToMetaExpr a et with
             | ValueKind(a, at) -> ValueKind([ yield! a; yield ilResolve i], ctx.details.moduleBuilder.TypeSystem.Int32)
