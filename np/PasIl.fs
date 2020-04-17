@@ -183,6 +183,7 @@ type SystemTypes = {
         char: TypeReference
         value: TypeReference
         pointer: TypeReference
+        boolean: TypeReference
     }
 
 type SystemProc = {
@@ -569,6 +570,14 @@ type LastTypePoint =
     | LTPDeref of TypeReference
     | LTPStruct of FieldDefinition
     | LTPNone
+with
+    member self.ToTypeRef =
+        match self with
+        | LTPVar(_,tr) -> tr
+        | LTPParam(_,tr,_) -> tr
+        | LTPDeref tr -> tr
+        | LTPStruct fd -> fd.FieldType
+        | _ -> failwith "IE"
 
 let findFunction (ctx: Ctx) ident =
         let callChain = findSymbol ctx ident
@@ -583,10 +592,10 @@ let findFunction (ctx: Ctx) ident =
 
 type ValueKind = ValueKind of IlInstruction list * TypeReference
 
-let rec exprToIl (ctx: Ctx) exprEl =
-    let rec exprToMetaExpr el =
+let rec exprToIl (ctx: Ctx) exprEl expectedType =
+    let rec exprToMetaExpr el et =
         let add2OpIl a b i =
-            match exprToMetaExpr a, exprToMetaExpr b with
+            match exprToMetaExpr a et, exprToMetaExpr b et with
             | ValueKind(a, at), ValueKind(b, bt) ->
                 ([
                     yield! a
@@ -594,10 +603,10 @@ let rec exprToIl (ctx: Ctx) exprEl =
                     yield ilResolve i
                 ], at) |> ValueKind
         let inline add1OpIl a i =
-            match exprToMetaExpr a with
+            match exprToMetaExpr a et with
             | ValueKind(a, at) -> ValueKind([ yield! a; yield ilResolve i], ctx.details.moduleBuilder.TypeSystem.Int32)
         match el with
-        | Value v -> valueToValueKind ctx v
+        | Value v -> valueToValueKind ctx v et
         | Add(a, b) -> add2OpIl a b AddInst
         | Multiply(a, b) -> add2OpIl a b MultiplyInst
         | Minus(a, b) -> add2OpIl a b MinusInst
@@ -631,14 +640,14 @@ let rec exprToIl (ctx: Ctx) exprEl =
             ], ctx.details.sysTypes.pointer) |> ValueKind
         | _ -> failwith "IE"
 
-    match exprToMetaExpr exprEl with
+    match exprToMetaExpr exprEl expectedType with
     | ValueKind (a, at) -> a
 
 and callParamToIl ctx cp idx (mr: MethodReference) =
+    let param = mr.Parameters.[idx]
     match cp with
-    | ParamExpr expr -> exprToIl ctx expr
+    | ParamExpr expr -> exprToIl ctx expr param.ParameterType
     | ParamIdent id ->
-        let param = mr.Parameters.[idx]
         if param.ParameterType :? ByReferenceType then
             findSymbolAndGetPtr ctx id |> fst
         else
@@ -670,12 +679,16 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
         | _ -> failwith "IE"
     | _ -> failwith "IE"
 
-and valueToValueKind ctx v =
+and valueToValueKind ctx v expectedType =
     match v with
     | VInteger i -> ValueKind(Ldc_I4(i) |> ilResolveArray, ctx.details.moduleBuilder.TypeSystem.Int32)
     | VIdent i -> findSymbolAndLoad ctx i |> ValueKind
     | VString s ->
-        let strBytes = Encoding.ASCII.GetBytes (s + "\000")
+        // TODO protect string as char interpretation when needed
+        let strBytes = match expectedType = ctx.details.sysTypes.char with
+                       | true -> s
+                       | false -> s + "\000"
+                       |> Encoding.ASCII.GetBytes
         let _,v = ctx.EnsureVariable(ctx.details.sysTypes.string)
         ([
             strBytes
@@ -802,7 +815,7 @@ and chainLoadToIl ctx lastType factory symload =
         [
             yield! res
             for e, d in exprs do
-                yield! exprToIl ctx (Multiply(e, d.elemSize |> VInteger |> Value))
+                yield! exprToIl ctx (Multiply(e, d.elemSize |> VInteger |> Value)) rt
                 yield AddInst |> ilResolve
         ]
     | StructLoad fds ->
@@ -986,7 +999,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                 Ldarg i |> ilResolveArray
                             | _ -> []
                      yield! List.collect (chainLoadToIl ctx ltp (chainReaderFactory false false)) symbols
-                     yield! expr
+                     yield! (expr (!ltp).ToTypeRef)
                      yield! chainWriterFactory ctx !ltp
                  ]
              | _ -> failwith "IE"
@@ -1033,7 +1046,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     // if logic
                     let firstEnfOfStm = ref ForwardLabel
                     let lastEndOfStm = ref ForwardLabel
-                    let condition = exprToIl expr
+                    let condition = exprToIl expr ctx.details.sysTypes.boolean
                     let (trueBranch, trueLabels) = stmtToIlList tb
                     let (falseBranch, falseLabels) = stmtToIlList fb
                     let hasFalseBranch = falseBranch.Length > 0
@@ -1077,18 +1090,18 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                         yield beginOfCase
                                         match l with
                                         | CaseExpr(ConstExpr(ce)) -> 
-                                             yield! (exprToIl ce)
+                                             yield! (exprToIl ce null) // TODO type handle
                                              yield IlBeq(ref(LazyLabel(caseBranch.[0])))
                                         | CaseRange(ConstExpr(ce1), ConstExpr(ce2)) ->
                                              // TODO check proper range
                                              // lower range
                                              let nextCase = ref ForwardLabel
                                              omitCase := Some nextCase
-                                             yield! (exprToIl ce1)
+                                             yield! (exprToIl ce1 null) // TODO type handle
                                              yield IlBlt nextCase
                                              // higher range
                                              yield IlAtom(ref(Ldloc(var)))
-                                             yield! (exprToIl ce2)
+                                             yield! (exprToIl ce2 null) //TODO type handle
                                              yield IlBgt nextCase
                                              yield IlBr(ref(LazyLabel(caseBranch.[0])))
                                         | _ -> failwith "IE";
@@ -1110,7 +1123,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         ]
                      , [yield! labels ; yield lastEndOfStm])
                 | WhileStm (expr, stmt) ->
-                    let condition = exprToIl expr
+                    let condition = exprToIl expr ctx.details.sysTypes.boolean
                     let conditionLabel = ref (LazyLabel(condition.Head))
                     let (whileBranch, whileLabels) = stmtToIlList stmt
                     Ctx.resolveSysLabels (List.tryHead condition) whileLabels
@@ -1124,7 +1137,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                                 | _ -> condition.Head)))
                     ],[])
                 | RepeatStm (stmt, expr) ->
-                    let condition = exprToIl expr
+                    let condition = exprToIl expr ctx.details.sysTypes.boolean
                     // let conditionLabel = ref (LazyLabel(condition.[0]))
                     let (repeatBranch, whileLabels) = stmtToIlList stmt
                     Ctx.resolveSysLabels (List.tryHead condition) whileLabels
@@ -1241,7 +1254,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         dt.Add(stdType "Word", mb.TypeSystem.UInt16)
         dt.Add(stdType "ShortInt", mb.TypeSystem.SByte)
         dt.Add(stdType "Byte", mb.TypeSystem.Byte)
-        dt.Add(stdType "Boolean", mb.TypeSystem.Boolean)
+        let boolType = mb.TypeSystem.Boolean
+        dt.Add(stdType "Boolean", boolType)
         let ptrType = PointerType(mb.TypeSystem.Void)
         dt.Add(stdType "Pointer", ptrType)
         let charType = ModuleDetails.NewSizedType ns mb vt 1
@@ -1264,6 +1278,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
             char = charType
             value = vt
             pointer = ptrType
+            boolean = boolType
         }
 
     member self.BuildIl(block: Block, buildScope, ?resVar) =
