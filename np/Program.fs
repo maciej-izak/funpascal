@@ -12,11 +12,17 @@ let main argv =
     PasStreams.testAll
       """program wow;
 
+      function Length(const s: string): Integer;
+      begin
+        Result := 0;
+        while s[Result + 1] <> #0 do Inc(Result);
+      end;
+
       procedure AppendStr(var Dest: string; const Source: string);
       var
         DestLen, i: Integer;
       begin
-      //DestLen := Length(Dest);
+      DestLen := Length(Dest);
       i := 0;
       repeat
         Inc(i);

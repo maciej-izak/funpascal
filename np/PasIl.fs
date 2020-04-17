@@ -817,7 +817,8 @@ and chainLoadToIl ctx lastType factory symload =
         [
             yield! res
             for e, d in exprs do
-                yield! exprToIl ctx (Multiply(e, d.elemSize |> VInteger |> Value)) rt
+                // do not minus if not needed
+                yield! exprToIl ctx (Multiply(Minus(e,d.low |> VInteger |> Value), d.elemSize |> VInteger |> Value)) rt
                 yield AddInst |> ilResolve
         ]
     | StructLoad fds ->
