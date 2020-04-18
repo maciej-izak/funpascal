@@ -149,7 +149,7 @@ type ProcKind = Procedure | Function
 type ProcBodyDeclr = Declarations list * Statement list
 
 and ProcDeclaration =
-    | ExternalDeclr
+    | ExternalDeclr of string * string
     | ForwardDeclr of ProcBodyDeclr option ref
     | BodyDeclr of ProcBodyDeclr
 

@@ -510,13 +510,23 @@ let stdCompoundStatement = beginEnd <|> statement
 
 compoundStatementRef := stdCompoundStatement 
 
-procFuncDeclarationsRef := 
-    ((procDecl .>>. (``; `` >>. (opt(str_wsc "forward" .>> ``; `` >>% ()))))
+type FuncNonDeclaredKind =
+    | ForwardKind
+    | ExternalKind of (string * string)
+
+let nonDeclKind =
+    let strWsc = stringLiteral .>> wsc
+    (str_wsc "forward" .>> ``; `` >>% ForwardKind)
+    <|>
+    (str_wsc "external" >>. (strWsc .>>. (str_wsc "name" >>. strWsc)) .>> ``; `` |>> ExternalKind)
+
+procFuncDeclarationsRef :=
+    ((procDecl .>>. (``; `` >>. (opt nonDeclKind)))
         >>= fun (d, f) ->
-              if f.IsSome then
-                preturn(d, ForwardDeclr(ref None))
-              else
-                ((block .>> ``; ``) |>> fun b -> (d, BodyDeclr(b)))
+              match f with
+              | Some ForwardKind -> preturn(d, ForwardDeclr(ref None))
+              | Some (ExternalKind es) -> preturn(d, ExternalDeclr es)
+              | None -> ((block .>> ``; ``) |>> fun b -> (d, BodyDeclr(b)))
     )        
     |>> ProcAndFunc
 

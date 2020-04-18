@@ -1270,6 +1270,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         dt.Add(stdType "Int64", mb.TypeSystem.Int64)
         dt.Add(stdType "UInt64", mb.TypeSystem.UInt64)
         dt.Add(stdType "Integer", mb.TypeSystem.Int32)
+        dt.Add(stdType "LongInt", mb.TypeSystem.Int32)
         dt.Add(stdType "LongWord", mb.TypeSystem.UInt32)
         dt.Add(stdType "SmallInt", mb.TypeSystem.Int16)
         dt.Add(stdType "Word", mb.TypeSystem.UInt16)
