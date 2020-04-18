@@ -146,12 +146,19 @@ type Statement =
 
 type ProcKind = Procedure | Function
 
-type Declarations =
+type ProcBodyDeclr = Declarations list * Statement list
+
+and ProcDeclaration =
+    | ExternalDeclr
+    | ForwardDeclr of ProcBodyDeclr option ref
+    | BodyDeclr of ProcBodyDeclr
+
+and Declarations =
     | Types of Type list
     | Variables of (string list * TypeIdentifier) list
     | Consts of (string * TypeIdentifier option * ConstExpr) list
     | Labels of string list
-    | ProcAndFunc of ProcHeader * (Declarations list * Statement list) option
+    | ProcAndFunc of ProcHeader * ProcDeclaration
 
 type Program =
     | Unit of string

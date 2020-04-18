@@ -2,6 +2,35 @@
 open np.BasicParsers
 open FParsec
 
+      //       """program wow;
+
+      // function Length(const s: string): Integer;
+      // begin
+      //   Result := 0;
+      //   while s[Result + 1] <> #0 do Inc(Result);
+      // end;
+
+      // procedure AppendStr(var Dest: string; const Source: string);
+      // var
+      //   DestLen, i: Integer;
+      // begin
+      //   DestLen := Length(Dest);
+      //   i := 0;
+      //   repeat
+      //     Inc(i);
+      //     Dest[DestLen + i] := Source[i];
+      //   until Source[i] = #0;
+      // end;
+
+      // var
+      //   s: string;
+      // begin
+      //   s := 'hello';
+      //   AppendStr(s, ' Maciej');
+      //   WriteLn(Length(s));
+      // end.
+      // """
+
       // program wow;
 
       // function foo(a: byte): integer;

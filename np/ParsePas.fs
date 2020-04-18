@@ -514,11 +514,11 @@ procFuncDeclarationsRef :=
     ((procDecl .>>. (``; `` >>. (opt(str_wsc "forward" .>> ``; `` >>% ()))))
         >>= fun (d, f) ->
               if f.IsSome then
-                preturn(d, None)
+                preturn(d, ForwardDeclr(ref None))
               else
-                ((block .>> ``; ``) |>> fun b -> (d, Some(b)))
+                ((block .>> ``; ``) |>> fun b -> (d, BodyDeclr(b)))
     )        
-    |>> ProcAndFunc 
+    |>> ProcAndFunc
 
 let program =
     (opt(``program `` >>. identifier .>> ``; ``))

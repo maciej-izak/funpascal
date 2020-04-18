@@ -1474,7 +1474,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                        let methodName = name
                        MethodDefinition(methodName, methodAttributes, mRes)
                    let decls, stmts = match d with
-                                      | Some (d, s) -> d, s
+                                      | BodyDeclr (d, s) -> d, s
                                       | _ -> failwith "no body def"
                    let ps = defaultArg mPara []
                             |> List.collect
