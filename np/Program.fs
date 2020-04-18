@@ -34,7 +34,8 @@ let main argv =
         s: string;
       begin
         s := 'hello';
-        s := s + ' Maciej';
+        AppendStr(s, ' Maciej');
+        WriteLn(Length(s));
       end.
       """
     |> printfn "%A"

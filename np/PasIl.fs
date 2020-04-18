@@ -47,6 +47,7 @@ and AtomIlInstruction =
     | Ldfld of FieldDefinition
     | Ldflda of FieldDefinition
     | Ldind of IndirectKind
+    | Ldobj of TypeReference
     | Stsfld of FieldDefinition
     | Starg of ParameterDefinition
     | Stloc of VariableDefinition
@@ -209,9 +210,9 @@ type ModuleDetails = {
             sysProc = sysProc
         }
 
-    static member NewSizedType ns (mb: ModuleDefinition) vt size =
+    static member NewSizedType ns (mb: ModuleDefinition) vt size name =
             let attributes = TypeAttributes.ExplicitLayout ||| TypeAttributes.AnsiClass ||| TypeAttributes.Sealed ||| TypeAttributes.Public
-            let at = TypeDefinition(ns, null, attributes)
+            let at = TypeDefinition(ns, name + string size, attributes)
             at.ClassSize <- size
             at.PackingSize <- 0s;
             at.BaseType <- vt
@@ -222,7 +223,7 @@ type ModuleDetails = {
         match self.anonSizeTypes.TryGetValue size with
         | true, t -> t
         | _ ->
-            let at = ModuleDetails.NewSizedType self.ns self.moduleBuilder self.sysTypes.value size
+            let at = ModuleDetails.NewSizedType self.ns self.moduleBuilder self.sysTypes.value size "anon"
             self.anonSizeTypes.Add(size, at)
             at
 
@@ -369,6 +370,7 @@ let private ainstr = function
                                       | Ind_R4 -> Instruction.Create(OpCodes.Ldind_R4)
                                       | Ind_R8 -> Instruction.Create(OpCodes.Ldind_R8)
                                       | Ind_Ref -> Instruction.Create(OpCodes.Ldind_Ref)
+                    | Ldobj t      -> Instruction.Create(OpCodes.Ldobj, t)
                     | Stsfld f     -> Instruction.Create(OpCodes.Stsfld, f)
                     | Starg i      -> Instruction.Create(OpCodes.Starg, i)
                     | Stloc i      -> Instruction.Create(OpCodes.Stloc, i)
@@ -696,11 +698,12 @@ and valueToValueKind ctx v expectedType =
             ], ctx.details.sysTypes.char)
             |> ValueKind
         | false -> // handle string
-            let strBytes = s + "\000" |> Encoding.ASCII.GetBytes
+            if s.Length >= 256 then failwith "IE"
+            let strBytes = (s + (String.replicate (256-s.Length) "\000")) |> Encoding.ASCII.GetBytes
             ([
                 strBytes
                 |> ctx.details.AddBytesConst
-                |> Ldsflda |> ilResolve
+                |> Ldsfld |> ilResolve
             ], ctx.details.sysTypes.string)
             |> ValueKind
 
@@ -732,23 +735,28 @@ and chainReaderFactory asValue addr ltp =
                              [
                                 Ldarg i |> ilResolve
                                 if asValue then
-                                    yield! chainReaderFactory asValue addr (LTPDeref t)
+                                    Ldobj(t) |> ilResolve
+                                //if asValue then
+                                //    yield! chainReaderFactory asValue addr (LTPDeref t)
                              ]
     | LTPStruct fld -> valOrPtr (Ldfld fld) (Ldflda fld) fld.FieldType
     | LTPDeref dt ->
         if dt.MetadataType = MetadataType.ValueType then []
         else
+            let resolveMetadataType = function
+                | MetadataType.Pointer -> Ldind(Ind_I)
+                | MetadataType.SByte   -> Ldind(Ind_I1)
+                | MetadataType.Int16   -> Ldind(Ind_I2)
+                | MetadataType.Int32   -> Ldind(Ind_I4)
+                | MetadataType.Int64   -> Ldind(Ind_I8)
+                | MetadataType.Byte    -> Ldind(Ind_U1)
+                | MetadataType.UInt16  -> Ldind(Ind_U2)
+                | MetadataType.UInt32  -> Ldind(Ind_U4)
+                | MetadataType.UInt64  -> Ldind(Ind_U8)
+                | _ -> failwith "IE"
             match dt.MetadataType with
-            | MetadataType.Pointer -> Ldind(Ind_I)
-            | MetadataType.SByte   -> Ldind(Ind_I1)
-            | MetadataType.Int16   -> Ldind(Ind_I2)
-            | MetadataType.Int32   -> Ldind(Ind_I4)
-            | MetadataType.Int64   -> Ldind(Ind_I8)
-            | MetadataType.Byte    -> Ldind(Ind_U1)
-            | MetadataType.UInt16  -> Ldind(Ind_U2)
-            | MetadataType.UInt32  -> Ldind(Ind_U4)
-            | MetadataType.UInt64  -> Ldind(Ind_U8)
-            | _ -> failwith "IE"
+            | MetadataType.Class -> resolveMetadataType (dt.Resolve().BaseType.MetadataType)
+            | _ -> resolveMetadataType dt.MetadataType
             |> ilResolveArray
     | LTPNone -> []
 
@@ -774,17 +782,20 @@ and chainWriterFactory (ctx: Ctx) = function
                 Cpblk |> ilResolve
             ]
         else
+            let resolveMetadataType = function
+                | MetadataType.Pointer -> Stind(Ind_I)
+                | MetadataType.SByte -> Stind(Ind_I1)
+                | MetadataType.Int16 -> Stind(Ind_I2)
+                | MetadataType.Int32 -> Stind(Ind_I4)
+                | MetadataType.Int64 -> Stind(Ind_I8)
+                | MetadataType.Byte -> Stind(Ind_U1)
+                | MetadataType.UInt16 -> Stind(Ind_U2)
+                | MetadataType.UInt32 -> Stind(Ind_U4)
+                | MetadataType.UInt64 -> Stind(Ind_U8)
+                | _ -> failwith "IE"
             match dt.MetadataType with
-            | MetadataType.Pointer -> Stind(Ind_I)
-            | MetadataType.SByte -> Stind(Ind_I1)
-            | MetadataType.Int16 -> Stind(Ind_I2)
-            | MetadataType.Int32 -> Stind(Ind_I4)
-            | MetadataType.Int64 -> Stind(Ind_I8)
-            | MetadataType.Byte -> Stind(Ind_U1)
-            | MetadataType.UInt16 -> Stind(Ind_U2)
-            | MetadataType.UInt32 -> Stind(Ind_U4)
-            | MetadataType.UInt64 -> Stind(Ind_U8)
-            | _ -> failwith "IE"
+            | MetadataType.Class -> resolveMetadataType (dt.Resolve().BaseType.MetadataType)
+            | _ -> resolveMetadataType dt.MetadataType
             |> ilResolveArray
     | LTPNone -> []
 
@@ -1268,9 +1279,9 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         dt.Add(stdType "Boolean", boolType)
         let ptrType = PointerType(mb.TypeSystem.Void)
         dt.Add(stdType "Pointer", ptrType)
-        let charType = ModuleDetails.NewSizedType ns mb vt 1
+        let charType = ModuleDetails.NewSizedType ns mb mb.TypeSystem.Byte 1 ""
         dt.Add(stdType "Char", charType)
-        let strType = (ModuleDetails.NewSizedType ns mb vt 256) :> TypeReference
+        let strType = (ModuleDetails.NewSizedType ns mb vt 256 "") :> TypeReference
         dt.Add(TIdString, strType)
         // allow to use string as array
         let strDim = {
@@ -1376,7 +1387,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                            | Array(ArrayDef(_, dimensions, tname)) ->
                                 let newSubType (dims, size) (typ, typSize) name =
                                     let size = size * typSize
-                                    let at = ModuleDetails.NewSizedType ctx.details.ns mb vt size
+                                    let at = ModuleDetails.NewSizedType ctx.details.ns mb vt size ""
                                     FieldDefinition("item0", FieldAttributes.Public, typ)
                                     |> at.Fields.Add
                                     ctx.typeInfo.Head.Add(at, ArrayRange(dims, typ))
