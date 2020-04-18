@@ -687,16 +687,25 @@ and valueToValueKind ctx v expectedType =
     | VIdent i -> findSymbolAndLoad ctx i |> ValueKind
     | VString s ->
         // TODO protect string as char interpretation when needed
-        let strBytes = match expectedType = ctx.details.sysTypes.char with
-                       | true -> s
-                       | false -> s + "\000"
-                       |> Encoding.ASCII.GetBytes
-        let _,v = ctx.EnsureVariable(ctx.details.sysTypes.string)
-        ([
-            strBytes
-            |> ctx.details.AddBytesConst
-            |> Ldsflda |> ilResolve
-            // TODO Ref count strin -> below some simple dynamic allocation for further rework
+        match expectedType = ctx.details.sysTypes.char with
+        | true -> // handle char
+            if s.Length <> 1 then failwith "IE"
+            let cv = byte(s.Chars 0)
+            ([
+                Ldc_I4 (int cv) |> ilResolve
+            ], ctx.details.sysTypes.char)
+            |> ValueKind
+        | false -> // handle string
+            let strBytes = s + "\000" |> Encoding.ASCII.GetBytes
+            ([
+                strBytes
+                |> ctx.details.AddBytesConst
+                |> Ldsflda |> ilResolve
+            ], ctx.details.sysTypes.string)
+            |> ValueKind
+
+// let _,v = ctx.EnsureVariable(ctx.details.sysTypes.string)
+// TODO Ref count strin -> below some simple dynamic allocation for further rework
 //            Ldc_I4 strBytes.Length |> ilResolve
 //            Call ctx.details.GetMem |> ilResolve
 //            Dup |> ilResolve
@@ -708,8 +717,6 @@ and valueToValueKind ctx v expectedType =
 //            // Unaligned 1uy |> ilResolve // ??? https://stackoverflow.com/questions/24122973/what-should-i-pin-when-working-on-arrays/24127524
 //            Cpblk |> ilResolve
 //            Ldloc v |> ilResolve
-        ], ctx.details.sysTypes.string)
-        |> ValueKind
     | VCallResult(ce) -> doCall ctx ce false |> ValueKind
     | _ -> failwith "IE"
 

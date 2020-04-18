@@ -22,12 +22,12 @@ let main argv =
       var
         DestLen, i: Integer;
       begin
-      DestLen := Length(Dest);
-      i := 0;
-      repeat
-        Inc(i);
-        Dest[DestLen + i] := Source[i];
-      until Source[i] = #0;
+        DestLen := Length(Dest);
+        i := 0;
+        repeat
+          Inc(i);
+          Dest[DestLen + i] := Source[i];
+        until Source[i] = #0;
       end;
 
       var
