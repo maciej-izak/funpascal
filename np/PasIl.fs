@@ -240,6 +240,7 @@ type Ctx = {
         types: Dictionary<TypeIdentifier, TypeReference> list
         symbols: Dictionary<string, Symbol> list
         typeInfo: Dictionary<TypeReference,TypeInfo> list
+        forward: Dictionary<string, MethodDefinition>
         localVariables: int ref
         lang: LangCtx
         res: List<MetaInstruction>
@@ -252,6 +253,7 @@ type Ctx = {
             types = [types]
             symbols = [symbols]
             typeInfo = [typeInfo]
+            forward = Dictionary<_, _>()
             localVariables = ref 0
             lang = lang
             res = List<MetaInstruction>()
@@ -995,7 +997,9 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let mb = moduleBuilder
     let writeLineMethod = 
         typeof<System.Console>.GetMethod("WriteLine", [| typeof<int32> |]) |> moduleBuilder.ImportReference
-    let writeLineSMethod = 
+    let writeLine64Method =
+        typeof<System.Console>.GetMethod("WriteLine", [| typeof<int64> |]) |> moduleBuilder.ImportReference
+    let writeLineSMethod =
         typeof<System.Console>.GetMethod("WriteLine", [| typeof<string> |]) |> moduleBuilder.ImportReference
     let allocMem =
         typeof<System.Runtime.InteropServices.Marshal>.GetMethod("AllocCoTaskMem")  |> moduleBuilder.ImportReference
@@ -1061,7 +1065,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let (instructions, newSysLabels) =
                 match s with
                 | CallStm ce -> (fst (doCall ctx ce true), [])
-                | AssignStm(ident, expr) -> 
+                | IdentStm i -> (fst (doCall ctx (CallExpr(i,[])) true), [])
+                | AssignStm(ident, expr) ->
                     (getVar4Assign ident (exprToIl expr), [])
                 | IfStm(expr, tb, fb) ->
                     // if logic
@@ -1316,6 +1321,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         FreeMem = freeMem
                     }
                     newSymbols.Add("WriteLn", Referenced writeLineMethod |> MethodSym )
+                    newSymbols.Add("WriteLn64", Referenced writeLine64Method |> MethodSym )
                     newSymbols.Add("WriteLnS", Referenced writeLineSMethod |> MethodSym)
                     newSymbols.Add("GetMem", Referenced allocMem |> MethodSym)
                     newSymbols.Add("FreeMem", Referenced freeMem |> MethodSym)
@@ -1470,10 +1476,6 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                           res, Some resultVar
                                     | _ -> moduleBuilder.TypeSystem.Void, None
 
-                   let methodBuilder =
-                       let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
-                       let methodName = name
-                       MethodDefinition(methodName, methodAttributes, mRes)
                    let ps = defaultArg mPara []
                             |> List.collect
                                (fun (k, (ps, t)) ->
@@ -1486,8 +1488,18 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                     newMethodSymbols.Add(p, VariableParamSym(pd, t, byref))
                                     yield pd]
                                )
-                   List.iter methodBuilder.Parameters.Add ps
-                   newSymbols.Add(name, Referenced (methodBuilder :> MethodReference) |> MethodSym)
+                   let methodBuilder =
+                       match ctx.forward.TryGetValue name with
+                       | true, md ->
+                           // TODO check signature - must be identical
+                           ctx.forward.Remove name |> ignore
+                           md
+                       | _ ->
+                           let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
+                           let md = MethodDefinition(name, methodAttributes, mRes)
+                           List.iter md.Parameters.Add ps
+                           newSymbols.Add(name, Referenced (md :> MethodReference) |> MethodSym)
+                           md
                    match d with
                    | BodyDeclr (decls, stmts) ->
                        let scope = LocalScope(ctx.Inner newMethodSymbols)
@@ -1509,6 +1521,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                             ||| PInvokeAttributes.SupportsLastError ||| PInvokeAttributes.CallConvWinapi
                                     PInvokeInfo(flags, procName, libRef)
                        ctx.details.tb.Methods.Add(methodBuilder)
+                   | ForwardDeclr ->
+                       ctx.forward.Add(name, methodBuilder)
                    | _ -> failwith "no body def"
                | _ -> ())
 

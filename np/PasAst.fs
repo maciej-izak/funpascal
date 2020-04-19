@@ -150,7 +150,7 @@ type ProcBodyDeclr = Declarations list * Statement list
 
 and ProcDeclaration =
     | ExternalDeclr of string * string
-    | ForwardDeclr of ProcBodyDeclr option ref
+    | ForwardDeclr
     | BodyDeclr of ProcBodyDeclr
 
 and Declarations =

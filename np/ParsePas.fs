@@ -524,7 +524,7 @@ procFuncDeclarationsRef :=
     ((procDecl .>>. (``; `` >>. (opt nonDeclKind)))
         >>= fun (d, f) ->
               match f with
-              | Some ForwardKind -> preturn(d, ForwardDeclr(ref None))
+              | Some ForwardKind -> preturn(d, ForwardDeclr)
               | Some (ExternalKind es) -> preturn(d, ExternalDeclr es)
               | None -> ((block .>> ``; ``) |>> fun b -> (d, BodyDeclr(b)))
     )        

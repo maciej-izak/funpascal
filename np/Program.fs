@@ -12,11 +12,26 @@ let main argv =
     PasStreams.testAll
       """program wow;
 
-      function GetProcessHeap: LongInt; external 'KERNEL32.DLL' name 'GetProcessHeap';
+      procedure foo; forward;
+
+      procedure boo;
+      begin
+        WriteLn(1);
+        foo;
+      end;
+
+      procedure foo;
+      begin
+        WriteLn(2);
+      end;
+
+      function GetProcessHeap: Int64; external 'KERNEL32.DLL' name 'GetProcessHeap';
       function GetLastError: LongInt; external 'KERNEL32.DLL' name 'GetLastError';
 
       begin
-        WriteLn(GetProcessHeap());
+        WriteLn64(GetProcessHeap());
+        boo;
+        foo();
       end.
       """
     |> printfn "%A"
