@@ -13,9 +13,10 @@ let main argv =
       """program wow;
 
       function GetProcessHeap: LongInt; external 'KERNEL32.DLL' name 'GetProcessHeap';
+      function GetLastError: LongInt; external 'KERNEL32.DLL' name 'GetLastError';
 
       begin
-        WriteLn(GetProcessHeap);
+        WriteLn(GetProcessHeap());
       end.
       """
     |> printfn "%A"

@@ -53,6 +53,7 @@ let private compileModule (ProgramAst(name, block)) = //, methods: Method list) 
         let assemblyName = AssemblyNameDefinition(moduleName, Version(0,0,0,0))
         AssemblyDefinition.CreateAssembly(assemblyName, moduleNameWithoutExtension, ModuleKind.Console)
     let moduleBuilder = assemblyBuilder.MainModule
+    //moduleBuilder.Attributes <- ModuleAttributes.Preferred32Bit ||| moduleBuilder.Attributes
 
     let typeBuilder =
         let className = moduleName

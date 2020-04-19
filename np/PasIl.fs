@@ -1474,9 +1474,6 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                        let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
                        let methodName = name
                        MethodDefinition(methodName, methodAttributes, mRes)
-                   let decls, stmts = match d with
-                                      | BodyDeclr (d, s) -> d, s
-                                      | _ -> failwith "no body def"
                    let ps = defaultArg mPara []
                             |> List.collect
                                (fun (k, (ps, t)) ->
@@ -1489,16 +1486,30 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                     newMethodSymbols.Add(p, VariableParamSym(pd, t, byref))
                                     yield pd]
                                )
-
+                   List.iter methodBuilder.Parameters.Add ps
                    newSymbols.Add(name, Referenced (methodBuilder :> MethodReference) |> MethodSym)
-                   let scope = LocalScope(ctx.Inner newMethodSymbols)
-                   let mainBlock = self.BuildIl(Block.Create(decls, stmts),scope,("result",rVar))
-                                   |> compileBlock methodBuilder ctx.details.tb
-                   List.iter mainBlock.Parameters.Add ps
-                   mainBlock.Body.InitLocals <- true
-                   // https://github.com/jbevain/cecil/issues/365
-                   mainBlock.Body.OptimizeMacros()
-                   ()
+                   match d with
+                   | BodyDeclr (decls, stmts) ->
+                       let scope = LocalScope(ctx.Inner newMethodSymbols)
+                       let mainBlock = self.BuildIl(Block.Create(decls, stmts),scope,("result",rVar))
+                                       |> compileBlock methodBuilder ctx.details.tb
+                       mainBlock.Body.InitLocals <- true
+                       // https://github.com/jbevain/cecil/issues/365
+                       mainBlock.Body.OptimizeMacros()
+                   | ExternalDeclr (lib, procName) ->
+                       let libRef = ModuleReference(lib)
+                       mb.ModuleReferences.Add(libRef)
+                       let externalAttributes = MethodAttributes.HideBySig ||| MethodAttributes.PInvokeImpl
+                       methodBuilder.Attributes <- methodBuilder.Attributes ||| externalAttributes
+                       methodBuilder.IsPreserveSig <- true // as is
+
+                       // https://stackoverflow.com/questions/7255936/how-to-create-exported-functions-in-mono-cecil
+                       methodBuilder.PInvokeInfo <-
+                                    let flags = PInvokeAttributes.CharSetAnsi
+                                            ||| PInvokeAttributes.SupportsLastError ||| PInvokeAttributes.CallConvWinapi
+                                    PInvokeInfo(flags, procName, libRef)
+                       ctx.details.tb.Methods.Add(methodBuilder)
+                   | _ -> failwith "no body def"
                | _ -> ())
 
         stmtListToIl block.stmt ctx result
