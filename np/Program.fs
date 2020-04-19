@@ -10,30 +10,14 @@ open NP
 [<EntryPoint>]
 let main argv =
     PasStreams.testAll
-      """program wow;
-
-      procedure foo; forward;
-
-      procedure boo;
-      begin
-        WriteLn(1);
-        foo;
-      end;
-
-      procedure foo;
-      begin
-        WriteLn(2);
-      end;
-
-      function GetProcessHeap: Int64; external 'KERNEL32.DLL' name 'GetProcessHeap';
-      function GetLastError: LongInt; external 'KERNEL32.DLL' name 'GetLastError';
-
-      begin
-        WriteLn64(GetProcessHeap());
-        boo;
-        foo();
-      end.
-      """
+        """program wow;
+        var i: integer;
+        begin
+          i := 9;
+          Dec(i);
+          WriteLn(i);
+        end.
+        """
     |> printfn "%A"
     0
     (*let errorHandler = ProcessExiter(colorizer = function ErrorCode.HelpText -> None | _ -> Some ConsoleColor.Red)

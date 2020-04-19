@@ -2,6 +2,32 @@
 open np.BasicParsers
 open FParsec
 
+      // """program wow;
+
+      // procedure foo; forward;
+
+      // procedure boo;
+      // begin
+      //   WriteLn(1);
+      //   foo;
+      // end;
+
+      // procedure foo;
+      // begin
+      //   WriteLn(2);
+      // end;
+
+      // function GetProcessHeap: Int64; external 'KERNEL32.DLL' name 'GetProcessHeap';
+      // function GetLastError: LongInt; external 'KERNEL32.DLL' name 'GetLastError';
+
+      // begin
+      //   WriteLn64(GetProcessHeap());
+      //   boo;
+      //   foo();
+      // end.
+      // """
+
+
       //       """program wow;
 
       // function Length(const s: string): Integer;

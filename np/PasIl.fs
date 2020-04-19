@@ -113,8 +113,8 @@ with
         | GlobalVariable v -> v.FieldType
 
 type Intrinsic =
-    | Inc
-    | Dec
+    | IncProc
+    | DecProc
 
 type MethodSym =
     | Referenced of MethodReference
@@ -672,16 +672,18 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                 yield Pop |> ilResolve
          ], mr.ReturnType)
     | Intrinsic i, _ ->
-        match i, cp with
-        | Inc, [ParamIdent(id)] ->
+        let deltaModify instr id =
             ([
              yield! findSymbolAndGetPtr ctx id |> fst
              Dup |> ilResolve
              Ldind(Ind_I4) |> ilResolve
              Ldc_I4 1 |> ilResolve
-             AddInst |> ilResolve
+             instr |> ilResolve
              Stind(Ind_I4) |> ilResolve
             ], ctx.details.moduleBuilder.TypeSystem.Void)
+        match i, cp with
+        | IncProc, [ParamIdent(id)] -> deltaModify AddInst id
+        | DecProc, [ParamIdent(id)] -> deltaModify MinusInst id
         | _ -> failwith "IE"
     | _ -> failwith "IE"
 
@@ -1325,8 +1327,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     newSymbols.Add("WriteLnS", Referenced writeLineSMethod |> MethodSym)
                     newSymbols.Add("GetMem", Referenced allocMem |> MethodSym)
                     newSymbols.Add("FreeMem", Referenced freeMem |> MethodSym)
-                    newSymbols.Add("Inc", Intrinsic Inc |> MethodSym)
-                    newSymbols.Add("Dec", Intrinsic Dec |> MethodSym)
+                    newSymbols.Add("Inc", Intrinsic IncProc |> MethodSym)
+                    newSymbols.Add("Dec", Intrinsic DecProc |> MethodSym)
                     ModuleDetails.Create moduleBuilder ns tb systemTypes systemProc
                     |> Ctx.Create defTypes newSymbols typeInfo langCtx
                   | LocalScope ctx -> ctx
