@@ -689,11 +689,11 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
     | ValueKind (a, at) -> a, at
 
 and callParamToIl ctx cp idx (mr: MethodReference) =
-    let param = if mr <> null then mr.Parameters.[idx] else null
+    let param = if mr <> null then mr.Parameters.[idx].ParameterType else null
     match cp with
-    | ParamExpr expr -> exprToIl ctx expr param.ParameterType
+    | ParamExpr expr -> exprToIl ctx expr param
     | ParamIdent id ->
-        if param <> null && param.ParameterType :? ByReferenceType then
+        if param <> null && param :? ByReferenceType then
             findSymbolAndGetPtr ctx id
         else
             findSymbolAndLoad ctx id
