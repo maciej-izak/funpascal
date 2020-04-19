@@ -2,6 +2,15 @@
 open np.BasicParsers
 open FParsec
 
+        // """program wow;
+        // var i: integer;
+        // begin
+        //   i := 9;
+        //   Dec(i);
+        //   WriteLn(i);
+        // end.
+        // """
+
       // """program wow;
 
       // procedure foo; forward;

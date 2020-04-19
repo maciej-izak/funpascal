@@ -27,6 +27,22 @@ type IndirectKind =
     | Ind_R8
     | Ind_Ref
 
+type ElemKind =
+    | Elem of TypeReference
+    | Elem_I
+    | Elem_I1
+    | Elem_I2
+    | Elem_I4
+    | Elem_I8
+    | Elem_U
+    | Elem_U1
+    | Elem_U2
+    | Elem_U4
+    | Elem_U8
+    | Elem_R4
+    | Elem_R8
+    | Elem_Ref
+
 type BranchLabel =
     | LazyLabel of IlInstruction
     | Label of Instruction
@@ -56,6 +72,8 @@ and AtomIlInstruction =
     | Conv_I
     | Cpblk
     | Cpobj of TypeReference
+    | Newarr of TypeReference
+    | Stelem of ElemKind
     | Unaligned of byte
     | AddInst
     | MultiplyInst
@@ -69,6 +87,7 @@ and AtomIlInstruction =
     | Rem
     | NotInst
     | NegInst
+    | Box of TypeReference
     | Dup
     | Pop
     | Ret
@@ -115,6 +134,7 @@ with
 type Intrinsic =
     | IncProc
     | DecProc
+    | WriteLnProc
 
 type MethodSym =
     | Referenced of MethodReference
@@ -185,11 +205,13 @@ type SystemTypes = {
         value: TypeReference
         pointer: TypeReference
         boolean: TypeReference
+        net_obj: TypeReference
     }
 
 type SystemProc = {
         GetMem: MethodReference
         FreeMem: MethodReference
+        WriteLine: MethodReference
     }
 
 type ModuleDetails = {
@@ -394,7 +416,24 @@ let private ainstr = function
                     | Conv_I       -> Instruction.Create(OpCodes.Conv_I)
                     | Cpblk        -> Instruction.Create(OpCodes.Cpblk)
                     | Cpobj t      -> Instruction.Create(OpCodes.Cpobj, t)
+                    | Newarr e     -> Instruction.Create(OpCodes.Newarr, e)
+                    | Stelem ek    -> match ek with
+                                      | Elem e   -> Instruction.Create(OpCodes.Stelem_Any, e)
+                                      | Elem_I   -> Instruction.Create(OpCodes.Stelem_I)
+                                      | Elem_I1  -> Instruction.Create(OpCodes.Stelem_I1)
+                                      | Elem_I2  -> Instruction.Create(OpCodes.Stelem_I2)
+                                      | Elem_I4  -> Instruction.Create(OpCodes.Stelem_I4)
+                                      | Elem_I8  -> Instruction.Create(OpCodes.Stelem_I8)
+                                      | Elem_U   -> Instruction.Create(OpCodes.Stelem_I)
+                                      | Elem_U1  -> Instruction.Create(OpCodes.Stelem_I1)
+                                      | Elem_U2  -> Instruction.Create(OpCodes.Stelem_I2)
+                                      | Elem_U4  -> Instruction.Create(OpCodes.Stelem_I4)
+                                      | Elem_U8  -> Instruction.Create(OpCodes.Stelem_I8)
+                                      | Elem_R4  -> Instruction.Create(OpCodes.Stelem_R4)
+                                      | Elem_R8  -> Instruction.Create(OpCodes.Stelem_R8)
+                                      | Elem_Ref -> Instruction.Create(OpCodes.Stelem_Ref)
                     | Unaligned i  -> Instruction.Create(OpCodes.Unaligned, i)
+                    | Box t        -> Instruction.Create(OpCodes.Box, t)
                     | Dup          -> Instruction.Create(OpCodes.Dup)
                     | Pop          -> Instruction.Create(OpCodes.Pop)
                     | Ret          -> Instruction.Create(OpCodes.Ret)
@@ -647,17 +686,17 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
         | _ -> failwith "IE"
 
     match exprToMetaExpr exprEl expectedType with
-    | ValueKind (a, at) -> a
+    | ValueKind (a, at) -> a, at
 
 and callParamToIl ctx cp idx (mr: MethodReference) =
-    let param = mr.Parameters.[idx]
+    let param = if mr <> null then mr.Parameters.[idx] else null
     match cp with
     | ParamExpr expr -> exprToIl ctx expr param.ParameterType
     | ParamIdent id ->
-        if param.ParameterType :? ByReferenceType then
-            findSymbolAndGetPtr ctx id |> fst
+        if param <> null && param.ParameterType :? ByReferenceType then
+            findSymbolAndGetPtr ctx id
         else
-            findSymbolAndLoad ctx id |> fst
+            findSymbolAndLoad ctx id
 
 and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
     let mr, f = findFunction ctx ident
@@ -665,7 +704,7 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
     | Referenced mr, Some f ->
         ([
             yield! cp
-            |> List.mapi (fun i p -> callParamToIl ctx p i mr)
+            |> List.mapi (fun i p -> fst <| callParamToIl ctx p i mr)
             |> List.concat
             yield f
             if popResult && mr.ReturnType.MetadataType <> MetadataType.Void then
@@ -684,6 +723,29 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
         match i, cp with
         | IncProc, [ParamIdent(id)] -> deltaModify AddInst id
         | DecProc, [ParamIdent(id)] -> deltaModify MinusInst id
+        | WriteLnProc, _ ->
+            let high = ref 0
+            let cparams,str = cp |> List.mapi (fun i p -> incr high; callParamToIl ctx p i null, sprintf "{%d}" i) |> List.unzip
+            let str = String.Concat(str)
+            ([
+                Ldstr str |> ilResolve
+                Ldc_I4 !high |> ilResolve
+                Newarr ctx.details.sysTypes.net_obj |> ilResolve
+                yield! cparams
+                       |> List.mapi (
+                                       fun idx (i, t) ->
+                                           match t with
+                                           //| _ when t = ctx.details.sysTypes.string -> i
+                                           | _ ->
+                                               (Dup |> ilResolve)::(Ldc_I4 idx |> ilResolve)::i @
+                                               [
+                                                Box t |> ilResolve
+                                                Stelem Elem_Ref |> ilResolve
+                                               ]
+                                    )
+                       |> List.concat
+                Call(ctx.details.sysProc.WriteLine) |> ilResolve
+             ], ctx.details.moduleBuilder.TypeSystem.Void)
         | _ -> failwith "IE"
     | _ -> failwith "IE"
 
@@ -840,7 +902,7 @@ and chainLoadToIl ctx lastType factory symload =
             yield! res
             for e, d in exprs do
                 // do not minus if not needed
-                yield! exprToIl ctx (Multiply(Minus(e,d.low |> VInteger |> Value), d.elemSize |> VInteger |> Value)) rt
+                yield! fst <| exprToIl ctx (Multiply(Minus(e,d.low |> VInteger |> Value), d.elemSize |> VInteger |> Value)) rt
                 yield AddInst |> ilResolve
         ]
     | StructLoad fds ->
@@ -998,7 +1060,7 @@ type BuildScope =
 type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let mb = moduleBuilder
     let writeLineMethod = 
-        typeof<System.Console>.GetMethod("WriteLine", [| typeof<int32> |]) |> moduleBuilder.ImportReference
+        typeof<System.Console>.GetMethod("WriteLine", [| typeof<string> ; typeof<obj array> |]) |> moduleBuilder.ImportReference
     let writeLine64Method =
         typeof<System.Console>.GetMethod("WriteLine", [| typeof<int64> |]) |> moduleBuilder.ImportReference
     let writeLineSMethod =
@@ -1026,7 +1088,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                 Ldarg i |> ilResolveArray
                             | _ -> []
                      yield! List.collect (chainLoadToIl ctx ltp (chainReaderFactory false false)) symbols
-                     yield! (expr (!ltp).ToTypeRef)
+                     yield! (fst <| expr (!ltp).ToTypeRef)
                      yield! chainWriterFactory ctx !ltp
                  ]
              | _ -> failwith "IE"
@@ -1074,7 +1136,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     // if logic
                     let firstEnfOfStm = ref ForwardLabel
                     let lastEndOfStm = ref ForwardLabel
-                    let condition = exprToIl expr ctx.details.sysTypes.boolean
+                    let condition = fst <| exprToIl expr ctx.details.sysTypes.boolean
                     let (trueBranch, trueLabels) = stmtToIlList tb
                     let (falseBranch, falseLabels) = stmtToIlList fb
                     let hasFalseBranch = falseBranch.Length > 0
@@ -1118,18 +1180,18 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                         yield beginOfCase
                                         match l with
                                         | CaseExpr(ConstExpr(ce)) -> 
-                                             yield! (exprToIl ce null) // TODO type handle
+                                             yield! (fst <| exprToIl ce null) // TODO type handle
                                              yield IlBeq(ref(LazyLabel(caseBranch.[0])))
                                         | CaseRange(ConstExpr(ce1), ConstExpr(ce2)) ->
                                              // TODO check proper range
                                              // lower range
                                              let nextCase = ref ForwardLabel
                                              omitCase := Some nextCase
-                                             yield! (exprToIl ce1 null) // TODO type handle
+                                             yield! (fst <| exprToIl ce1 null) // TODO type handle
                                              yield IlBlt nextCase
                                              // higher range
                                              yield IlAtom(ref(Ldloc(var)))
-                                             yield! (exprToIl ce2 null) //TODO type handle
+                                             yield! (fst <| exprToIl ce2 null) //TODO type handle
                                              yield IlBgt nextCase
                                              yield IlBr(ref(LazyLabel(caseBranch.[0])))
                                         | _ -> failwith "IE";
@@ -1151,7 +1213,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         ]
                      , [yield! labels ; yield lastEndOfStm])
                 | WhileStm (expr, stmt) ->
-                    let condition = exprToIl expr ctx.details.sysTypes.boolean
+                    let condition = fst <| exprToIl expr ctx.details.sysTypes.boolean
                     let conditionLabel = ref (LazyLabel(condition.Head))
                     let (whileBranch, whileLabels) = stmtToIlList stmt
                     Ctx.resolveSysLabels (List.tryHead condition) whileLabels
@@ -1165,7 +1227,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                                 | _ -> condition.Head)))
                     ],[])
                 | RepeatStm (stmt, expr) ->
-                    let condition = exprToIl expr ctx.details.sysTypes.boolean
+                    let condition = fst <| exprToIl expr ctx.details.sysTypes.boolean
                     // let conditionLabel = ref (LazyLabel(condition.[0]))
                     let (repeatBranch, whileLabels) = stmtToIlList stmt
                     Ctx.resolveSysLabels (List.tryHead condition) whileLabels
@@ -1269,6 +1331,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         ctx.res
 
     let vt = mb.ImportReference(typeof<ValueType>)
+    let ot = mb.ImportReference(typeof<obj>)
 
     let findType =
         typeIdToStr
@@ -1308,6 +1371,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
             value = vt
             pointer = ptrType
             boolean = boolType
+            net_obj = ot
         }
 
     member self.BuildIl(block: Block, buildScope, ?resVar) =
@@ -1321,14 +1385,15 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let systemProc = {
                         GetMem = allocMem
                         FreeMem = freeMem
+                        WriteLine = writeLineMethod
                     }
-                    newSymbols.Add("WriteLn", Referenced writeLineMethod |> MethodSym )
                     newSymbols.Add("WriteLn64", Referenced writeLine64Method |> MethodSym )
                     newSymbols.Add("WriteLnS", Referenced writeLineSMethod |> MethodSym)
                     newSymbols.Add("GetMem", Referenced allocMem |> MethodSym)
                     newSymbols.Add("FreeMem", Referenced freeMem |> MethodSym)
                     newSymbols.Add("Inc", Intrinsic IncProc |> MethodSym)
                     newSymbols.Add("Dec", Intrinsic DecProc |> MethodSym)
+                    newSymbols.Add("WriteLn", Intrinsic WriteLnProc |> MethodSym)
                     ModuleDetails.Create moduleBuilder ns tb systemTypes systemProc
                     |> Ctx.Create defTypes newSymbols typeInfo langCtx
                   | LocalScope ctx -> ctx
