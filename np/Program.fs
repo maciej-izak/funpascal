@@ -15,7 +15,7 @@ let main argv =
         begin
           i := 9;
           Dec(i);
-          WriteLn(i + 2);
+          WriteLn('Result is : ', i + 2);
         end.
         """
     |> printfn "%A"

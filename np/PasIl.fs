@@ -734,14 +734,15 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                 yield! cparams
                        |> List.mapi (
                                        fun idx (i, t) ->
-                                           match t with
-                                           //| _ when t = ctx.details.sysTypes.string -> i
-                                           | _ ->
+                                           let putArrayElem i elem =
                                                (Dup |> ilResolve)::(Ldc_I4 idx |> ilResolve)::i @
-                                               [
-                                                Box t |> ilResolve
-                                                Stelem Elem_Ref |> ilResolve
-                                               ]
+                                               [elem ; Stelem Elem_Ref |> ilResolve]
+
+                                           match t with
+                                           | _ when t = ctx.details.sysTypes.string ->
+                                               // TODO handle string https://stackoverflow.com/questions/144176/fastest-way-to-convert-a-possibly-null-terminated-ascii-byte-to-a-string
+                                               Ldstr "<string>" |> ilResolve |> putArrayElem []
+                                           | _ -> Box t |> ilResolve |> putArrayElem i
                                     )
                        |> List.concat
                 Call(ctx.details.sysProc.WriteLine) |> ilResolve
