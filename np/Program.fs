@@ -12,10 +12,12 @@ let main argv =
     PasStreams.testAll
         """program wow;
         var i: integer;
+            s: string;
         begin
+          s := '(But previous value was 9!)';
           i := 9;
           Dec(i);
-          WriteLn('Result is : ', i + 2);
+          WriteLn('Result is : ', i + 2, ' ', s);
         end.
         """
     |> printfn "%A"

@@ -212,6 +212,7 @@ type SystemProc = {
         GetMem: MethodReference
         FreeMem: MethodReference
         WriteLine: MethodReference
+        PtrToStringAnsi: MethodReference
     }
 
 type ModuleDetails = {
@@ -734,15 +735,16 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                 yield! cparams
                        |> List.mapi (
                                        fun idx (i, t) ->
-                                           let putArrayElem i elem =
+                                           let putArrayElem elem =
                                                (Dup |> ilResolve)::(Ldc_I4 idx |> ilResolve)::i @
                                                [elem ; Stelem Elem_Ref |> ilResolve]
 
                                            match t with
                                            | _ when t = ctx.details.sysTypes.string ->
                                                // TODO handle string https://stackoverflow.com/questions/144176/fastest-way-to-convert-a-possibly-null-terminated-ascii-byte-to-a-string
-                                               Ldstr "<string>" |> ilResolve |> putArrayElem []
-                                           | _ -> Box t |> ilResolve |> putArrayElem i
+                                               Call ctx.details.sysProc.PtrToStringAnsi |> ilResolve
+                                               |> putArrayElem
+                                           | _ -> Box t |> ilResolve |> putArrayElem
                                     )
                        |> List.concat
                 Call(ctx.details.sysProc.WriteLine) |> ilResolve
@@ -1062,10 +1064,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let mb = moduleBuilder
     let writeLineMethod = 
         typeof<System.Console>.GetMethod("WriteLine", [| typeof<string> ; typeof<obj array> |]) |> moduleBuilder.ImportReference
-    let writeLine64Method =
-        typeof<System.Console>.GetMethod("WriteLine", [| typeof<int64> |]) |> moduleBuilder.ImportReference
-    let writeLineSMethod =
-        typeof<System.Console>.GetMethod("WriteLine", [| typeof<string> |]) |> moduleBuilder.ImportReference
+    let ptrToStringAnsi =
+        typeof<System.Runtime.InteropServices.Marshal>.GetMethod("PtrToStringAnsi", [| typeof<nativeint> |]) |> moduleBuilder.ImportReference
     let allocMem =
         typeof<System.Runtime.InteropServices.Marshal>.GetMethod("AllocCoTaskMem")  |> moduleBuilder.ImportReference
     let freeMem =
@@ -1387,9 +1387,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         GetMem = allocMem
                         FreeMem = freeMem
                         WriteLine = writeLineMethod
+                        PtrToStringAnsi = ptrToStringAnsi
                     }
-                    newSymbols.Add("WriteLn64", Referenced writeLine64Method |> MethodSym )
-                    newSymbols.Add("WriteLnS", Referenced writeLineSMethod |> MethodSym)
                     newSymbols.Add("GetMem", Referenced allocMem |> MethodSym)
                     newSymbols.Add("FreeMem", Referenced freeMem |> MethodSym)
                     newSymbols.Add("Inc", Intrinsic IncProc |> MethodSym)
