@@ -260,7 +260,7 @@ let procDecl =
         (opt identifier)
         (opt formalParamsList)
      >>= fun (k, n, p) -> match k with
-                          | Function -> (``: `` >>. designator) |>> fun i -> (n, Some(i), p)
+                          | Function -> (``: `` >>. typeIdentifier) |>> fun i -> (n, Some(i), p)
                           | Procedure -> preturn(n, None, p)
                           
 let typeProc =

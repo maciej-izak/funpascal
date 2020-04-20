@@ -91,6 +91,8 @@ and AtomIlInstruction =
     | Dup
     | Pop
     | Ret
+    | Endfinally
+    | Leave of Instruction
     | Ceq
     | Clt
     | Cgt
@@ -121,6 +123,7 @@ type MetaInstruction =
     | DeclareLocal of VariableDefinition
     | InstructionSingleton of IlInstruction
     | InstructionList of IlInstruction list
+    | HandleFinally of IlInstruction list * IlInstruction list * Instruction * Instruction
 
 type VariableKind =
      | LocalVariable of VariableDefinition
@@ -439,6 +442,8 @@ let private ainstr = function
                     | Dup          -> Instruction.Create(OpCodes.Dup)
                     | Pop          -> Instruction.Create(OpCodes.Pop)
                     | Ret          -> Instruction.Create(OpCodes.Ret)
+                    | Endfinally   -> Instruction.Create(OpCodes.Endfinally)
+                    | Leave i      -> Instruction.Create(OpCodes.Leave, i)
                     | Unknown      -> Instruction.Create(OpCodes.Nop)
                     | Ceq          -> Instruction.Create(OpCodes.Ceq)
                     | Clt          -> Instruction.Create(OpCodes.Clt)
@@ -476,10 +481,34 @@ let private instr = function
 
 let private emit (ilg : Cil.ILProcessor) inst =
     let appendIfNotNull i = if i <> null then ilg.Append i
+    let appendIfNotNullReplace (leave: Instruction) (i: Instruction) =
+        if i <> null then
+            if i.OpCode = OpCodes.Ret then
+                ilg.Append (Instruction.Create(OpCodes.Leave, leave))
+            else
+                ilg.Append i
     match inst with
     | DeclareLocal t -> t |> ilg.Body.Variables.Add
     | InstructionSingleton is -> instr is |> appendIfNotNull
-    | InstructionList p -> p |> List.iter (instr >> appendIfNotNull) 
+    | InstructionList p -> p |> List.iter (instr >> appendIfNotNull)
+    | HandleFinally (i, f, l, e) ->
+        // TODO rewrite this for exit in functions, test code
+        let processList (list: IlInstruction list) =
+            let s = list.Head |> instr
+            s |> appendIfNotNullReplace l
+            list.Tail |> List.iter (instr >> appendIfNotNullReplace l)
+            s
+        let start = processList i
+        ilg.Append(Instruction.Create(OpCodes.Leave, l))
+        let startFinally = processList f
+        ilg.Append l
+        ExceptionHandler(ExceptionHandlerType.Finally,
+                                       TryStart     = start,
+                                       TryEnd       = startFinally,
+                                       HandlerStart = startFinally,
+                                       HandlerEnd   = ilg.Body.Instructions.Last())
+        |> ilg.Body.ExceptionHandlers.Add
+        ilg.Append(e)
 
 (*
 
@@ -606,6 +635,9 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
     | VariableParamSym ((i,t,r) as p) -> LoadParam p |> varLoadChain t ident.Tail
     | _ -> SymbolLoadError
 
+let ilResolveInstr aii =
+    let res = aii |> ainstr
+    res, res |> IlResolved
 let ilResolve = ainstr >> IlResolved
 let ilResolveArray = ilResolve >> List.singleton
 
@@ -1320,20 +1352,22 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                      | _ -> []
                 )
         let (instr, labels) = stmtListToIlList ctx sl
-        ctx.res.Add(instr |> InstructionList)
-        let finalStart = match res with
-                         | null -> Ret
-                         | _ -> Ldloc res
-                         |> ilResolve
-        Ctx.resolveSysLabels (Some finalStart) labels
-        ctx.res.Add(
-                       [
-                        yield! finalizeVariables
-                        finalStart
-                        if res <> null then
-                            Ret |> ilResolve
-                       ] |> InstructionList
-                   )
+
+        match res with
+        | null ->
+            let lastInstr = Ret |> ilResolve
+            Ctx.resolveSysLabels (Some lastInstr) labels
+            ctx.res.Add(instr |> InstructionList)
+            ctx.res.Add(lastInstr |> InstructionSingleton)
+        | _ ->
+            // TODO optimization possible if there is no exit ? Don't create try/finally
+            let ret, _ = Ret |> ilResolveInstr
+            let ress, _ = Ldloc res |> ilResolveInstr;
+            let lastInstrSet = [yield! finalizeVariables; Endfinally |> ilResolve]
+            Ctx.resolveSysLabels (Some lastInstrSet.Head) labels
+            (instr, lastInstrSet, ress, ret )
+            |> HandleFinally
+            |> ctx.res.Add
         ctx.res
 
     let vt = mb.ImportReference(typeof<ValueType>)
@@ -1543,7 +1577,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                    let newMethodSymbols = Dictionary<_,_>(ctx.lang)
                    let mRes, rVar = match mRes with
                                     | Some r ->
-                                          let res = defTypes.[TIdIdent(r)]
+                                          let res = defTypes.[r]
                                           let resultVar = VariableDefinition res |> LocalVariable
                                           newMethodSymbols.Add("result", resultVar |> VariableSym)
                                           res, Some resultVar

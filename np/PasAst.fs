@@ -112,7 +112,7 @@ and TypeIdentifier =
     | TIdArray of ArrayDef
 
 type ParamList = (ParamKind option * (string list * TypeIdentifier)) list option
-type ProcHeader = string option * DIdent option * ParamList
+type ProcHeader = string option * TypeIdentifier option * ParamList
 
 type TypeDecl =
     | Record of packed: bool * fields: (string list * TypeIdentifier) list
