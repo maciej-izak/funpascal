@@ -4,6 +4,18 @@ open FParsec
 
         // """program wow;
         // var i: integer;
+        //     s: string;
+        // begin
+        //   s := '(But previous value was 9!)';
+        //   i := 9;
+        //   Dec(i);
+        //   WriteLn('Result is : ', i + 2, ' ', s);
+        // end.
+        // """
+
+
+        // """program wow;
+        // var i: integer;
         // begin
         //   i := 9;
         //   Dec(i);

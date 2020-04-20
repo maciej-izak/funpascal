@@ -11,13 +11,16 @@ open NP
 let main argv =
     PasStreams.testAll
         """program wow;
-        var i: integer;
-            s: string;
+
+        procedure foo;
         begin
-          s := '(But previous value was 9!)';
-          i := 9;
-          Dec(i);
-          WriteLn('Result is : ', i + 2, ' ', s);
+          WriteLn('Hello :D');
+          exit;
+          WriteLn('in hell :P');
+        end;
+
+        begin
+            foo;
         end.
         """
     |> printfn "%A"

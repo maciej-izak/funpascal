@@ -134,6 +134,7 @@ with
 type Intrinsic =
     | IncProc
     | DecProc
+    | ExitProc
     | WriteLnProc
 
 type MethodSym =
@@ -724,6 +725,10 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
         match i, cp with
         | IncProc, [ParamIdent(id)] -> deltaModify AddInst id
         | DecProc, [ParamIdent(id)] -> deltaModify MinusInst id
+        | ExitProc, [] -> // TODO handle Exit(result);
+            ([
+                Ret |> ilResolve
+             ], ctx.details.moduleBuilder.TypeSystem.Void)
         | WriteLnProc, _ ->
             let high = ref 0
             let cparams,str = cp |> List.mapi (fun i p -> incr high; callParamToIl ctx p i null, sprintf "{%d}" i) |> List.unzip
@@ -1394,6 +1399,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     newSymbols.Add("Inc", Intrinsic IncProc |> MethodSym)
                     newSymbols.Add("Dec", Intrinsic DecProc |> MethodSym)
                     newSymbols.Add("WriteLn", Intrinsic WriteLnProc |> MethodSym)
+                    newSymbols.Add("Exit", Intrinsic ExitProc |> MethodSym)
                     ModuleDetails.Create moduleBuilder ns tb systemTypes systemProc
                     |> Ctx.Create defTypes newSymbols typeInfo langCtx
                   | LocalScope ctx -> ctx
