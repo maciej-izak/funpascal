@@ -45,12 +45,22 @@ type ElemKind =
 
 type BranchLabel =
     | LazyLabel of IlInstruction
-    | Label of Instruction
     | ForwardLabel
     | UserLabel of string
-    | IgnoreLabel
 
-and AtomIlInstruction =
+and IlBranch =
+    | IlBrfalse
+    | IlBrtrue
+    | IlBr
+    | IlBeq // =
+    | IlBlt // <
+    | IlBgt // >
+    | IlBle // <=
+    | IlBge // >=
+
+and IlInstruction =
+    | IlAtom of IlInstruction ref
+    | IlBranch of IlBranch * BranchLabel ref
     | Unknown
     | Call of MethodReference
     | Ldc_I4 of int
@@ -106,21 +116,6 @@ and AtomIlInstruction =
     | Ble of Instruction
     | Bge of Instruction
     | Resolved of Instruction
-
-and IlBranch =
-    | IlBrfalse
-    | IlBrtrue
-    | IlBr
-    | IlBeq // =
-    | IlBlt // <
-    | IlBgt // >
-    | IlBle // <=
-    | IlBge // >=
-
-and IlInstruction =
-    | IlAtom of AtomIlInstruction ref
-    | IlBranch of IlBranch * BranchLabel ref
-    | IlResolved of Instruction
 
 type MetaInstruction =
     | DeclareLocal of VariableDefinition
@@ -335,11 +330,7 @@ type Ctx = {
 
     static member resolveSysLabels head labels =
         match head with
-        | Some h ->
-            match h with
-            | IlResolved il -> for l in labels do l := Label(il)
-            | IlBranch (IlBr, _) -> for l in labels do l := LazyLabel(h)
-            | _ -> failwithf "IE"
+        | Some h -> for l in labels do l := LazyLabel(h)
         | _ -> ()
 
 let inline toMap kvps =
@@ -347,20 +338,13 @@ let inline toMap kvps =
     |> Seq.map (|KeyValue|)
     |> Map.ofSeq
 
-let brtoinstr l opc =
-    let rec bril = function
-           | Label l -> l
-           | LazyLabel l -> match l with
-                            | IlResolved i -> i
-                            | IlBranch (_, i) -> bril !i
-                            | _ -> failwithf "IE"
-           | IgnoreLabel -> null
-           | _ -> failwithf "IE"
-           
-    let instr = bril !l
-    if instr <> null then
-        Instruction.Create(opc, instr)
-    else null
+let rec brtoinstr l =
+    match !l with
+    | LazyLabel l -> match l with
+                     | IlBranch (_, i) -> brtoinstr i
+                     | IlAtom _ | Unknown -> failwithf "IE"
+                     | i -> i
+    | _ -> failwithf "IE"
 
 let private ainstr = function
                     | AddInst      -> Instruction.Create(OpCodes.Add)
@@ -462,18 +446,19 @@ let private ainstr = function
 let private instr = function
                     | IlBranch (bk, i) ->
                         match bk with
-                        | IlBrfalse -> brtoinstr i OpCodes.Brfalse
-                        | IlBrtrue  -> brtoinstr i OpCodes.Brtrue
-                        | IlBr      -> brtoinstr i OpCodes.Br
-                        | IlBeq     -> brtoinstr i OpCodes.Beq
-                        | IlBgt     -> brtoinstr i OpCodes.Bgt
-                        | IlBlt     -> brtoinstr i OpCodes.Blt
-                        | IlBge     -> brtoinstr i OpCodes.Bge
-                        | IlBle     -> brtoinstr i OpCodes.Ble
-                    | IlResolved i -> i
+                        | IlBrfalse -> OpCodes.Brfalse
+                        | IlBrtrue  -> OpCodes.Brtrue
+                        | IlBr      -> OpCodes.Br
+                        | IlBeq     -> OpCodes.Beq
+                        | IlBgt     -> OpCodes.Bgt
+                        | IlBlt     -> OpCodes.Blt
+                        | IlBge     -> OpCodes.Bge
+                        | IlBle     -> OpCodes.Ble
+                        |> fun opc -> Instruction.Create(opc, brtoinstr i |> ainstr)
                     | IlAtom i     -> let r = ainstr !i
                                       i := Resolved(r)
                                       r
+                    | i -> i |> ainstr
 
 let metaToIlList = function
        | InstructionList l -> l
@@ -637,12 +622,6 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
     | VariableParamSym ((i,t,r) as p) -> LoadParam p |> varLoadChain t ident.Tail
     | _ -> SymbolLoadError
 
-let ilResolveInstr aii =
-    let res = aii |> ainstr
-    res, res |> IlResolved
-let ilResolve = ainstr >> IlResolved
-let ilResolveArray = ilResolve >> List.singleton
-
 type LastTypePoint =
     | LTPVar of VariableKind * TypeReference
     | LTPParam of ParameterDefinition * TypeReference * bool
@@ -666,7 +645,7 @@ let findFunction (ctx: Ctx) ident =
         | _ -> failwith "Not supported"
         |> fun ms ->
            match ms with
-           | Referenced mr -> ms, Some(Call(mr) |> ilResolve)
+           | Referenced mr -> ms, Call(mr) |> Some
            | Intrinsic _ -> ms, None
 
 type ValueKind = ValueKind of IlInstruction list * TypeReference
@@ -681,11 +660,11 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
                     ([
                         yield! a
                         yield! b
-                        yield ilResolve i
+                        yield i
                     ], at) |> ValueKind
         let inline add1OpIl a i =
             match exprToMetaExpr a et with
-            | ValueKind(a, at) -> ValueKind([ yield! a; yield ilResolve i], ctx.details.moduleBuilder.TypeSystem.Int32)
+            | ValueKind(a, at) -> ValueKind([ yield! a; yield i], ctx.details.moduleBuilder.TypeSystem.Int32)
         match el with
         | Value v -> valueToValueKind ctx v et
         | Add(a, b) -> add2OpIl a b AddInst
@@ -704,15 +683,15 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
         | Equal(a, b) -> add2OpIl a b Ceq
         | NotEqual(a, b) ->
             match add2OpIl a b Ceq with
-            | ValueKind(o, ot) -> ([ yield! o; ilResolve (Ldc_I4(0)); ilResolve Ceq ], ctx.details.moduleBuilder.TypeSystem.Boolean) |> ValueKind
+            | ValueKind(o, ot) -> ([ yield! o; Ldc_I4 0; Ceq ], ctx.details.moduleBuilder.TypeSystem.Boolean) |> ValueKind
         | StrictlyLessThan(a, b) -> add2OpIl a b Clt
         | StrictlyGreaterThan(a, b) -> add2OpIl a b Cgt
         | LessThanOrEqual(a, b) ->
             match add2OpIl a b Cgt with
-            | ValueKind(o, ot) -> ([ yield! o; ilResolve (Ldc_I4(0)); ilResolve Ceq ], ctx.details.moduleBuilder.TypeSystem.Boolean) |> ValueKind
+            | ValueKind(o, ot) -> ([ yield! o; Ldc_I4 0; Ceq ], ctx.details.moduleBuilder.TypeSystem.Boolean) |> ValueKind
         | GreaterThanOrEqual(a, b) ->
             match add2OpIl a b Clt with
-            | ValueKind(o, ot) -> ([ yield! o; ilResolve (Ldc_I4(0)); ilResolve Ceq ], ctx.details.moduleBuilder.TypeSystem.Boolean) |> ValueKind
+            | ValueKind(o, ot) -> ([ yield! o; Ldc_I4 0; Ceq ], ctx.details.moduleBuilder.TypeSystem.Boolean) |> ValueKind
         | Addr(a) ->
             ([
                 match a with
@@ -744,56 +723,56 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
             |> List.concat
             yield f
             if popResult && mr.ReturnType.MetadataType <> MetadataType.Void then
-                yield Pop |> ilResolve
+                yield Pop
          ], mr.ReturnType)
     | Intrinsic i, _ ->
-        let deltaModify instr id =
+        let deltaModify (instr: IlInstruction) id =
             ([
              yield! findSymbolAndGetPtr ctx id |> fst
-             Dup |> ilResolve
-             Ldind(Ind_I4) |> ilResolve
-             Ldc_I4 1 |> ilResolve
-             instr |> ilResolve
-             Stind(Ind_I4) |> ilResolve
+             Dup
+             Ldind Ind_I4
+             Ldc_I4 1
+             instr
+             Stind Ind_I4
             ], ctx.details.moduleBuilder.TypeSystem.Void)
         match i, cp with
         | IncProc, [ParamIdent(id)] -> deltaModify AddInst id
         | DecProc, [ParamIdent(id)] -> deltaModify MinusInst id
         | ExitProc, [] -> // TODO handle Exit(result);
             ([
-                Ret |> ilResolve
+                Ret
              ], ctx.details.moduleBuilder.TypeSystem.Void)
         | WriteLnProc, _ ->
             let high = ref 0
             let cparams,str = cp |> List.mapi (fun i p -> incr high; callParamToIl ctx p i null, sprintf "{%d}" i) |> List.unzip
             let str = String.Concat(str)
             ([
-                Ldstr str |> ilResolve
-                Ldc_I4 !high |> ilResolve
-                Newarr ctx.details.sysTypes.net_obj |> ilResolve
+                Ldstr str
+                Ldc_I4 !high
+                Newarr ctx.details.sysTypes.net_obj
                 yield! cparams
                        |> List.mapi (
                                        fun idx (i, t) ->
                                            let putArrayElem elem =
-                                               (Dup |> ilResolve)::(Ldc_I4 idx |> ilResolve)::i @
-                                               [elem ; Stelem Elem_Ref |> ilResolve]
+                                               Dup::(Ldc_I4 idx)::i @
+                                               [elem ; Stelem Elem_Ref]
 
                                            match t with
                                            | _ when t = ctx.details.sysTypes.string ->
                                                // TODO handle string https://stackoverflow.com/questions/144176/fastest-way-to-convert-a-possibly-null-terminated-ascii-byte-to-a-string
-                                               Call ctx.details.sysProc.PtrToStringAnsi |> ilResolve
+                                               Call ctx.details.sysProc.PtrToStringAnsi
                                                |> putArrayElem
-                                           | _ -> Box t |> ilResolve |> putArrayElem
+                                           | _ -> Box t |> putArrayElem
                                     )
                        |> List.concat
-                Call(ctx.details.sysProc.WriteLine) |> ilResolve
+                Call ctx.details.sysProc.WriteLine
              ], ctx.details.moduleBuilder.TypeSystem.Void)
         | _ -> failwith "IE"
     | _ -> failwith "IE"
 
 and valueToValueKind ctx v expectedType =
     match v with
-    | VInteger i -> ValueKind(Ldc_I4(i) |> ilResolveArray, ctx.details.moduleBuilder.TypeSystem.Int32)
+    | VInteger i -> ValueKind([Ldc_I4 i], ctx.details.moduleBuilder.TypeSystem.Int32)
     | VIdent i -> findSymbolAndLoad ctx i |> ValueKind
     | VString s ->
         // TODO protect string as char interpretation when needed
@@ -802,7 +781,7 @@ and valueToValueKind ctx v expectedType =
             if s.Length <> 1 then failwith "IE"
             let cv = byte(s.Chars 0)
             ([
-                Ldc_I4 (int cv) |> ilResolve
+                Ldc_I4 (int cv)
             ], ctx.details.sysTypes.char)
             |> ValueKind
         | false -> // handle string
@@ -811,28 +790,28 @@ and valueToValueKind ctx v expectedType =
             ([
                 strBytes
                 |> ctx.details.AddBytesConst
-                |> Ldsfld |> ilResolve
+                |> Ldsfld
             ], ctx.details.sysTypes.string)
             |> ValueKind
 
 // let _,v = ctx.EnsureVariable(ctx.details.sysTypes.string)
 // TODO Ref count strin -> below some simple dynamic allocation for further rework
-//            Ldc_I4 strBytes.Length |> ilResolve
-//            Call ctx.details.GetMem |> ilResolve
-//            Dup |> ilResolve
-//            Stloc v |> ilResolve
+//            Ldc_I4 strBytes.Length
+//            Call ctx.details.GetMem
+//            Dup
+//            Stloc v
 //            strBytes
 //            |> ctx.details.AddBytesConst
-//            |> Ldsflda |> ilResolve
-//            Ldc_I4 strBytes.Length |> ilResolve
-//            // Unaligned 1uy |> ilResolve // ??? https://stackoverflow.com/questions/24122973/what-should-i-pin-when-working-on-arrays/24127524
-//            Cpblk |> ilResolve
-//            Ldloc v |> ilResolve
+//            |> Ldsflda
+//            Ldc_I4 strBytes.Length
+//            // Unaligned 1uy // ??? https://stackoverflow.com/questions/24122973/what-should-i-pin-when-working-on-arrays/24127524
+//            Cpblk
+//            Ldloc v
     | VCallResult(ce) -> doCall ctx ce false |> ValueKind
     | _ -> failwith "IE"
 
 and chainReaderFactory asValue addr ltp =
-    let valOrPtr v p (t: TypeReference) = (if asValue || (t :? PointerType && addr = false) then v else p) |> ilResolveArray
+    let valOrPtr v p (t: TypeReference) = (if asValue || (t :? PointerType && addr = false) then v else p) |> List.singleton
     match ltp with
     | LTPVar(v, vt) -> match v with
                        | LocalVariable v -> valOrPtr (Ldloc v) (Ldloca v) vt
@@ -841,9 +820,9 @@ and chainReaderFactory asValue addr ltp =
                          | false -> valOrPtr (Ldarg i) (Ldarga i) t
                          | true ->
                              [
-                                Ldarg i |> ilResolve
+                                Ldarg i
                                 if asValue then
-                                    Ldobj(t) |> ilResolve
+                                    Ldobj(t)
                                 //if asValue then
                                 //    yield! chainReaderFactory asValue addr (LTPDeref t)
                              ]
@@ -865,17 +844,17 @@ and chainReaderFactory asValue addr ltp =
             match dt.MetadataType with
             | MetadataType.Class -> resolveMetadataType (dt.Resolve().BaseType.MetadataType)
             | _ -> resolveMetadataType dt.MetadataType
-            |> ilResolveArray
+            |> List.singleton
     | LTPNone -> []
 
 and chainWriterFactory (ctx: Ctx) = function
     | LTPVar(v, _) -> match v with
-                      | LocalVariable v -> [Stloc v |> ilResolve]
-                      | GlobalVariable v -> [Stsfld v |> ilResolve]
+                      | LocalVariable v -> [Stloc v]
+                      | GlobalVariable v -> [Stsfld v]
     | LTPParam(i, t, r) -> match r with // handle by ref params
-                           | false -> [Starg i |> ilResolve]
+                           | false -> [Starg i]
                            | true -> chainWriterFactory ctx (LTPDeref t)
-    | LTPStruct fld -> [fld |> Stfld |> ilResolve]
+    | LTPStruct fld -> [Stfld fld]
     | LTPDeref dt ->
         if dt.MetadataType = MetadataType.ValueType then
             let dt = dt :?> TypeDefinition
@@ -884,10 +863,10 @@ and chainWriterFactory (ctx: Ctx) = function
                        | Some(SimpleType size) -> size
                        | _ -> failwith "IE"
             [
-                Ldc_I4(size) |> ilResolve
+                Ldc_I4 size
 //                if dt.PackingSize = 1s then
-//                    Unaligned(byte(dt.PackingSize)) |> ilResolve
-                Cpblk |> ilResolve
+//                    Unaligned(byte(dt.PackingSize))
+                Cpblk
             ]
         else
             let resolveMetadataType = function
@@ -904,7 +883,7 @@ and chainWriterFactory (ctx: Ctx) = function
             match dt.MetadataType with
             | MetadataType.Class -> resolveMetadataType (dt.Resolve().BaseType.MetadataType)
             | _ -> resolveMetadataType dt.MetadataType
-            |> ilResolveArray
+            |> List.singleton
     | LTPNone -> []
 
 and derefLastTypePoint = function
@@ -945,18 +924,18 @@ and chainLoadToIl ctx lastType factory symload =
             for e, d in exprs do
                 // do not minus if not needed
                 yield! fst <| exprToIl ctx (Multiply(Minus(e,d.low |> VInteger |> Value), d.elemSize |> VInteger |> Value)) rt
-                yield AddInst |> ilResolve
+                yield AddInst
         ]
     | StructLoad fds ->
-        let instr, last, count = List.fold (fun (acc, _, c) f -> (Ldflda(f) |> ilResolve)::acc, f, c+1) ([],null,0) fds
+        let instr, last, count = List.fold (fun (acc, _, c) f -> (Ldflda f)::acc, f, c+1) ([],null,0) fds
         lastType := LTPStruct last
         res @ (List.take (count-1) instr)
     | ValueLoad evs ->
         lastType := LTPNone
-        res @ (Ldc_I4(evs) |> ilResolveArray)
+        res @ [Ldc_I4 evs]
     | CallableLoad (Referenced mr) ->
         if mr.ReturnType.MetadataType = MetadataType.Void then failwith "IE"
-        Call(mr) |> ilResolveArray
+        [Call(mr)]
 
 //let splitStruct = function
 //    | StructLoad fdl ->
@@ -1091,8 +1070,7 @@ let (|IlNotEqual|_|) (items: IlInstruction[]) =
     | GreaterThanOrEqual(a, b) -> [|yield! add2OpIl a b Clt; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
                     *)
         match last3 with
-        | [|IlResolved(i1);IlResolved(i2);IlResolved(i3)|]
-            when i1.OpCode = OpCodes.Ceq && i2.OpCode = OpCodes.Ldc_I4 && i3.OpCode = OpCodes.Ceq -> Some(IlNotEqual) 
+        | [|Ceq;Ldc_I4 _;Ceq|] -> Some(IlNotEqual)
         | _ -> None
 
 type BuildScope =
@@ -1125,7 +1103,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                  [
                      yield! match symbols.Head with // for non value types we need extra value on stack (for stind.x)
                             | VariableLoad(LoadParam (i,t,r)) when r && t.MetadataType <> MetadataType.ValueType ->
-                                Ldarg i |> ilResolveArray
+                                [Ldarg i]
                             | _ -> []
                      yield! List.collect (chainLoadToIl ctx ltp (chainReaderFactory false false)) symbols
                      yield! (fst <| expr (!ltp).ToTypeRef)
@@ -1154,7 +1132,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                             ([
                                 yield! cl
                                 yield! chainReaderFactory false true !ltp
-                                Stloc(vv) |> ilResolve
+                                Stloc vv
                             ], (vv, vt, pvt))
                         | _ -> failwith "IE"
 
@@ -1181,7 +1159,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let (falseBranch, falseLabels) = stmtToIlList fb
                     let hasFalseBranch = falseBranch.Length > 0
                     // TODO rethink LazyLabel here
-                    let checkCondition = [|IlBranch(IlBrfalse,if hasFalseBranch then ref (LazyLabel(falseBranch.[0])) else firstEnfOfStm)|]
+                    let checkCondition = [IlBranch(IlBrfalse,if hasFalseBranch then ref (LazyLabel(falseBranch.[0])) else firstEnfOfStm)]
                     ([
                         yield! condition
                         yield! checkCondition
@@ -1287,8 +1265,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     // TODO optimization for simple values (dont store in var)
                     let (loopFinal, _) = AssignStm(stdIdent name, finiExpr) |> List.singleton |> stmtToIlList
                     let condition = [
-                        Ldloc var |> ilResolve
-                        Ldloc varFinal |> ilResolve;
+                        Ldloc var
+                        Ldloc varFinal
                         match delta with
                                     | 1 -> IlBranch(IlBle, exprLabel)
                                     | -1 -> IlBranch(IlBge, exprLabel)
@@ -1357,15 +1335,15 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
 
         match res with
         | null ->
-            let lastInstr = Ret |> ilResolve
+            let lastInstr = Ret
             Ctx.resolveSysLabels (Some lastInstr) labels
             ctx.res.Add(instr |> InstructionList)
             ctx.res.Add(lastInstr |> InstructionSingleton)
         | _ ->
             // TODO optimization possible if there is no exit ? Don't create try/finally
-            let ret, _ = Ret |> ilResolveInstr
-            let ress, _ = Ldloc res |> ilResolveInstr;
-            let lastInstrSet = [yield! finalizeVariables; Endfinally |> ilResolve]
+            let ret = Ret |> ainstr
+            let ress = Ldloc res |> ainstr;
+            let lastInstrSet = [yield! finalizeVariables; Endfinally]
             Ctx.resolveSysLabels (Some lastInstrSet.Head) labels
             (instr, lastInstrSet, ress, ret )
             |> HandleFinally
