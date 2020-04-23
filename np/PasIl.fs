@@ -119,9 +119,8 @@ and IlInstruction =
 
 type MetaInstruction =
     | DeclareLocal of VariableDefinition
-    | InstructionSingleton of IlInstruction
     | InstructionList of IlInstruction list
-    | HandleFinally of IlInstruction list * IlInstruction list * Instruction * Instruction
+    | HandleFunction of IlInstruction list * IlInstruction list option * IlInstruction list
 
 type VariableKind =
      | LocalVariable of VariableDefinition
@@ -346,7 +345,7 @@ let rec brtoinstr l =
                      | i -> i
     | _ -> failwithf "IE"
 
-let private ainstr = function
+let private atomInstr = function
                     | AddInst      -> Instruction.Create(OpCodes.Add)
                     | MultiplyInst -> Instruction.Create(OpCodes.Mul)
                     | MinusInst    -> Instruction.Create(OpCodes.Sub)
@@ -454,48 +453,49 @@ let private instr = function
                         | IlBlt     -> OpCodes.Blt
                         | IlBge     -> OpCodes.Bge
                         | IlBle     -> OpCodes.Ble
-                        |> fun opc -> Instruction.Create(opc, brtoinstr i |> ainstr)
-                    | IlAtom i     -> let r = ainstr !i
+                        |> fun opc -> Instruction.Create(opc, brtoinstr i |> atomInstr)
+                    | IlAtom i     -> let r = atomInstr !i
                                       i := Resolved(r)
                                       r
-                    | i -> i |> ainstr
+                    | i -> i |> atomInstr
 
 let metaToIlList = function
        | InstructionList l -> l
-       | InstructionSingleton s -> [s]
        // may be extended for inline variables in the future
        | _ -> failwith "IE not supported metaToIlList"
 
 let private emit (ilg : Cil.ILProcessor) inst =
-    let appendIfNotNull i = if i <> null then ilg.Append i
-    let appendIfNotNullReplace (leave: Instruction) (i: Instruction) =
-        if i <> null then
-            if i.OpCode = OpCodes.Ret then
-                ilg.Append (Instruction.Create(OpCodes.Leave, leave))
-            else
-                ilg.Append i
     match inst with
     | DeclareLocal t -> t |> ilg.Body.Variables.Add
-    | InstructionSingleton is -> instr is |> appendIfNotNull
-    | InstructionList p -> p |> List.iter (instr >> appendIfNotNull)
-    | HandleFinally (i, f, l, e) ->
-        // TODO rewrite this for exit in functions, test code
-        let processList (list: IlInstruction list) =
+    | InstructionList p -> p |> List.iter (instr >> ilg.Append)
+    | HandleFunction (instructionsBlock, finallyBlock, endOfAll) ->
+        let appendAndReplaceRetGen (brOpcode: OpCode) (goto: Instruction) (i: Instruction) =
+            if i.OpCode = OpCodes.Ret then
+                ilg.Append (Instruction.Create(brOpcode, goto))
+            else ilg.Append i
+        let finallyBlock, appendAndReplaceRet = match finallyBlock with
+                                                | Some block -> block, appendAndReplaceRetGen OpCodes.Leave
+                                                | None -> [], appendAndReplaceRetGen OpCodes.Br
+        let processList (list: IlInstruction list) replaceFun =
             let s = list.Head |> instr
-            s |> appendIfNotNullReplace l
-            list.Tail |> List.iter (instr >> appendIfNotNullReplace l)
+            s |> replaceFun
+            list.Tail |> List.iter (instr >> replaceFun)
             s
-        let start = processList i
-        ilg.Append(Instruction.Create(OpCodes.Leave, l))
-        let startFinally = processList f
-        ilg.Append l
-        ExceptionHandler(ExceptionHandlerType.Finally,
-                                       TryStart     = start,
-                                       TryEnd       = startFinally,
-                                       HandlerStart = startFinally,
-                                       HandlerEnd   = ilg.Body.Instructions.Last())
-        |> ilg.Body.ExceptionHandlers.Add
-        ilg.Append(e)
+        let beginOfEnd = endOfAll.Head |> instr
+        let replaceRet = appendAndReplaceRet beginOfEnd
+        let start = processList instructionsBlock replaceRet
+        if List.isEmpty finallyBlock = false then
+            if ilg.Body.Instructions.Last().OpCode <> OpCodes.Leave then
+                ilg.Append(Instruction.Create(OpCodes.Leave, beginOfEnd))
+            let startFinally = processList finallyBlock replaceRet
+            ExceptionHandler(ExceptionHandlerType.Finally,
+                                           TryStart     = start,
+                                           TryEnd       = startFinally,
+                                           HandlerStart = startFinally,
+                                           HandlerEnd   = beginOfEnd)
+            |> ilg.Body.ExceptionHandlers.Add
+        ilg.Append beginOfEnd
+        List.iter (instr >> ilg.Append) endOfAll.Tail
 
 (*
 
@@ -1331,23 +1331,23 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                          ]
                      | _ -> []
                 )
-        let (instr, labels) = stmtListToIlList ctx sl
-
-        match res with
-        | null ->
-            let lastInstr = Ret
-            Ctx.resolveSysLabels (Some lastInstr) labels
-            ctx.res.Add(instr |> InstructionList)
-            ctx.res.Add(lastInstr |> InstructionSingleton)
-        | _ ->
-            // TODO optimization possible if there is no exit ? Don't create try/finally
-            let ret = Ret |> ainstr
-            let ress = Ldloc res |> ainstr;
-            let lastInstrSet = [yield! finalizeVariables; Endfinally]
-            Ctx.resolveSysLabels (Some lastInstrSet.Head) labels
-            (instr, lastInstrSet, ress, ret )
-            |> HandleFinally
-            |> ctx.res.Add
+            |> List.ofSeq
+        let (instructions, labels) = stmtListToIlList ctx sl
+        let returnBlock = [
+            if res <> null then Ldloc res
+            Ret
+        ]
+        let finallyBlock = match finalizeVariables with
+                           | [] ->
+                               Ctx.resolveSysLabels (Some returnBlock.Head) labels
+                               None
+                           | _ ->
+                               let finallyBlock = [yield! finalizeVariables; Endfinally]
+                               Ctx.resolveSysLabels (Some finallyBlock.Head) labels
+                               Some finallyBlock
+        (instructions, finallyBlock, returnBlock)
+        |> HandleFunction
+        |> ctx.res.Add
         ctx.res
 
     let vt = mb.ImportReference(typeof<ValueType>)
