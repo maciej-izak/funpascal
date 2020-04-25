@@ -361,132 +361,132 @@ let rec brtoinstr l =
     | _ -> failwithf "IE"
 
 and private atomInstr = function
-                    | AddInst      -> Instruction.Create(OpCodes.Add)
-                    | MultiplyInst -> Instruction.Create(OpCodes.Mul)
-                    | MinusInst    -> Instruction.Create(OpCodes.Sub)
-                    | DivideInst   -> Instruction.Create(OpCodes.Div)
-                    | AndInst      -> Instruction.Create(OpCodes.And)
-                    | OrInst       -> Instruction.Create(OpCodes.Or)
-                    | XorInst      -> Instruction.Create(OpCodes.Xor)
-                    | Rem          -> Instruction.Create(OpCodes.Rem)
-                    | ShlInst      -> Instruction.Create(OpCodes.Shl)
-                    | ShrInst      -> Instruction.Create(OpCodes.Shr)
-                    | NotInst      -> Instruction.Create(OpCodes.Not)
-                    | NegInst      -> Instruction.Create(OpCodes.Neg)
-                    | Call mi      -> Instruction.Create(OpCodes.Call, mi)
-                    | Ldc_I4 n     -> Instruction.Create(OpCodes.Ldc_I4, n)
-                    | Ldsfld f     -> Instruction.Create(OpCodes.Ldsfld, f)
-                    | Ldsflda f    -> Instruction.Create(OpCodes.Ldsflda, f)
-                    | Ldarg i      -> Instruction.Create(OpCodes.Ldarg, i)
-                    | Ldarga i     -> Instruction.Create(OpCodes.Ldarga, i)
-                    | Ldloc i      -> Instruction.Create(OpCodes.Ldloc, i)
-                    | Ldloca i     -> Instruction.Create(OpCodes.Ldloca, i)
-                    | Ldfld f      -> Instruction.Create(OpCodes.Ldfld, f)
-                    | Ldflda f     -> Instruction.Create(OpCodes.Ldflda, f)
-                    | Ldind it     -> match it with
-                                      | Ind_I -> Instruction.Create(OpCodes.Ldind_I)
-                                      | Ind_I1 -> Instruction.Create(OpCodes.Ldind_I1)
-                                      | Ind_I2 -> Instruction.Create(OpCodes.Ldind_I2)
-                                      | Ind_I4 -> Instruction.Create(OpCodes.Ldind_I4)
-                                      | Ind_I8 -> Instruction.Create(OpCodes.Ldind_I8)
-                                      | Ind_U -> Instruction.Create(OpCodes.Ldind_I)
-                                      | Ind_U1 -> Instruction.Create(OpCodes.Ldind_U1)
-                                      | Ind_U2 -> Instruction.Create(OpCodes.Ldind_U2)
-                                      | Ind_U4 -> Instruction.Create(OpCodes.Ldind_U4)
-                                      | Ind_U8 -> Instruction.Create(OpCodes.Ldind_I8)
-                                      | Ind_R4 -> Instruction.Create(OpCodes.Ldind_R4)
-                                      | Ind_R8 -> Instruction.Create(OpCodes.Ldind_R8)
-                                      | Ind_Ref -> Instruction.Create(OpCodes.Ldind_Ref)
-                    | Ldobj t      -> Instruction.Create(OpCodes.Ldobj, t)
-                    | Stsfld f     -> Instruction.Create(OpCodes.Stsfld, f)
-                    | Starg i      -> Instruction.Create(OpCodes.Starg, i)
-                    | Stloc i      -> Instruction.Create(OpCodes.Stloc, i)
-                    | Stfld f      -> Instruction.Create(OpCodes.Stfld, f)
-                    | Stind it     -> match it with
-                                      | Ind_I -> Instruction.Create(OpCodes.Stind_I)
-                                      | Ind_I1 -> Instruction.Create(OpCodes.Stind_I1)
-                                      | Ind_I2 -> Instruction.Create(OpCodes.Stind_I2)
-                                      | Ind_I4 -> Instruction.Create(OpCodes.Stind_I4)
-                                      | Ind_I8 -> Instruction.Create(OpCodes.Stind_I8)
-                                      | Ind_U -> Instruction.Create(OpCodes.Stind_I)
-                                      | Ind_U1 -> Instruction.Create(OpCodes.Stind_I1)
-                                      | Ind_U2 -> Instruction.Create(OpCodes.Stind_I2)
-                                      | Ind_U4 -> Instruction.Create(OpCodes.Stind_I4)
-                                      | Ind_U8 -> Instruction.Create(OpCodes.Stind_I8)
-                                      | Ind_R4 -> Instruction.Create(OpCodes.Stind_R4)
-                                      | Ind_R8 -> Instruction.Create(OpCodes.Stind_R8)
-                                      | Ind_Ref -> Instruction.Create(OpCodes.Stind_Ref)
-                    | Conv_I       -> Instruction.Create(OpCodes.Conv_I)
-                    | Cpblk        -> Instruction.Create(OpCodes.Cpblk)
-                    | Cpobj t      -> Instruction.Create(OpCodes.Cpobj, t)
-                    | Newarr e     -> Instruction.Create(OpCodes.Newarr, e)
-                    | Stelem ek    -> match ek with
-                                      | Elem e   -> Instruction.Create(OpCodes.Stelem_Any, e)
-                                      | Elem_I   -> Instruction.Create(OpCodes.Stelem_I)
-                                      | Elem_I1  -> Instruction.Create(OpCodes.Stelem_I1)
-                                      | Elem_I2  -> Instruction.Create(OpCodes.Stelem_I2)
-                                      | Elem_I4  -> Instruction.Create(OpCodes.Stelem_I4)
-                                      | Elem_I8  -> Instruction.Create(OpCodes.Stelem_I8)
-                                      | Elem_U   -> Instruction.Create(OpCodes.Stelem_I)
-                                      | Elem_U1  -> Instruction.Create(OpCodes.Stelem_I1)
-                                      | Elem_U2  -> Instruction.Create(OpCodes.Stelem_I2)
-                                      | Elem_U4  -> Instruction.Create(OpCodes.Stelem_I4)
-                                      | Elem_U8  -> Instruction.Create(OpCodes.Stelem_I8)
-                                      | Elem_R4  -> Instruction.Create(OpCodes.Stelem_R4)
-                                      | Elem_R8  -> Instruction.Create(OpCodes.Stelem_R8)
-                                      | Elem_Ref -> Instruction.Create(OpCodes.Stelem_Ref)
-                    | Unaligned i  -> Instruction.Create(OpCodes.Unaligned, i)
-                    | Box t        -> Instruction.Create(OpCodes.Box, t)
-                    | Dup          -> Instruction.Create(OpCodes.Dup)
-                    | Pop          -> Instruction.Create(OpCodes.Pop)
-                    | Ret          -> Instruction.Create(OpCodes.Ret)
-                    | Endfinally   -> Instruction.Create(OpCodes.Endfinally)
-                    | Leave i      -> Instruction.Create(OpCodes.Leave, i)
-                    | Unknown      -> Instruction.Create(OpCodes.Nop)
-                    | Ceq          -> Instruction.Create(OpCodes.Ceq)
-                    | Clt          -> Instruction.Create(OpCodes.Clt)
-                    | Cgt          -> Instruction.Create(OpCodes.Cgt)
-                    | Nop          -> Instruction.Create(OpCodes.Nop)
-                    | Ldstr s      -> Instruction.Create(OpCodes.Ldstr, s)
-                    | Brfalse i    -> Instruction.Create(OpCodes.Brfalse, i)
-                    | Br i         -> Instruction.Create(OpCodes.Br, i)
-                    | Beq i        -> Instruction.Create(OpCodes.Beq, i)
-                    | Blt i        -> Instruction.Create(OpCodes.Blt, i)
-                    | Bgt i        -> Instruction.Create(OpCodes.Bgt, i)
-                    | Ble i        -> Instruction.Create(OpCodes.Ble, i)
-                    | Bge i        -> Instruction.Create(OpCodes.Bge, i)
-                    | Resolved i   -> i
+    | AddInst      -> Instruction.Create(OpCodes.Add)
+    | MultiplyInst -> Instruction.Create(OpCodes.Mul)
+    | MinusInst    -> Instruction.Create(OpCodes.Sub)
+    | DivideInst   -> Instruction.Create(OpCodes.Div)
+    | AndInst      -> Instruction.Create(OpCodes.And)
+    | OrInst       -> Instruction.Create(OpCodes.Or)
+    | XorInst      -> Instruction.Create(OpCodes.Xor)
+    | Rem          -> Instruction.Create(OpCodes.Rem)
+    | ShlInst      -> Instruction.Create(OpCodes.Shl)
+    | ShrInst      -> Instruction.Create(OpCodes.Shr)
+    | NotInst      -> Instruction.Create(OpCodes.Not)
+    | NegInst      -> Instruction.Create(OpCodes.Neg)
+    | Call mi      -> Instruction.Create(OpCodes.Call, mi)
+    | Ldc_I4 n     -> Instruction.Create(OpCodes.Ldc_I4, n)
+    | Ldsfld f     -> Instruction.Create(OpCodes.Ldsfld, f)
+    | Ldsflda f    -> Instruction.Create(OpCodes.Ldsflda, f)
+    | Ldarg i      -> Instruction.Create(OpCodes.Ldarg, i)
+    | Ldarga i     -> Instruction.Create(OpCodes.Ldarga, i)
+    | Ldloc i      -> Instruction.Create(OpCodes.Ldloc, i)
+    | Ldloca i     -> Instruction.Create(OpCodes.Ldloca, i)
+    | Ldfld f      -> Instruction.Create(OpCodes.Ldfld, f)
+    | Ldflda f     -> Instruction.Create(OpCodes.Ldflda, f)
+    | Ldind it     -> match it with
+                      | Ind_I -> Instruction.Create(OpCodes.Ldind_I)
+                      | Ind_I1 -> Instruction.Create(OpCodes.Ldind_I1)
+                      | Ind_I2 -> Instruction.Create(OpCodes.Ldind_I2)
+                      | Ind_I4 -> Instruction.Create(OpCodes.Ldind_I4)
+                      | Ind_I8 -> Instruction.Create(OpCodes.Ldind_I8)
+                      | Ind_U -> Instruction.Create(OpCodes.Ldind_I)
+                      | Ind_U1 -> Instruction.Create(OpCodes.Ldind_U1)
+                      | Ind_U2 -> Instruction.Create(OpCodes.Ldind_U2)
+                      | Ind_U4 -> Instruction.Create(OpCodes.Ldind_U4)
+                      | Ind_U8 -> Instruction.Create(OpCodes.Ldind_I8)
+                      | Ind_R4 -> Instruction.Create(OpCodes.Ldind_R4)
+                      | Ind_R8 -> Instruction.Create(OpCodes.Ldind_R8)
+                      | Ind_Ref -> Instruction.Create(OpCodes.Ldind_Ref)
+    | Ldobj t      -> Instruction.Create(OpCodes.Ldobj, t)
+    | Stsfld f     -> Instruction.Create(OpCodes.Stsfld, f)
+    | Starg i      -> Instruction.Create(OpCodes.Starg, i)
+    | Stloc i      -> Instruction.Create(OpCodes.Stloc, i)
+    | Stfld f      -> Instruction.Create(OpCodes.Stfld, f)
+    | Stind it     -> match it with
+                      | Ind_I -> Instruction.Create(OpCodes.Stind_I)
+                      | Ind_I1 -> Instruction.Create(OpCodes.Stind_I1)
+                      | Ind_I2 -> Instruction.Create(OpCodes.Stind_I2)
+                      | Ind_I4 -> Instruction.Create(OpCodes.Stind_I4)
+                      | Ind_I8 -> Instruction.Create(OpCodes.Stind_I8)
+                      | Ind_U -> Instruction.Create(OpCodes.Stind_I)
+                      | Ind_U1 -> Instruction.Create(OpCodes.Stind_I1)
+                      | Ind_U2 -> Instruction.Create(OpCodes.Stind_I2)
+                      | Ind_U4 -> Instruction.Create(OpCodes.Stind_I4)
+                      | Ind_U8 -> Instruction.Create(OpCodes.Stind_I8)
+                      | Ind_R4 -> Instruction.Create(OpCodes.Stind_R4)
+                      | Ind_R8 -> Instruction.Create(OpCodes.Stind_R8)
+                      | Ind_Ref -> Instruction.Create(OpCodes.Stind_Ref)
+    | Conv_I       -> Instruction.Create(OpCodes.Conv_I)
+    | Cpblk        -> Instruction.Create(OpCodes.Cpblk)
+    | Cpobj t      -> Instruction.Create(OpCodes.Cpobj, t)
+    | Newarr e     -> Instruction.Create(OpCodes.Newarr, e)
+    | Stelem ek    -> match ek with
+                      | Elem e   -> Instruction.Create(OpCodes.Stelem_Any, e)
+                      | Elem_I   -> Instruction.Create(OpCodes.Stelem_I)
+                      | Elem_I1  -> Instruction.Create(OpCodes.Stelem_I1)
+                      | Elem_I2  -> Instruction.Create(OpCodes.Stelem_I2)
+                      | Elem_I4  -> Instruction.Create(OpCodes.Stelem_I4)
+                      | Elem_I8  -> Instruction.Create(OpCodes.Stelem_I8)
+                      | Elem_U   -> Instruction.Create(OpCodes.Stelem_I)
+                      | Elem_U1  -> Instruction.Create(OpCodes.Stelem_I1)
+                      | Elem_U2  -> Instruction.Create(OpCodes.Stelem_I2)
+                      | Elem_U4  -> Instruction.Create(OpCodes.Stelem_I4)
+                      | Elem_U8  -> Instruction.Create(OpCodes.Stelem_I8)
+                      | Elem_R4  -> Instruction.Create(OpCodes.Stelem_R4)
+                      | Elem_R8  -> Instruction.Create(OpCodes.Stelem_R8)
+                      | Elem_Ref -> Instruction.Create(OpCodes.Stelem_Ref)
+    | Unaligned i  -> Instruction.Create(OpCodes.Unaligned, i)
+    | Box t        -> Instruction.Create(OpCodes.Box, t)
+    | Dup          -> Instruction.Create(OpCodes.Dup)
+    | Pop          -> Instruction.Create(OpCodes.Pop)
+    | Ret          -> Instruction.Create(OpCodes.Ret)
+    | Endfinally   -> Instruction.Create(OpCodes.Endfinally)
+    | Leave i      -> Instruction.Create(OpCodes.Leave, i)
+    | Unknown      -> Instruction.Create(OpCodes.Nop)
+    | Ceq          -> Instruction.Create(OpCodes.Ceq)
+    | Clt          -> Instruction.Create(OpCodes.Clt)
+    | Cgt          -> Instruction.Create(OpCodes.Cgt)
+    | Nop          -> Instruction.Create(OpCodes.Nop)
+    | Ldstr s      -> Instruction.Create(OpCodes.Ldstr, s)
+    | Brfalse i    -> Instruction.Create(OpCodes.Brfalse, i)
+    | Br i         -> Instruction.Create(OpCodes.Br, i)
+    | Beq i        -> Instruction.Create(OpCodes.Beq, i)
+    | Blt i        -> Instruction.Create(OpCodes.Blt, i)
+    | Bgt i        -> Instruction.Create(OpCodes.Bgt, i)
+    | Ble i        -> Instruction.Create(OpCodes.Ble, i)
+    | Bge i        -> Instruction.Create(OpCodes.Bge, i)
+    | Resolved i   -> i
 
 let private instr = function
-                    | _, instr when !instr <> null -> !instr
-                    | IlBranch (bk, i), instr ->
-                        match bk with
-                        | IlBrfalse -> OpCodes.Brfalse
-                        | IlBrtrue  -> OpCodes.Brtrue
-                        | IlBr      -> OpCodes.Br
-                        | IlBeq     -> OpCodes.Beq
-                        | IlBgt     -> OpCodes.Bgt
-                        | IlBlt     -> OpCodes.Blt
-                        | IlBge     -> OpCodes.Bge
-                        | IlBle     -> OpCodes.Ble
-                        |> fun opc ->
-                            let res = Instruction.Create(opc, brtoinstr i)
-                            instr := res
-                            res
-                    | IlAtom i, instr ->
-                        let res = atomInstr !i
-                        i := Resolved res
-                        instr := res
-                        res
-                    | i, instr ->
-                        let res = i |> atomInstr
-                        instr := res
-                        res
+    | _, instr when !instr <> null -> !instr
+    | IlBranch (bk, i), instr ->
+        match bk with
+        | IlBrfalse -> OpCodes.Brfalse
+        | IlBrtrue  -> OpCodes.Brtrue
+        | IlBr      -> OpCodes.Br
+        | IlBeq     -> OpCodes.Beq
+        | IlBgt     -> OpCodes.Bgt
+        | IlBlt     -> OpCodes.Blt
+        | IlBge     -> OpCodes.Bge
+        | IlBle     -> OpCodes.Ble
+        |> fun opc ->
+            let res = Instruction.Create(opc, brtoinstr i)
+            instr := res
+            res
+    | IlAtom i, instr ->
+        let res = atomInstr !i
+        i := Resolved res
+        instr := res
+        res
+    | i, instr ->
+        let res = i |> atomInstr
+        instr := res
+        res
 
 let metaToIlList = function
-       | InstructionList l -> l
-       // may be extended for inline variables in the future
-       | _ -> failwith "IE not supported metaToIlList"
+    | InstructionList l -> l
+    // may be extended for inline variables in the future
+    | _ -> failwith "IE not supported metaToIlList"
 
 let private emit (ilg : Cil.ILProcessor) inst =
     match inst with
