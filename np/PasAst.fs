@@ -156,7 +156,7 @@ and ProcDeclaration =
 and Declarations =
     | Types of Type list
     | Variables of (string list * TypeIdentifier) list
-    | Consts of (string * TypeIdentifier option * ConstExpr) list
+    | Constants of (string * TypeIdentifier option * ConstExpr) list
     | Labels of string list
     | ProcAndFunc of ProcHeader * ProcDeclaration
 

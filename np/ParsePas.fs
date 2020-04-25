@@ -364,7 +364,7 @@ let constDeclarations =
                     ``= `` >>. constConstr .>> ``; ``
                 )
             )
-    |>> Consts
+    |>> Constants
 
 
 let labelDeclarations =

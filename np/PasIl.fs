@@ -152,12 +152,18 @@ with
         | Referenced mr -> mr.ReturnType
         | Intrinsic _ -> null
 
+type ConstEvalResult =
+    | CERString of string
+    | CERInt of int
+    | CERUnknown
+
 type Symbol =
     | VariableParamSym of (ParameterDefinition * TypeReference * bool)
     | VariableSym of VariableKind
     | MethodSym of MethodSym
     | EnumValueSym of int
     | WithSym of VariableKind * TypeReference
+    | ConstSym of ConstEvalResult
     | UnknownSym
 
 type ArrayDim = { low: int; high: int; size: int; elemSize: int; elemType: TypeReference; selfType: TypeReference ref }
@@ -649,6 +655,10 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
     | EnumValueSym(i) when ident.Tail = [] -> ChainLoad([ValueLoad(i)], ctx.details.moduleBuilder.TypeSystem.Int32)
     | MethodSym r ->  ChainLoad([CallableLoad r], r.ReturnType)
     | VariableParamSym ((i,t,r) as p) -> LoadParam p |> varLoadChain t ident.Tail
+    | ConstSym v ->
+        match v with
+        | CERInt i -> ChainLoad([ValueLoad(i)], ctx.details.moduleBuilder.TypeSystem.Int32)
+        | _ -> failwith "IE"
     | _ -> SymbolLoadError
 
 type LastTypePoint =
@@ -1009,11 +1019,6 @@ let compileBlock (methodBuilder: MethodDefinition) (typeBuilder : TypeDefinition
 
 let simplifiedDIdent = List.map <| function | PIName s -> s
 let inline packedToStr(p: bool) = if p then "1" else "0"
-
-type ConstEvalResult =
-    | CERString of string
-    | CERInt of int
-    | CERUnknown
 
 let evalExprOp2 (opS: Option<string->string->string>) (opI: Option<int->int->int>) (r1, r2) =
     match       r1,     opS,     opI with
@@ -1415,6 +1420,9 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         dt.Add(stdType "Char", charType)
         let strType = (ModuleDetails.NewSizedType ns mb vt 256 "") :> TypeReference
         dt.Add(TIdString, strType)
+        // name + handle
+        let fileType = (ModuleDetails.NewSizedType ns mb vt (256 + 8) "") :> TypeReference
+        dt.Add(TIdFile, fileType)
         // allow to use string as array
         let strDim = {
                         low = 1
@@ -1593,6 +1601,12 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                    v
                    |> List.collect (fun (l, t) -> l |> List.map (fun v -> (v, defTypes.[t])))
                    |> List.iter addVar
+               | Constants consts ->
+                   for (name, ctype, value) in consts do
+                    match value, ctype with
+                    | ConstExpr expr, None -> ctx.symbols.Head.Add(name, evalConstExpr expr |> ConstSym)
+                    | _ -> failwith "IE"
+                   ()
                | Labels labels -> (for l in labels do ctx.labels.Head.Add(l, ref (UserLabel l)))
                | ProcAndFunc((name, mRes, mPara), d) ->
                    let name = match name with
