@@ -44,7 +44,7 @@ type ElemKind =
     | Elem_Ref
 
 type BranchLabel =
-    | LazyLabel of (IlInstruction * Instruction ref)
+    | LazyLabel of InstructionRec
     | ForwardLabel
     | UserLabel of string
 
@@ -117,12 +117,14 @@ and IlInstruction =
     | Bge of Instruction
     | Resolved of Instruction
 
-let inline (~+) (i: IlInstruction): (IlInstruction * Instruction ref) = (i, ref null)
+and InstructionRec = IlInstruction * Instruction ref
+
+let inline (~+) (i: IlInstruction) = InstructionRec(i, ref null)
 
 type MetaInstruction =
     | DeclareLocal of VariableDefinition
-    | InstructionList of (IlInstruction * Instruction ref) list
-    | HandleFunction of (IlInstruction * Instruction ref) list * (IlInstruction * Instruction ref) list option * (IlInstruction * Instruction ref) list
+    | InstructionList of InstructionRec list
+    | HandleFunction of InstructionRec list * InstructionRec list option * InstructionRec list
 
 type VariableKind =
      | LocalVariable of VariableDefinition
@@ -346,18 +348,19 @@ let inline toMap kvps =
 
 let rec brtoinstr l =
     match !l with
-    | LazyLabel l -> match l with
-                     | _, instr when !instr <> null -> !instr
-                     | IlBranch (_, i), instr ->
-                         let res = brtoinstr i
-                         instr := res
-                         res
-                     | IlAtom _, _ | Unknown, _ -> failwithf "IE"
-                     | i, i2 ->
-                         let res = i |> atomInstr
-                         i2 := res
-                         res
-
+    | LazyLabel (il, instr) ->
+         let i = !instr
+         if i <> null then i else
+         match il with
+         | IlBranch (_, i) ->
+             let res = brtoinstr i
+             instr := res
+             res
+         | IlAtom _ | Unknown -> failwithf "IE"
+         | i ->
+             let res = i |> atomInstr
+             instr := res
+             res
     | _ -> failwithf "IE"
 
 and private atomInstr = function
@@ -500,7 +503,7 @@ let private emit (ilg : Cil.ILProcessor) inst =
         let finallyBlock, appendAndReplaceRet = match finallyBlock with
                                                 | Some block -> block, appendAndReplaceRetGen OpCodes.Leave
                                                 | None -> [], appendAndReplaceRetGen OpCodes.Br
-        let processList (list: (IlInstruction * Instruction ref) list) replaceFun =
+        let processList (list: InstructionRec list) replaceFun =
             let s = list.Head |> instr
             s |> replaceFun
             list.Tail |> List.iter (instr >> replaceFun)
@@ -672,7 +675,7 @@ let findFunction (ctx: Ctx) ident =
            | Referenced mr -> ms, Call(mr) |> Some
            | Intrinsic _ -> ms, None
 
-type ValueKind = ValueKind of (IlInstruction * Instruction ref) list * TypeReference
+type ValueKind = ValueKind of InstructionRec list * TypeReference
 
 let rec exprToIl (ctx: Ctx) exprEl expectedType =
     let rec exprToMetaExpr el et =
@@ -1338,7 +1341,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         Ctx.resolveSysLabels (List.tryHead instructions) sysLabels
         (instructions |> InstructionList, newSysLabels)
 
-    and stmtListToIlList (ctx: Ctx) sl: ((IlInstruction * Instruction ref) list * BranchLabel ref list) =
+    and stmtListToIlList (ctx: Ctx) sl: (InstructionRec list * BranchLabel ref list) =
         let lastSysLabels = ref []
         let instructions = [
               for s in sl do
