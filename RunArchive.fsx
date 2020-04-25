@@ -2,6 +2,48 @@
 open np.BasicParsers
 open FParsec
 
+//         """
+// type
+//   PChar = ^Char;
+//   TStream = record
+//     Data: PChar;
+//     Index: Integer;
+//   end;
+// begin
+// end.
+
+// """
+
+
+        // """program wow;
+
+        // function foo: string;
+        // begin
+        //   Result := 'Hello :D';
+        //   exit;
+        //   Result := ' in hell :P';
+        // end;
+
+        // procedure LoopTest;
+        // var
+        //   i: integer;
+        // begin
+        //   for i := 0 to 10 do
+        //     if i > 5 then begin
+        //       WriteLn('? :D');
+        //       break;
+        //     end else
+        //       WriteLn('i = ', i);
+        //   i := 0;
+        // end;
+
+        // begin
+        //   LoopTest;
+        //   WriteLn(foo);
+        // end.
+        // """
+
+
         // """program wow;
         // var i: integer;
         //     s: string;

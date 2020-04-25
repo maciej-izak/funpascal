@@ -503,18 +503,20 @@ let private emit (ilg : Cil.ILProcessor) inst =
         let finallyBlock, appendAndReplaceRet = match finallyBlock with
                                                 | Some block -> block, appendAndReplaceRetGen OpCodes.Leave
                                                 | None -> [], appendAndReplaceRetGen OpCodes.Br
-        let processList (list: InstructionRec list) replaceFun =
-            let s = list.Head |> instr
-            s |> replaceFun
-            list.Tail |> List.iter (instr >> replaceFun)
-            s
         let beginOfEnd = endOfAll.Head |> instr
+        let processList replaceFun = function
+            | head::tail ->
+                let s = head |> instr
+                s |> replaceFun
+                tail |> List.iter (instr >> replaceFun)
+                s
+            | [] -> beginOfEnd
         let replaceRet = appendAndReplaceRet beginOfEnd
-        let start = processList instructionsBlock replaceRet
+        let start = processList replaceRet instructionsBlock
         if List.isEmpty finallyBlock = false then
             if ilg.Body.Instructions.Last().OpCode <> OpCodes.Leave then
                 ilg.Append(Instruction.Create(OpCodes.Leave, beginOfEnd))
-            let startFinally = processList finallyBlock replaceRet
+            let startFinally = processList replaceRet finallyBlock
             ExceptionHandler(ExceptionHandlerType.Finally,
                                            TryStart     = start,
                                            TryEnd       = startFinally,
@@ -1472,13 +1474,14 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let rec sizeOf (tr: TypeReference) (td: TypeDefinition) =
             let sizeOfTD (td: TypeDefinition) = td.Fields |> Seq.sumBy (fun f -> sizeOf f.FieldType null)
             match tr.MetadataType with
-            | MetadataType.SByte | MetadataType.Byte   -> 1
+            | MetadataType.SByte | MetadataType.Byte | MetadataType.Boolean  -> 1
             | MetadataType.Int16 | MetadataType.UInt16 -> 2
             | MetadataType.Int32 | MetadataType.UInt32 -> 4
             | MetadataType.Int64  -> 8
             | MetadataType.Single -> 4
             | MetadataType.Double -> 8
             | MetadataType.Void   -> 8 // TODO 4 or 8 -> target dependent
+            | MetadataType.Pointer-> 8 // TODO 4 or 8 -> target dependent
             | MetadataType.ValueType ->
                 match ctx.findTypeInfo tr with
                 | Some(ArrayRange _) -> (tr :?> TypeDefinition).ClassSize
