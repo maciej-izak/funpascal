@@ -43,12 +43,7 @@ type ElemKind =
     | Elem_R8
     | Elem_Ref
 
-type BranchLabel =
-    | LazyLabel of InstructionRec
-    | ForwardLabel
-    | UserLabel of string
-
-and IlBranch =
+type IlBranch =
     | IlBrfalse
     | IlBrtrue
     | IlBr
@@ -58,12 +53,21 @@ and IlBranch =
     | IlBle // <=
     | IlBge // >=
 
+type LdcKind =
+    | LdcI4 of int
+    | LdcR4 of single
+
+type BranchLabel =
+    | LazyLabel of InstructionRec
+    | ForwardLabel
+    | UserLabel of string
+
 and IlInstruction =
     | IlAtom of IlInstruction ref
     | IlBranch of IlBranch * BranchLabel ref
     | Unknown
     | Call of MethodReference
-    | Ldc_I4 of int
+    | Ldc of LdcKind
     | Ldsfld of FieldDefinition
     | Ldsflda of FieldDefinition
     | Ldarg of ParameterDefinition
@@ -383,7 +387,9 @@ and private atomInstr = function
     | NotInst      -> Instruction.Create(OpCodes.Not)
     | NegInst      -> Instruction.Create(OpCodes.Neg)
     | Call mi      -> Instruction.Create(OpCodes.Call, mi)
-    | Ldc_I4 n     -> Instruction.Create(OpCodes.Ldc_I4, n)
+    | Ldc k        -> match k with
+                      | LdcI4 v -> Instruction.Create(OpCodes.Ldc_I4, v)
+                      | LdcR4 v -> Instruction.Create(OpCodes.Ldc_R4, v)
     | Ldsfld f     -> Instruction.Create(OpCodes.Ldsfld, f)
     | Ldsflda f    -> Instruction.Create(OpCodes.Ldsflda, f)
     | Ldarg i      -> Instruction.Create(OpCodes.Ldarg, i)
@@ -689,6 +695,9 @@ let findFunction (ctx: Ctx) ident =
 
 type ValueKind = ValueKind of InstructionRec list * TypeReference
 
+let Ldc_I4 i = LdcI4 i |> Ldc
+let Ldc_R4 r = LdcR4 r |> Ldc
+
 let rec exprToIl (ctx: Ctx) exprEl expectedType =
     let rec exprToMetaExpr el et =
         let add2OpIl a b i =
@@ -800,15 +809,16 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                 yield! cparams
                        |> List.mapi (
                                        fun idx (i, t) ->
-                                           let putArrayElem elem =
+                                           let putArrayElem i elem =
                                                +Dup::+Ldc_I4 idx::i @
                                                [+elem ; +Stelem Elem_Ref]
 
                                            match t with
                                            | _ when t = ctx.details.sysTypes.string ->
                                                Call ctx.details.sysProc.PtrToStringAnsi
-                                               |> putArrayElem
-                                           | _ -> Box t |> putArrayElem
+                                               // TODO critical handle ptr to strings! bug found in .NET 32 bit
+                                               |> putArrayElem (match i with | [Ldsfld f, r] -> [Ldsflda f, r])
+                                           | _ -> Box t |> putArrayElem i
                                     )
                        |> List.concat
                 +Call ctx.details.sysProc.WriteLine
@@ -819,6 +829,7 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
 and valueToValueKind ctx v expectedType =
     match v with
     | VInteger i -> ValueKind([+Ldc_I4 i], ctx.details.moduleBuilder.TypeSystem.Int32)
+    | VFloat f -> ValueKind([+Ldc_R4 (single f)], ctx.details.moduleBuilder.TypeSystem.Single)
     | VIdent i -> findSymbolAndLoad ctx i |> ValueKind
     | VString s ->
         // TODO protect string as char interpretation when needed
@@ -907,7 +918,8 @@ and chainWriterFactory (ctx: Ctx) = function
             let size = match ctx.findTypeInfo dt with
                        | Some(TypeSymbols (_, size)) -> size
                        | Some(SimpleType size) -> size
-                       | _ -> failwith "IE"
+                       | Some(ArrayRange _) -> dt.ClassSize
+                       | fti -> failwithf "IE %A" fti
             [
                 +Ldc_I4 size
 //                if dt.PackingSize = 1s then
@@ -1111,7 +1123,7 @@ let (|IlNotEqual|_|) (items: IlInstruction[]) =
     | GreaterThanOrEqual(a, b) -> [|yield! add2OpIl a b Clt; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
                     *)
         match last3 with
-        | [|Ceq;Ldc_I4 _;Ceq|] -> Some(IlNotEqual)
+        | [|Ceq;Ldc(LdcI4 _);Ceq|] -> Some(IlNotEqual)
         | _ -> None
 
 type BuildScope =
@@ -1396,6 +1408,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         |> ctx.res.Add
         ctx.res
 
+    let ptrSize = 4
     let vt = mb.ImportReference(typeof<ValueType>)
     let ot = mb.ImportReference(typeof<obj>)
 
@@ -1403,10 +1416,10 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         typeIdToStr
 
     let createStdTypes ns (dt: Dictionary<TypeIdentifier, TypeReference>) (ti: Dictionary<TypeReference, TypeInfo>) =
+        dt.Add(stdType "Real", mb.TypeSystem.Single)
         dt.Add(stdType "Int64", mb.TypeSystem.Int64)
         dt.Add(stdType "UInt64", mb.TypeSystem.UInt64)
         dt.Add(stdType "Integer", mb.TypeSystem.Int32)
-        dt.Add(stdType "LongInt", mb.TypeSystem.Int32)
         dt.Add(stdType "LongWord", mb.TypeSystem.UInt32)
         dt.Add(stdType "SmallInt", mb.TypeSystem.Int16)
         dt.Add(stdType "Word", mb.TypeSystem.UInt16)
@@ -1421,7 +1434,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let strType = (ModuleDetails.NewSizedType ns mb vt 256 "") :> TypeReference
         dt.Add(TIdString, strType)
         // name + handle
-        let fileType = (ModuleDetails.NewSizedType ns mb vt (256 + 8) "") :> TypeReference
+        let fileType = (ModuleDetails.NewSizedType ns mb vt (256 + ptrSize) "") :> TypeReference
         dt.Add(TIdFile, fileType)
         // allow to use string as array
         let strDim = {
@@ -1457,8 +1470,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         WriteLine = writeLineMethod
                         PtrToStringAnsi = ptrToStringAnsi
                     }
-                    newSymbols.Add("GetMem", Referenced allocMem |> MethodSym)
-                    newSymbols.Add("FreeMem", Referenced freeMem |> MethodSym)
+                    //newSymbols.Add("GetMem", Referenced allocMem |> MethodSym)
+                    //newSymbols.Add("FreeMem", Referenced freeMem |> MethodSym)
                     newSymbols.Add("Inc", Intrinsic IncProc |> MethodSym)
                     newSymbols.Add("Dec", Intrinsic DecProc |> MethodSym)
                     newSymbols.Add("WriteLn", Intrinsic WriteLnProc |> MethodSym)
@@ -1488,8 +1501,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
             | MetadataType.Int64  -> 8
             | MetadataType.Single -> 4
             | MetadataType.Double -> 8
-            | MetadataType.Void   -> 8 // TODO 4 or 8 -> target dependent
-            | MetadataType.Pointer-> 8 // TODO 4 or 8 -> target dependent
+            | MetadataType.Void   -> ptrSize // TODO 4 or 8 -> target dependent
+            | MetadataType.Pointer-> ptrSize // TODO 4 or 8 -> target dependent
             | MetadataType.ValueType ->
                 match ctx.findTypeInfo tr with
                 | Some(ArrayRange _) -> (tr :?> TypeDefinition).ClassSize
@@ -1509,6 +1522,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                    (
                        for (name, decl) in types do
                            match decl with
+                           | TypeAlias (_, origin) ->
+                               defTypes.Add(stdType name, defTypes.[origin])
                            | TypePtr (count, typeId) ->
                                let mutable pt = PointerType(defTypes.[typeId])
                                for i = 2 to count do pt <- PointerType(pt)
@@ -1579,7 +1594,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                 typ.Name <- name
                                 defTypes.Add(stdType name, typ)
                                 //(doArrayDef dimensions tname (ref []) name).Name <- name
-                           | _ -> ()
+                           | _ -> failwith "IE"
                    )
                | Variables v ->
                    let addVar =
