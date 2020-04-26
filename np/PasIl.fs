@@ -86,6 +86,7 @@ and IlInstruction =
     | Conv_I
     | Cpblk
     | Cpobj of TypeReference
+    | Stobj of TypeReference
     | Newarr of TypeReference
     | Stelem of ElemKind
     | Unaligned of byte
@@ -434,6 +435,7 @@ and private atomInstr = function
     | Conv_I       -> Instruction.Create(OpCodes.Conv_I)
     | Cpblk        -> Instruction.Create(OpCodes.Cpblk)
     | Cpobj t      -> Instruction.Create(OpCodes.Cpobj, t)
+    | Stobj t      -> Instruction.Create(OpCodes.Stobj, t)
     | Newarr e     -> Instruction.Create(OpCodes.Newarr, e)
     | Stelem ek    -> match ek with
                       | Elem e   -> Instruction.Create(OpCodes.Stelem_Any, e)
@@ -921,10 +923,10 @@ and chainWriterFactory (ctx: Ctx) = function
                        | Some(ArrayRange _) -> dt.ClassSize
                        | fti -> failwithf "IE %A" fti
             [
-                +Ldc_I4 size
+//                +Ldc_I4 size
 //                if dt.PackingSize = 1s then
 //                    Unaligned(byte(dt.PackingSize))
-                +Cpblk
+                +Stobj dt
             ]
         else
             let resolveMetadataType = function
@@ -1153,12 +1155,13 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
              match findSymbol ctx ident with
              | ChainLoad(symbols,_) ->
                  let ltp = ref LTPNone
+                 let loadDest =
+                     let load = List.collect (chainLoadToIl ctx ltp (chainReaderFactory false false)) symbols
+                     match symbols with // needed to proper store values to ref parameters in methods
+                     | VariableLoad(LoadParam (i,_,true))::[] -> +Ldarg i::load
+                     | _ -> load
                  [
-                     yield! match symbols.Head with // for non value types we need extra value on stack (for stind.x)
-                            | VariableLoad(LoadParam (i,t,r)) when r && t.MetadataType <> MetadataType.ValueType ->
-                                [+Ldarg i]
-                            | _ -> []
-                     yield! List.collect (chainLoadToIl ctx ltp (chainReaderFactory false false)) symbols
+                     yield! loadDest
                      yield! (fst <| expr (!ltp).ToTypeRef)
                      yield! chainWriterFactory ctx !ltp
                  ]
