@@ -164,8 +164,15 @@ type ConstEvalResult =
     | CERInt of int
     | CERUnknown
 
+type ParamRefKind =
+    | RefConst
+    | RefVar
+    | RefUntypedVar
+    | RefUntypedConst
+    | RefNone
+
 type Symbol =
-    | VariableParamSym of (ParameterDefinition * TypeReference * bool)
+    | VariableParamSym of (ParameterDefinition * TypeReference * ParamRefKind)
     | VariableSym of VariableKind
     | MethodSym of MethodSym
     | EnumValueSym of int
@@ -176,7 +183,7 @@ type Symbol =
 type ArrayDim = { low: int; high: int; size: int; elemSize: int; elemType: TypeReference; selfType: TypeReference ref }
 
 type VariableLoadKind =
-    | LoadParam of (ParameterDefinition * TypeReference * bool)
+    | LoadParam of (ParameterDefinition * TypeReference * ParamRefKind)
     | LoadVar of VariableKind
 
 type SymbolLoad =
@@ -224,6 +231,8 @@ type SystemTypes = {
         char: TypeReference
         value: TypeReference
         pointer: TypeReference
+        constParam: TypeReference
+        varParam: TypeReference
         boolean: TypeReference
         net_obj: TypeReference
     }
@@ -673,8 +682,8 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
 
 type LastTypePoint =
     | LTPVar of VariableKind * TypeReference
-    | LTPParam of ParameterDefinition * TypeReference * bool
-    | LTPDeref of TypeReference
+    | LTPParam of ParameterDefinition * TypeReference * ParamRefKind
+    | LTPDeref of TypeReference * bool
     | LTPStruct of FieldDefinition
     | LTPNone
 with
@@ -682,7 +691,7 @@ with
         match self with
         | LTPVar(_,tr) -> tr
         | LTPParam(_,tr,_) -> tr
-        | LTPDeref tr -> tr
+        | LTPDeref(tr, _) -> tr
         | LTPStruct fd -> fd.FieldType
         | _ -> failwith "IE"
 
@@ -763,6 +772,8 @@ and callParamToIl ctx cp idx (mr: MethodReference option) =
     | ParamIdent id ->
         match param with
         | Some param when (param :? ByReferenceType) -> findSymbolAndGetPtr ctx id
+        | Some param when param = ctx.details.sysTypes.constParam -> findSymbolAndGetPtr ctx id
+        | Some param when param = ctx.details.sysTypes.varParam -> findSymbolAndGetPtr ctx id
         | _ -> findSymbolAndLoad ctx id
 
 and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
@@ -885,18 +896,19 @@ and chainReaderFactory asValue addr ltp =
                        | LocalVariable v -> valOrPtr +(Ldloc v) +(Ldloca v) vt
                        | GlobalVariable v -> valOrPtr +(Ldsfld v) +(Ldsflda v) vt
     | LTPParam(i,t,r) -> match r with // handle by ref params
-                         | false -> valOrPtr +(Ldarg i) +(Ldarga i) t
-                         | true ->
+                         | RefNone | RefConst -> valOrPtr +(Ldarg i) +(Ldarga i) t
+                         | RefVar ->
                              [
                                 +Ldarg i
                                 if asValue then
                                     +Ldobj t
-                                //if asValue then
-                                //    yield! chainReaderFactory asValue addr (LTPDeref t)
                              ]
+                         | RefUntypedVar | RefUntypedConst ->
+                             if asValue then failwith "IE"
+                             [+Ldarg i]
     | LTPStruct fld -> valOrPtr +(Ldfld fld) +(Ldflda fld) fld.FieldType
-    | LTPDeref dt ->
-        if dt.MetadataType = MetadataType.ValueType then []
+    | LTPDeref (dt, force) ->
+        if dt.MetadataType = MetadataType.ValueType || (addr && force = false) then []
         else
             let resolveMetadataType = function
                 | MetadataType.Pointer -> Ldind(Ind_I)
@@ -920,10 +932,11 @@ and chainWriterFactory (ctx: Ctx) = function
                       | LocalVariable v -> [+Stloc v]
                       | GlobalVariable v -> [+Stsfld v]
     | LTPParam(i, t, r) -> match r with // handle by ref params
-                           | false -> [+Starg i]
-                           | true -> chainWriterFactory ctx (LTPDeref t)
+                           | RefNone | RefConst -> [+Starg i]
+                           | RefVar -> chainWriterFactory ctx (LTPDeref(t, true))
+                           | RefUntypedConst | RefUntypedVar -> failwith "IE"
     | LTPStruct fld -> [+Stfld fld]
-    | LTPDeref dt ->
+    | LTPDeref (dt, _) ->
         if dt.MetadataType = MetadataType.ValueType then
             let dt = dt :?> TypeDefinition
             let size = match ctx.findTypeInfo dt with
@@ -957,7 +970,7 @@ and chainWriterFactory (ctx: Ctx) = function
 
 and derefLastTypePoint = function
     | LTPVar(_, t) -> derefType t
-    | LTPDeref t -> derefType t
+    | LTPDeref(t, _) -> derefType t
     | LTPStruct fd -> derefType fd.FieldType
     | _ -> failwith "cannot deref"
 
@@ -984,10 +997,10 @@ and chainLoadToIl ctx lastType factory symload =
         res
     | DerefLoad ->
         let dt = derefLastTypePoint !lastType
-        lastType := LTPDeref dt
+        lastType := LTPDeref(dt, true)
         res
     | ElemLoad (exprs, rt) ->
-        lastType := LTPDeref rt
+        lastType := LTPDeref(rt, false)
         [
             yield! res
             for e, d in exprs do
@@ -1141,6 +1154,10 @@ type BuildScope =
     | MainScope of (string * TypeDefinition)
     | LocalScope of Ctx
 
+type TypeName =
+    | StringName of string
+    | TypedName of TypeIdentifier
+
 type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let mb = moduleBuilder
     let writeLineMethod =
@@ -1167,7 +1184,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                  let loadDest =
                      let load = List.collect (chainLoadToIl ctx ltp (chainReaderFactory false false)) symbols
                      match symbols with // needed to proper store values to ref parameters in methods
-                     | VariableLoad(LoadParam (i,_,true))::[] -> +Ldarg i::load
+                     | VariableLoad(LoadParam (i,_,RefVar))::[] -> +Ldarg i::load
                      | _ -> load
                  [
                      yield! loadDest
@@ -1188,7 +1205,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                      | LTPVar(_,t) -> t
                                      | LTPParam(_,t,_) -> t
                                      | LTPStruct f -> f.FieldType
-                                     | LTPDeref dt when dt.MetadataType = MetadataType.ValueType -> dt
+                                     | LTPDeref(dt,_) when dt.MetadataType = MetadataType.ValueType -> dt
                                      | _ -> failwith "IE"
                             // TODO check type of vt for with ?
                             let vt = vt :?> TypeDefinition
@@ -1427,27 +1444,30 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let findType =
         typeIdToStr
 
-    let addType (dt: Dictionary<TypeIdentifier, TypeReference>) (symbols: Dictionary<string, Symbol>) name typ =
-        dt.Add(stdType name, typ)
-        symbols.Add(name, Cast typ |> MethodSym)
+    let addType (dt: Dictionary<TypeIdentifier, TypeReference>) (symbols: Dictionary<string, Symbol>) (name: TypeName) (typ: TypeReference) =
+        match name with
+        | StringName name ->
+            dt.Add(stdType name, typ)
+            symbols.Add(name, Cast typ |> MethodSym)
+        | TypedName tname -> dt.Add(tname, typ) // internal types like var s: ^^string
 
     let createStdTypes ns (dt: Dictionary<TypeIdentifier, TypeReference>) (ti: Dictionary<TypeReference, TypeInfo>) (symbols: Dictionary<string, Symbol>) =
         let addType = addType dt symbols
-        addType "Real" mb.TypeSystem.Single
-        addType "Int64" mb.TypeSystem.Int64
-        addType "UInt64" mb.TypeSystem.UInt64
-        addType "Integer" mb.TypeSystem.Int32
-        addType "LongWord" mb.TypeSystem.UInt32
-        addType "SmallInt" mb.TypeSystem.Int16
-        addType "Word" mb.TypeSystem.UInt16
-        addType "ShortInt" mb.TypeSystem.SByte
-        addType "Byte" mb.TypeSystem.Byte
+        addType (StringName "Real") mb.TypeSystem.Single
+        addType (StringName "Int64") mb.TypeSystem.Int64
+        addType (StringName "UInt64") mb.TypeSystem.UInt64
+        addType (StringName "Integer") mb.TypeSystem.Int32
+        addType (StringName "LongWord") mb.TypeSystem.UInt32
+        addType (StringName "SmallInt") mb.TypeSystem.Int16
+        addType (StringName "Word") mb.TypeSystem.UInt16
+        addType (StringName "ShortInt") mb.TypeSystem.SByte
+        addType (StringName "Byte") mb.TypeSystem.Byte
         let boolType = mb.TypeSystem.Boolean
-        addType "Boolean" boolType
+        addType (StringName "Boolean") boolType
         let ptrType = PointerType(mb.TypeSystem.Void)
-        addType "Pointer" ptrType
+        addType (StringName "Pointer") ptrType
         let charType = ModuleDetails.NewSizedType ns mb mb.TypeSystem.Byte 1 ""
-        addType "Char" charType
+        addType (StringName "Char") charType
         let strType = (ModuleDetails.NewSizedType ns mb vt 256 "") :> TypeReference
         dt.Add(TIdString, strType)
         // name + handle
@@ -1469,6 +1489,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
             char = charType
             value = vt
             pointer = ptrType
+            constParam = PointerType(mb.TypeSystem.Void)
+            varParam = PointerType(mb.TypeSystem.Void)
             boolean = boolType
             net_obj = ot
         }
@@ -1532,6 +1554,12 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
             | _ -> failwith "IE"
 
         let addType = addType defTypes newSymbols
+        let addTypePointer count typeId name =
+            let mutable pt = PointerType(defTypes.[typeId])
+            for i = 2 to count do pt <- PointerType(pt)
+            addType name (pt :> TypeReference)
+            pt :> TypeReference
+
         printfn "%A" block.decl
         block.decl
         |> List.iter 
@@ -1541,14 +1569,11 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                        for (name, decl) in types do
                            match decl with
                            | TypeAlias (_, origin) ->
-                               addType name defTypes.[origin]
-                           | TypePtr (count, typeId) ->
-                               let mutable pt = PointerType(defTypes.[typeId])
-                               for i = 2 to count do pt <- PointerType(pt)
-                               addType name pt
+                               addType (StringName name) defTypes.[origin]
+                           | TypePtr (count, typeId) -> addTypePointer count typeId (StringName name) |> ignore
                            | TypeEnum enumValues ->
                                enumValues |> List.iteri (fun i v -> newSymbols.Add (v, EnumValueSym(i)))
-                               addType name mb.TypeSystem.Int32
+                               addType (StringName name) mb.TypeSystem.Int32
                            | Record (packed, fields) -> 
                                 let td = TypeDefinition(ctx.details.ns, name, TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout)
                                 td.ClassSize <- 0
@@ -1561,7 +1586,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                     td.Fields.Add fd
                                     fieldsMap.Add(name, fd)
                                 mb.Types.Add(td)
-                                addType name td
+                                addType (StringName name) td
                                 ctx.typeInfo.Head.Add(td, TypeSymbols(fieldsMap, sizeOf td td))
                            | Array(ArrayDef(_, dimensions, tname)) ->
                                 let newSubType (dims, size) (typ, typSize) name =
@@ -1610,7 +1635,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                 // final array
                                 let _,_,typ = (doArrayDef dimensions tname ([], 1) name)
                                 typ.Name <- name
-                                addType name typ
+                                addType (StringName name) typ
                                 //(doArrayDef dimensions tname (ref []) name).Name <- name
                            | _ -> failwith "IE"
                    )
@@ -1632,7 +1657,16 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                                 ctx.details.tb.Fields.Add fd
                                                 addVar v vk
                    v
-                   |> List.collect (fun (l, t) -> l |> List.map (fun v -> (v, defTypes.[t])))
+                   |> List.collect
+                          (fun (l, t) ->
+                       let dt = match defTypes.TryGetValue t with
+                                | true, dt -> dt
+                                | false, _ -> // inline type?
+                                    match t with
+                                    | TIdPointer(count, typeId) -> addTypePointer count typeId (TypedName t)
+                                    | _ -> failwith "IE"
+
+                       l |> List.map (fun v -> v, dt))
                    |> List.iter addVar
                | Constants consts ->
                    for (name, ctype, value) in consts do
@@ -1657,11 +1691,15 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                    let ps = defaultArg mPara []
                             |> List.collect
                                (fun (k, (ps, t)) ->
-                                let t = defTypes.[t]
+                                let t = match t with Some t -> Some defTypes.[t] | _ -> None
                                 [for p in ps do
-                                    let (typ, byref) = match k with
-                                                       | Some(Var) -> ByReferenceType(t) :> TypeReference, true
-                                                       | _ -> t, false
+                                    let (typ, byref, t) = match k, t with
+                                                       | Some Const, Some t -> t, RefConst, t
+                                                       | Some Var, Some t -> ByReferenceType(t) :> TypeReference, RefVar, t
+                                                       | Some Const, None -> ctx.details.sysTypes.constParam, RefUntypedConst, ctx.details.sysTypes.constParam
+                                                       | Some Var, None -> ctx.details.sysTypes.varParam, RefUntypedVar, ctx.details.sysTypes.varParam
+                                                       | None, Some t -> t, RefNone, t
+                                                       | _ -> failwith "IE"
                                     let pd = ParameterDefinition(p, ParameterAttributes.None, typ)
                                     newMethodSymbols.Add(p, VariableParamSym(pd, t, byref))
                                     yield pd]

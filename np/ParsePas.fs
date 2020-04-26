@@ -224,17 +224,11 @@ typeIdentifierRef :=
             typeSetDef |>> TIdSet
           ]
 
-let field =
-    identifier .>>. (``: `` >>. identifier)
-    
 let fieldListDecl p =
     p identifier ``, `` .>>. (``: `` >>. typeIdentifier)
 
 let fieldsList  =
-    fieldListDecl sepBy 
-
-let fieldsList1 =
-    fieldListDecl sepBy1
+    fieldListDecl sepBy
 
 let recordDef =
       ``?packed `` .>>.? (between ``record `` ``end `` (sepEndBy fieldsList ``; ``))
@@ -246,9 +240,15 @@ let typeAlias =
     ``?type `` .>>. typeIdentifier 
     |>> TypeAlias
 
+let paramListDecl p =
+    p identifier ``, `` .>>. opt(``: `` >>. typeIdentifier)
+
+let paramList1 =
+    paramListDecl sepBy1
+
 let formalParam  = 
         opt ((``const `` >>. preturn ParamKind.Const) <|> (``var `` >>. preturn Var))
-        .>>. fieldsList1
+        .>>. paramList1
         
 let formalParamsList =
     between ``( `` ``) `` (sepEndBy formalParam ``; ``)  

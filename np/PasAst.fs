@@ -111,7 +111,7 @@ and TypeIdentifier =
     | TIdIdent of DIdent
     | TIdArray of ArrayDef
 
-type ParamList = (ParamKind option * (string list * TypeIdentifier)) list option
+type ParamList = (ParamKind option * (string list * TypeIdentifier option)) list option
 type ProcHeader = string option * TypeIdentifier option * ParamList
 
 type TypeDecl =
