@@ -154,14 +154,12 @@ type Intrinsic =
 
 type MethodSym =
     | Referenced of MethodReference
-    | Cast of TypeReference
     | Intrinsic of Intrinsic
 with
     member self.ReturnType =
         match self with
         | Referenced mr -> mr.ReturnType
         | Intrinsic _ -> null
-        | Cast t -> t
 
 type ConstEvalResult =
     | CERString of string
@@ -180,6 +178,7 @@ type Symbol =
     | VariableParamSym of (ParameterDefinition * TypeReference * ParamRefKind)
     | VariableSym of VariableKind
     | MethodSym of MethodSym
+    | TypeSym of TypeReference
     | EnumValueSym of int
     | WithSym of VariableKind * TypeReference
     | ConstSym of ConstEvalResult
@@ -198,6 +197,7 @@ type SymbolLoad =
     | VariableLoad of VariableLoadKind
     | ValueLoad of int
     | CallableLoad of MethodSym
+    | TypeCastLoad of TypeReference
 
 type ChainLoad =
     | ChainLoad of (SymbolLoad list * TypeReference)
@@ -356,9 +356,6 @@ type Ctx = {
     member self.findTypeInfo typeRef =
         self.typeInfo |> List.tryPick (fun l -> match l.TryGetValue typeRef with | true, ti-> Some ti | _ -> None)
 
-    member self.findType name =
-        self.types |> List.tryPick (fun t -> match t.TryGetValue name with | true, t -> Some t | _ -> None)
-
     member self.findLabelUnsafe name =
         match self.findLabel name with
         | Some bl -> bl
@@ -368,11 +365,6 @@ type Ctx = {
         match self.findTypeInfo typeRef with
         | Some ti -> ti
         | _ -> failwithf "IE cannot find typ info %A" typeRef
-
-    member self.findTypeUnsafe name =
-        match self.findType name with
-        | Some t -> t
-        | _ -> failwithf "IE cannot find typ info %A" name
 
     static member resolveSysLabels head labels =
         match head with
@@ -698,6 +690,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
             let i = if b then 1 else 0
             ChainLoad([ValueLoad(i)], ctx.details.moduleBuilder.TypeSystem.Int32)
         | _ -> failwith "IE"
+    | TypeSym t -> ChainLoad([TypeCastLoad t], t)
     | _ -> SymbolLoadError
 
 type LastTypePoint =
@@ -715,17 +708,20 @@ with
         | LTPStruct fd -> fd.FieldType
         | _ -> failwith "IE"
 
+type FoundFunction =
+    | RealFunction of (MethodSym * IlInstruction option)
+    | TypeCast of TypeReference
+
 let findFunction (ctx: Ctx) ident =
         let callChain = findSymbol ctx ident
         // TODO more advanced calls like foo().x().z^ := 10
         match callChain with
-        | ChainLoad([CallableLoad cl], _) -> cl
+        | ChainLoad([CallableLoad cl], _) ->
+           match cl with
+           | Referenced mr -> RealFunction(cl, Call(mr) |> Some)
+           | Intrinsic _ -> RealFunction(cl, None)
+        | ChainLoad([TypeCastLoad t], _) -> TypeCast t
         | _ -> failwith "Not supported"
-        |> fun ms ->
-           match ms with
-           | Referenced mr -> ms, Call(mr) |> Some
-           | Cast _ -> ms, None
-           | Intrinsic _ -> ms, None
 
 type ValueKind = ValueKind of InstructionRec list * TypeReference
 
@@ -797,99 +793,109 @@ and callParamToIl ctx cp idx (mr: MethodReference option) =
         | _ -> findSymbolAndLoad ctx id
 
 and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
-    let mr, f = findFunction ctx ident
-    match mr, f with
-    | Referenced mr, Some f ->
-        ([
-            yield! cp
-            |> List.mapi (fun i p -> fst <| callParamToIl ctx p i (Some mr))
-            |> List.concat
-            yield +f
-            if popResult && mr.ReturnType.MetadataType <> MetadataType.Void then
-                yield +Pop
-         ], mr.ReturnType)
-    | Cast t, _ ->
+    match findFunction ctx ident with
+    | TypeCast t ->
         let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
         let callInstr, typ = callParamToIl ctx cp 0 None
         // TODO some real conversion ? Conv_I4 + explicit operators?
         ([
             yield! callInstr
         ], t)
-    | Intrinsic i, _ ->
-        let deltaModify (instr: IlInstruction) id =
+    | RealFunction rf ->
+        match rf with
+        | Referenced mr, Some f ->
             ([
-             yield! findSymbolAndGetPtr ctx id |> fst
-             +Dup
-             +Ldind Ind_I4
-             +Ldc_I4 1
-             +instr
-             +Stind Ind_I4
-            ], ctx.details.moduleBuilder.TypeSystem.Void)
-        match i, cp with
-        | IncProc, [ParamIdent(id)] -> deltaModify AddInst id
-        | DecProc, [ParamIdent(id)] -> deltaModify MinusInst id
-        | ContinueProc, [] -> match ctx.loop.TryPeek() with
-                              | true, (continueLabel, _) ->
-                                ([+IlBranch(IlBr, continueLabel)], ctx.details.moduleBuilder.TypeSystem.Void)
-                              | _ -> failwith "IE"
-        | BreakProc, [] -> match ctx.loop.TryPeek() with
-                           | true, (_, breakLabel) ->
-                            ([+IlBranch(IlBr, breakLabel)], ctx.details.moduleBuilder.TypeSystem.Void)
-                           | _ -> failwith "IE"
-        | ExitProc, [] -> // TODO handle Exit(result);
-            ([
-                +Ret
-             ], ctx.details.moduleBuilder.TypeSystem.Void)
-        | WriteLnProc, _ ->
-            let high = ref 0
-            let cparams,str = cp |> List.mapi (fun i p -> incr high; callParamToIl ctx p i None, sprintf "{%d}" i) |> List.unzip
-            let str = String.Concat(str)
-            ([
-                +Ldstr str
-                +Ldc_I4 !high
-                +Newarr ctx.details.sysTypes.net_obj
-                yield! cparams
-                       |> List.mapi (
-                                       fun idx (i, t) ->
-                                           let putArrayElem i elem =
-                                               +Dup::+Ldc_I4 idx::i @
-                                               [+elem ; +Stelem Elem_Ref]
+                yield! cp
+                |> List.mapi (fun i p -> fst <| callParamToIl ctx p i (Some mr))
+                |> List.concat
+                yield +f
+                if popResult && mr.ReturnType.MetadataType <> MetadataType.Void then
+                    yield +Pop
+             ], mr.ReturnType)
+        | Intrinsic i, _ ->
+            let deltaModify (instr: IlInstruction) id =
+                ([
+                 yield! findSymbolAndGetPtr ctx id |> fst
+                 +Dup
+                 +Ldind Ind_I4
+                 +Ldc_I4 1
+                 +instr
+                 +Stind Ind_I4
+                ], ctx.details.moduleBuilder.TypeSystem.Void)
+            match i, cp with
+            | IncProc, [ParamIdent(id)] -> deltaModify AddInst id
+            | DecProc, [ParamIdent(id)] -> deltaModify MinusInst id
+            | ContinueProc, [] -> match ctx.loop.TryPeek() with
+                                  | true, (continueLabel, _) ->
+                                    ([+IlBranch(IlBr, continueLabel)], ctx.details.moduleBuilder.TypeSystem.Void)
+                                  | _ -> failwith "IE"
+            | BreakProc, [] -> match ctx.loop.TryPeek() with
+                               | true, (_, breakLabel) ->
+                                ([+IlBranch(IlBr, breakLabel)], ctx.details.moduleBuilder.TypeSystem.Void)
+                               | _ -> failwith "IE"
+            | ExitProc, [] -> // TODO handle Exit(result);
+                ([
+                    +Ret
+                 ], ctx.details.moduleBuilder.TypeSystem.Void)
+            | WriteLnProc, _ ->
+                let high = ref 0
+                let cparams,str = cp |> List.mapi (fun i p -> incr high; callParamToIl ctx p i None, sprintf "{%d}" i) |> List.unzip
+                let str = String.Concat(str)
+                ([
+                    +Ldstr str
+                    +Ldc_I4 !high
+                    +Newarr ctx.details.sysTypes.net_obj
+                    yield! cparams
+                           |> List.mapi (
+                                           fun idx (i, t) ->
+                                               let putArrayElem i elem =
+                                                   +Dup::+Ldc_I4 idx::i @
+                                                   [+elem ; +Stelem Elem_Ref]
 
-                                           match t with
-                                           | _ when t = ctx.details.sysTypes.string ->
-                                               Call ctx.details.sysProc.PtrToStringAnsi
-                                               // TODO critical handle ptr to strings! bug found in .NET 32 bit
-                                               |> putArrayElem (match i with | [Ldsfld f, r] -> [Ldsflda f, r])
-                                           | _ -> Box t |> putArrayElem i
-                                    )
-                       |> List.concat
-                +Call ctx.details.sysProc.WriteLine
-             ], ctx.details.moduleBuilder.TypeSystem.Void)
-        | ChrFunc, _ ->
-            let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
-            let callInstr, typ = callParamToIl ctx cp 0 None
-            ([
-                yield! callInstr
-                if popResult then yield +Pop // TODO or not generate call ?
-             ], ctx.details.sysTypes.char)
-        | OrdFunc, _ ->
-            let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
-            let callInstr, typ = callParamToIl ctx cp 0 None
-            ([
-                yield! callInstr
-                if popResult then yield +Pop // TODO or not generate call ?
-             ], ctx.details.moduleBuilder.TypeSystem.Int32)
-        | SizeOfFunc, [ParamIdent(id)] ->
-            let t = TIdIdent(id) |> ctx.findTypeUnsafe
-            let size =
-               match ctx.findTypeInfoUnsafe t with
-               | TypeSymbols (_, size) -> size
-               | SimpleType size -> size
-               | ArrayRange _ -> (t :?> TypeDefinition).ClassSize
-            ([
-                +Ldc_I4 size
-                if popResult then +Pop // TODO or not generate call ?
-             ], ctx.details.moduleBuilder.TypeSystem.Int32)
+                                               match t with
+                                               | _ when t = ctx.details.sysTypes.string ->
+                                                   Call ctx.details.sysProc.PtrToStringAnsi
+                                                   // TODO critical handle ptr to strings! bug found in .NET 32 bit
+                                                   |> putArrayElem (match i with | [Ldsfld f, r] -> [Ldsflda f, r])
+                                               | _ -> Box t |> putArrayElem i
+                                        )
+                           |> List.concat
+                    +Call ctx.details.sysProc.WriteLine
+                 ], ctx.details.moduleBuilder.TypeSystem.Void)
+            | ChrFunc, _ ->
+                let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
+                let callInstr, typ = callParamToIl ctx cp 0 None
+                ([
+                    yield! callInstr
+                    if popResult then yield +Pop // TODO or not generate call ?
+                 ], ctx.details.sysTypes.char)
+            | OrdFunc, _ ->
+                let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
+                let callInstr, typ = callParamToIl ctx cp 0 None
+                ([
+                    yield! callInstr
+                    if popResult then yield +Pop // TODO or not generate call ?
+                 ], ctx.details.moduleBuilder.TypeSystem.Int32)
+            | SizeOfFunc, [ParamIdent(DIdent([PIName(id)]))] ->
+                let sym = match ctx.FindSym(id) with
+                          | Some sym -> sym
+                          | _ -> failwith "IE cannot find sym"
+
+                let t = match sym with
+                        | VariableParamSym (_,t,_) -> t
+                        | VariableSym vs -> vs.Type()
+                        | TypeSym t -> t
+                        | _ -> failwithf "IE cannot get size of %A" sym
+                let size =
+                   match ctx.findTypeInfoUnsafe t with
+                   | TypeSymbols (_, size) -> size
+                   | SimpleType size -> size
+                   | ArrayRange _ -> (t :?> TypeDefinition).ClassSize
+                ([
+                    +Ldc_I4 size
+                    if popResult then +Pop // TODO or not generate call ?
+                 ], ctx.details.moduleBuilder.TypeSystem.Int32)
+            | _ -> failwith "IE"
         | _ -> failwith "IE"
     | _ -> failwith "IE"
 
@@ -966,6 +972,8 @@ and chainReaderFactory asValue addr ltp =
                 | MetadataType.Int32   -> Ldind(Ind_I4)
                 | MetadataType.Int64   -> Ldind(Ind_I8)
                 | MetadataType.Byte    -> Ldind(Ind_U1)
+                | MetadataType.Boolean -> Ldind(Ind_U1)
+                | MetadataType.Single  -> Ldind(Ind_R4)
                 | MetadataType.UInt16  -> Ldind(Ind_U2)
                 | MetadataType.UInt32  -> Ldind(Ind_U4)
                 | MetadataType.UInt64  -> Ldind(Ind_U8)
@@ -1498,7 +1506,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         match name with
         | StringName name ->
             dt.Add(stdType name, typ)
-            symbols.Add(name, Cast typ |> MethodSym)
+            symbols.Add(name, TypeSym typ)
         | TypedName tname -> dt.Add(tname, typ) // internal types like var s: ^^string
 
     let createStdTypes ns (dt: Dictionary<TypeIdentifier, TypeReference>) (ti: Dictionary<TypeReference, TypeInfo>) (symbols: Dictionary<string, Symbol>) =
