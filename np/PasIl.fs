@@ -300,7 +300,7 @@ type Ctx = {
         types: Dictionary<TypeIdentifier, TypeReference> list
         symbols: Dictionary<string, Symbol> list
         typeInfo: Dictionary<TypeReference,TypeInfo> list
-        forward: Dictionary<string, MethodDefinition>
+        forward: Dictionary<string, MethodDefinition * Dictionary<string,Symbol> * VariableKind option>
         localVariables: int ref
         lang: LangCtx
         res: List<MetaInstruction>
@@ -1754,43 +1754,43 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                    let name = match name with
                               | Some n -> n
                               | _ -> failwith "name expected"
-                   let newMethodSymbols = Dictionary<_,_>(ctx.lang)
-                   let mRes, rVar = match mRes with
-                                    | Some r ->
-                                          let res = defTypes.[r]
-                                          let resultVar = VariableDefinition res |> LocalVariable
-                                          newMethodSymbols.Add("result", resultVar |> VariableSym)
-                                          res, Some resultVar
-                                    | _ -> moduleBuilder.TypeSystem.Void, None
-
-                   let ps = defaultArg mPara []
-                            |> List.collect
-                               (fun (k, (ps, t)) ->
-                                let t = match t with Some t -> Some defTypes.[t] | _ -> None
-                                [for p in ps do
-                                    let (typ, byref, t) = match k, t with
-                                                       | Some Const, Some t -> t, RefConst, t
-                                                       | Some Var, Some t -> ByReferenceType(t) :> TypeReference, RefVar, t
-                                                       | Some Const, None -> ctx.details.sysTypes.constParam, RefUntypedConst, ctx.details.sysTypes.constParam
-                                                       | Some Var, None -> ctx.details.sysTypes.varParam, RefUntypedVar, ctx.details.sysTypes.varParam
-                                                       | None, Some t -> t, RefNone, t
-                                                       | _ -> failwith "IE"
-                                    let pd = ParameterDefinition(p, ParameterAttributes.None, typ)
-                                    newMethodSymbols.Add(p, VariableParamSym(pd, t, byref))
-                                    yield pd]
-                               )
-                   let methodBuilder =
+                   let methodBuilder, newMethodSymbols, rVar =
                        match ctx.forward.TryGetValue name with
                        | true, md ->
                            // TODO check signature - must be identical
                            ctx.forward.Remove name |> ignore
                            md
                        | _ ->
+                           let newMethodSymbols = Dictionary<_,_>(ctx.lang)
+                           let mRes, rVar = match mRes with
+                                            | Some r ->
+                                                  let res = defTypes.[r]
+                                                  let resultVar = VariableDefinition res |> LocalVariable
+                                                  newMethodSymbols.Add("result", resultVar |> VariableSym)
+                                                  res, Some resultVar
+                                            | _ -> moduleBuilder.TypeSystem.Void, None
+
+                           let ps = defaultArg mPara []
+                                    |> List.collect
+                                       (fun (k, (ps, t)) ->
+                                        let t = match t with Some t -> Some defTypes.[t] | _ -> None
+                                        [for p in ps do
+                                            let (typ, byref, t) = match k, t with
+                                                                  | Some Const, Some t -> t, RefConst, t
+                                                                  | Some Var, Some t -> ByReferenceType(t) :> TypeReference, RefVar, t
+                                                                  | Some Const, None -> ctx.details.sysTypes.constParam, RefUntypedConst, ctx.details.sysTypes.constParam
+                                                                  | Some Var, None -> ctx.details.sysTypes.varParam, RefUntypedVar, ctx.details.sysTypes.varParam
+                                                                  | None, Some t -> t, RefNone, t
+                                                                  | _ -> failwith "IE"
+                                            let pd = ParameterDefinition(p, ParameterAttributes.None, typ)
+                                            newMethodSymbols.Add(p, VariableParamSym(pd, t, byref))
+                                            yield pd]
+                                       )
                            let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
                            let md = MethodDefinition(name, methodAttributes, mRes)
                            List.iter md.Parameters.Add ps
                            newSymbols.Add(name, Referenced (md :> MethodReference) |> MethodSym)
-                           md
+                           md, newMethodSymbols, rVar
                    match d with
                    | BodyDeclr (decls, stmts) ->
                        let scope = LocalScope(ctx.Inner newMethodSymbols)
@@ -1813,7 +1813,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                     PInvokeInfo(flags, procName, libRef)
                        ctx.details.tb.Methods.Add(methodBuilder)
                    | ForwardDeclr ->
-                       ctx.forward.Add(name, methodBuilder)
+                       ctx.forward.Add(name, (methodBuilder, newMethodSymbols, rVar))
                    | _ -> failwith "no body def"
                | _ -> ())
 
