@@ -123,7 +123,11 @@ type BranchLabel =
 and IlInstruction =
     | IlAtom of IlInstruction ref
     | IlBranch of IlBranch * BranchLabel ref
-    | IlResolved of Instruction
+    | IlResolved of (AtomInstruction * Instruction)
+
+let ilToAtom ilList =
+    ilList
+    |> List.map (function | IlResolved(a,_) -> a | _ -> failwith "IE")
 
 type MetaInstruction =
     | DeclareLocal of VariableDefinition
@@ -379,8 +383,8 @@ let rec brtoinstr l =
     | LazyLabel instr ->
          match instr with
          | IlBranch (_, i) -> brtoinstr i
-         | IlAtom r -> match !r with | IlResolved i -> i | _ -> failwithf "IE"
-         | IlResolved i -> i
+         | IlAtom r -> match !r with | IlResolved(_, i) -> i | _ -> failwithf "IE"
+         | IlResolved(_, i) -> i
     | _ -> failwithf "IE"
 
 and private atomInstr = function
@@ -495,10 +499,10 @@ let private instr = function
         | IlBge     -> OpCodes.Bge
         | IlBle     -> OpCodes.Ble
         |> fun opc -> Instruction.Create(opc, brtoinstr i)
-    | IlAtom r -> match !r with | IlResolved i -> i | _ -> failwithf "IE"
-    | IlResolved i -> i
+    | IlAtom r -> match !r with | IlResolved(_,i) -> i | _ -> failwithf "IE"
+    | IlResolved(_,i) -> i
 
-let (~+) (i: AtomInstruction) = IlResolved(i |> atomInstr)
+let (~+) (i: AtomInstruction) = IlResolved(i, i |> atomInstr)
 
 let metaToIlList = function
     | InstructionList l -> l
@@ -836,7 +840,7 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                                                | _ when t = ctx.details.sysTypes.string ->
                                                    Call ctx.details.sysProc.PtrToStringAnsi
                                                    // TODO critical handle ptr to strings! bug found in .NET 32 bit
-                                                   |> putArrayElem (match i with | [Ldsfld f, r] -> [Ldsflda f, r])
+                                                   |> putArrayElem (match ilToAtom i with | [Ldsfld f ; r] -> [+Ldsflda f ; +r] | _ -> i)
                                                | _ -> Box t |> putArrayElem i
                                         )
                            |> List.concat
@@ -1160,7 +1164,7 @@ let rec typeIdToStr = function
     | TIdIdent(DIdent di) -> simplifiedDIdent di |> String.concat "$" |> (+) "$i"
     | TIdArray(ArrayDef(p, d, t)) -> "$a" + packedToStr(p) + (dimenstionsToStr d |> String.concat ",") + "$" + typeIdToStr t
 
-let (|IlNotEqual|_|) (items: IlInstruction[]) =
+let (|IlNotEqual|_|) (items: IlInstruction list) =
     if items.Length < 3 then
         None
     else
@@ -1172,8 +1176,8 @@ let (|IlNotEqual|_|) (items: IlInstruction[]) =
     | LessThanOrEqual(a, b) -> [|yield! add2OpIl a b Cgt ; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
     | GreaterThanOrEqual(a, b) -> [|yield! add2OpIl a b Clt; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
                     *)
-        match last3 with
-        | [|Ceq;Ldc(LdcI4 _);Ceq|] -> Some(IlNotEqual)
+        match ilToAtom last3 with
+        | [Ceq;Ldc(LdcI4 _);Ceq] -> Some(IlNotEqual)
         | _ -> None
 
 type BuildScope =
