@@ -121,7 +121,6 @@ type BranchLabel =
     | UserLabel of string
 
 and IlInstruction =
-    | IlAtom of IlInstruction ref
     | IlBranch of IlBranch * BranchLabel ref
     | IlResolved of (AtomInstruction * Instruction)
 
@@ -383,7 +382,6 @@ let rec brtoinstr l =
     | LazyLabel instr ->
          match instr with
          | IlBranch (_, i) -> brtoinstr i
-         | IlAtom r -> match !r with | IlResolved(_, i) -> i | _ -> failwithf "IE"
          | IlResolved(_, i) -> i
     | _ -> failwithf "IE"
 
@@ -499,7 +497,6 @@ let private instr = function
         | IlBge     -> OpCodes.Bge
         | IlBle     -> OpCodes.Ble
         |> fun opc -> Instruction.Create(opc, brtoinstr i)
-    | IlAtom r -> match !r with | IlResolved(_,i) -> i | _ -> failwithf "IE"
     | IlResolved(_,i) -> i
 
 let (~+) (i: AtomInstruction) = IlResolved(i, i |> atomInstr)
@@ -1332,7 +1329,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                              yield! (fst <| exprToIl ce1 None) // TODO type handle
                                              yield IlBranch(IlBlt, nextCase)
                                              // higher range
-                                             yield IlAtom(ref(+Ldloc var))
+                                             yield +Ldloc var
                                              yield! (fst <| exprToIl ce2 None) //TODO type handle
                                              yield IlBranch(IlBgt, nextCase)
                                              yield IlBranch(IlBr, ref(LazyLabel (caseBranch.[0])))
