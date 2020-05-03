@@ -243,6 +243,22 @@ with
         | TkArray(d,_) -> d.Head.selfType := this
         | _ -> failwith "IE"
         this
+
+    member this.IndKind =
+        match this.raw.MetadataType with
+        | MetadataType.Pointer -> Ind_U
+        | MetadataType.SByte   -> Ind_I1
+        | MetadataType.Int16   -> Ind_I2
+        | MetadataType.Int32   -> Ind_I4
+        | MetadataType.Int64   -> Ind_I8
+        | MetadataType.Byte    -> Ind_U1
+        | MetadataType.Boolean -> Ind_U1
+        | MetadataType.Single  -> Ind_R4
+        | MetadataType.UInt16  -> Ind_U2
+        | MetadataType.UInt32  -> Ind_U4
+        | MetadataType.UInt64  -> Ind_U8
+        | _ -> failwith "IE"
+
 and ArrayDim = { low: int; high: int; size: int; elemSize: int; elemType: PasType; selfType: PasType ref }
 
 type MethodParam = {
@@ -821,21 +837,6 @@ let typeRefToConv (r: TypeReference) =
     | MetadataType.UInt64  -> +Conv Conv_U8
     | _ -> failwith "IE"
 
-let typeRefToInd (r: TypeReference) =
-    match r.MetadataType with
-    | MetadataType.Pointer -> Ind_U
-    | MetadataType.SByte   -> Ind_I1
-    | MetadataType.Int16   -> Ind_I2
-    | MetadataType.Int32   -> Ind_I4
-    | MetadataType.Int64   -> Ind_I8
-    | MetadataType.Byte    -> Ind_U1
-    | MetadataType.Boolean -> Ind_U1
-    | MetadataType.Single  -> Ind_R4
-    | MetadataType.UInt16  -> Ind_U2
-    | MetadataType.UInt32  -> Ind_U4
-    | MetadataType.UInt64  -> Ind_U8
-    | _ -> failwith "IE"
-
 let rec exprToIl (ctx: Ctx) exprEl expectedType =
     let rec exprToMetaExpr el et =
         let add2OpIl a b i =
@@ -929,14 +930,14 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
         | Intrinsic i, _ ->
             let deltaModify (instr: IlInstruction) id =
                 let inst, typ = findSymbolAndGetPtr ctx id
-                let typedIndirect = typeRefToInd typ.raw
+                let indKind = typ.IndKind
                 ([
                  yield! inst
                  +Dup
-                 +Ldind typedIndirect
+                 +Ldind indKind
                  +Ldc_I4 1
                  instr
-                 +Stind typedIndirect
+                 +Stind indKind
                 ], None)
             match i, cp with
             | IncProc, [ParamIdent(id)] -> deltaModify +AddInst id
@@ -1086,7 +1087,7 @@ and chainReaderFactory (ctx: Ctx) asValue addr ltp =
             else []
         elif addr && force = false then []
         else
-            dt.raw |> typeRefToInd |> Ldind |> (~+) |> List.singleton
+            dt.IndKind |> Ldind |> (~+) |> List.singleton
     | LTPNone -> []
 
 and chainWriterFactory (ctx: Ctx) = function
@@ -1102,7 +1103,7 @@ and chainWriterFactory (ctx: Ctx) = function
         if dt.raw.MetadataType = MetadataType.ValueType then
             [+Stobj dt.raw]
         else
-            dt.raw |> typeRefToInd |> Stind |> (~+) |> List.singleton
+            dt.IndKind |> Stind |> (~+) |> List.singleton
     | LTPNone -> []
 
 and derefLastTypePoint = function
