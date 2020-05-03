@@ -2,6 +2,57 @@
 open np.BasicParsers
 open FParsec
 
+// """
+// type
+//   PChar = ^Char;
+//   LongInt = Integer;
+
+
+//   TFileRec = record
+//     Name: string;
+//     Handle: LongInt;
+//   end;
+
+//   PFileRec = ^TFileRec;
+
+//   TStream = record
+//     Data: PChar;
+//     Index: Integer;
+//   end;
+
+//   PStream = ^TStream;
+
+
+// procedure ReadCh(var F: file; P: PStream; var ch: Char);
+// var
+//   Len: Integer;
+//   Dest: PChar;
+//   FileRecPtr: PFileRec;
+// begin
+//   FileRecPtr := @F;
+//   if P <> nil then                                      // String stream input
+//     begin
+//     Dest := PChar(Integer(P^.Data) + P^.Index);
+//     ch := Dest^;
+//   end;
+// end;
+
+// var
+//   f: file;
+//   s: TStream;
+//   c: array[0..1] of char;
+//   cr: char;
+//   b: byte;
+// begin
+//   c[0] := 'a';
+//   c[1] := 'b';
+//   s.Data := @c[0];
+//   s.Index := 1;
+//   ReadCh(f, @s, cr);
+//   WriteLN(cr);
+// end.
+// """
+
 //         """
 // function Length(const s: string): Integer;
 // begin

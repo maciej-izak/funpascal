@@ -806,6 +806,36 @@ let Ldc_U1 (i: byte) = [
 ]
 let Ldc_R4 r = LdcR4 r |> Ldc
 
+let typeRefToConv (r: TypeReference) =
+    match r.MetadataType with
+    | MetadataType.Pointer -> +Conv Conv_U
+    | MetadataType.SByte   -> +Conv Conv_I1
+    | MetadataType.Int16   -> +Conv Conv_I2
+    | MetadataType.Int32   -> +Conv Conv_I4
+    | MetadataType.Int64   -> +Conv Conv_I8
+    | MetadataType.Byte    -> +Conv Conv_U1
+    | MetadataType.Boolean -> +Conv Conv_U1
+    | MetadataType.Single  -> +Conv Conv_R4
+    | MetadataType.UInt16  -> +Conv Conv_U2
+    | MetadataType.UInt32  -> +Conv Conv_U4
+    | MetadataType.UInt64  -> +Conv Conv_U8
+    | _ -> failwith "IE"
+
+let typeRefToInd (r: TypeReference) =
+    match r.MetadataType with
+    | MetadataType.Pointer -> Ind_U
+    | MetadataType.SByte   -> Ind_I1
+    | MetadataType.Int16   -> Ind_I2
+    | MetadataType.Int32   -> Ind_I4
+    | MetadataType.Int64   -> Ind_I8
+    | MetadataType.Byte    -> Ind_U1
+    | MetadataType.Boolean -> Ind_U1
+    | MetadataType.Single  -> Ind_R4
+    | MetadataType.UInt16  -> Ind_U2
+    | MetadataType.UInt32  -> Ind_U4
+    | MetadataType.UInt64  -> Ind_U8
+    | _ -> failwith "IE"
+
 let rec exprToIl (ctx: Ctx) exprEl expectedType =
     let rec exprToMetaExpr el et =
         let add2OpIl a b i =
@@ -880,21 +910,6 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
     | TypeCast t ->
         let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
         let callInstr, typ = callParamToIl ctx cp 0 None
-        let typeRefToConv (r: TypeReference) =
-            match r.MetadataType with
-            | MetadataType.Pointer -> +Conv Conv_U
-            | MetadataType.SByte   -> +Conv Conv_I1
-            | MetadataType.Int16   -> +Conv Conv_I2
-            | MetadataType.Int32   -> +Conv Conv_I4
-            | MetadataType.Int64   -> +Conv Conv_I8
-            | MetadataType.Byte    -> +Conv Conv_U1
-            | MetadataType.Boolean -> +Conv Conv_U1
-            | MetadataType.Single  -> +Conv Conv_R4
-            | MetadataType.UInt16  -> +Conv Conv_U2
-            | MetadataType.UInt32  -> +Conv Conv_U4
-            | MetadataType.UInt64  -> +Conv Conv_U8
-            | _ -> failwith "IE"
-
         // TODO some real conversion ? Conv_I4 + explicit operators?
         ([
             yield! callInstr
@@ -1070,23 +1085,7 @@ and chainReaderFactory (ctx: Ctx) asValue addr ltp =
             else []
         elif addr && force = false then []
         else
-            let resolveMetadataType = function
-                | MetadataType.Pointer -> Ldind(Ind_I)
-                | MetadataType.SByte   -> Ldind(Ind_I1)
-                | MetadataType.Int16   -> Ldind(Ind_I2)
-                | MetadataType.Int32   -> Ldind(Ind_I4)
-                | MetadataType.Int64   -> Ldind(Ind_I8)
-                | MetadataType.Byte    -> Ldind(Ind_U1)
-                | MetadataType.Boolean -> Ldind(Ind_U1)
-                | MetadataType.Single  -> Ldind(Ind_R4)
-                | MetadataType.UInt16  -> Ldind(Ind_U2)
-                | MetadataType.UInt32  -> Ldind(Ind_U4)
-                | MetadataType.UInt64  -> Ldind(Ind_U8)
-                | mt -> failwithf "IE %A" mt
-            match dt.raw.MetadataType with
-            | MetadataType.Class -> resolveMetadataType (dt.raw.Resolve().BaseType.MetadataType)
-            | _ -> resolveMetadataType dt.raw.MetadataType
-            |> (~+) |> List.singleton
+            dt.raw |> typeRefToInd |> Ldind |> (~+) |> List.singleton
     | LTPNone -> []
 
 and chainWriterFactory (ctx: Ctx) = function
@@ -1102,23 +1101,7 @@ and chainWriterFactory (ctx: Ctx) = function
         if dt.raw.MetadataType = MetadataType.ValueType then
             [+Stobj dt.raw]
         else
-            let resolveMetadataType = function
-                | MetadataType.Pointer -> Stind(Ind_I)
-                | MetadataType.SByte -> Stind(Ind_I1)
-                | MetadataType.Int16 -> Stind(Ind_I2)
-                | MetadataType.Int32 -> Stind(Ind_I4)
-                | MetadataType.Int64 -> Stind(Ind_I8)
-                | MetadataType.Byte -> Stind(Ind_U1)
-                | MetadataType.Boolean -> Stind(Ind_U1)
-                | MetadataType.Single -> Stind(Ind_R4)
-                | MetadataType.UInt16 -> Stind(Ind_U2)
-                | MetadataType.UInt32 -> Stind(Ind_U4)
-                | MetadataType.UInt64 -> Stind(Ind_U8)
-                | _ -> failwith "IE"
-            match dt.raw.MetadataType with
-            | MetadataType.Class -> resolveMetadataType (dt.raw.Resolve().BaseType.MetadataType)
-            | _ -> resolveMetadataType dt.raw.MetadataType
-            |> (~+) |> List.singleton
+            dt.raw |> typeRefToInd |> Stind |> (~+) |> List.singleton
     | LTPNone -> []
 
 and derefLastTypePoint = function
