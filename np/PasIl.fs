@@ -1012,10 +1012,9 @@ and valueToValueKind ctx v (expectedType: PasType option) =
     | VString s ->
         // TODO protect string as char interpretation when needed
         match expectedType with
-        | Some t when (t = ctx.details.sysTypes.char) -> // handle char
-            if s.Length <> 1 then failwith "IE"
-            let cv = byte(s.Chars 0)
-            (Ldc_U1 cv, ctx.details.sysTypes.char)
+        | _ when s.Length = 1 -> // handle char
+            let cv = int(s.Chars 0)
+            ([+Ldc_I4 cv], ctx.details.sysTypes.char)
             |> ValueKind
         | _ -> // handle string
             if s.Length >= 256 then failwith "IE"
