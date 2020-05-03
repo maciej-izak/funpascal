@@ -928,13 +928,15 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
              ], mr.result)
         | Intrinsic i, _ ->
             let deltaModify (instr: IlInstruction) id =
+                let inst, typ = findSymbolAndGetPtr ctx id
+                let typedIndirect = typeRefToInd typ.raw
                 ([
-                 yield! findSymbolAndGetPtr ctx id |> fst
+                 yield! inst
                  +Dup
-                 +Ldind Ind_I4
+                 +Ldind typedIndirect
                  +Ldc_I4 1
                  instr
-                 +Stind Ind_I4
+                 +Stind typedIndirect
                 ], None)
             match i, cp with
             | IncProc, [ParamIdent(id)] -> deltaModify +AddInst id
@@ -965,7 +967,6 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                                                let putArrayElem i elems =
                                                    +Dup::+Ldc_I4 idx::i @
                                                    [yield! elems ; +Stelem Elem_Ref]
-
                                                match t with
                                                | _ when t = ctx.details.sysTypes.string ->
                                                    [+Call ctx.details.sysProc.PtrToStringAnsi]
