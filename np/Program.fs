@@ -14,11 +14,15 @@ let main argv =
 var
   c: char;
 begin
-  while c < 'a' do
-  begin
+  repeat
+    if c < 'A' then begin
+      Inc(c);
+      Continue;
+    end;
     WriteLn(Ord(c), ' = ', c);
+    if c = 'Z' then Break;
     Inc(c);
-  end;
+  until c = 'a';
 end.
       """
     |> printfn "%A"

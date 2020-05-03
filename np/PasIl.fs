@@ -1460,9 +1460,14 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                      , [yield! labels ; yield lastEndOfStm])
                 | WhileStm (expr, stmt) ->
                     let condition = fst <| exprToIl expr (Some ctx.details.sysTypes.boolean)
-                    let conditionLabel = ref (LazyLabel(condition.Head))
+                    let conditionLabel = ref (LazyLabel condition.Head)
+                    // push loop context
+                    let breakLabel = ref ForwardLabel
+                    let continueLabel = ref (LazyLabel condition.Head)
+                    ctx.loop.Push(continueLabel, breakLabel)
                     let (whileBranch, whileLabels) = stmtToIlList stmt
                     Ctx.resolveSysLabels (List.tryHead condition) whileLabels
+                    ctx.loop.Pop() |> ignore
                     ([
                         yield IlBranch(IlBr,conditionLabel)
                         yield! whileBranch
@@ -1471,12 +1476,16 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                                 (match List.tryHead whileBranch with
                                                 | Some h -> h
                                                 | _ -> condition.Head)))
-                    ],[])
+                    ],[breakLabel])
                 | RepeatStm (stmt, expr) ->
                     let condition = fst <| exprToIl expr (Some ctx.details.sysTypes.boolean)
-                    // let conditionLabel = ref (LazyLabel(condition.[0]))
+                    // push loop context
+                    let breakLabel = ref ForwardLabel
+                    let continueLabel = ref (LazyLabel condition.Head)
+                    ctx.loop.Push(continueLabel, breakLabel)
                     let (repeatBranch, whileLabels) = stmtToIlList stmt
                     Ctx.resolveSysLabels (List.tryHead condition) whileLabels
+                    ctx.loop.Pop() |> ignore
                     ([
                         yield! repeatBranch
                         yield! condition
@@ -1484,7 +1493,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                                 (match List.tryHead repeatBranch with
                                                 | Some h -> h
                                                 | _ -> condition.[0])))
-                    ],[])
+                    ],[breakLabel])
                 | ForStm (ident, initExpr, delta, finiExpr, stmt) ->
                     let exprLabel = ref ForwardLabel
                     let var = getVar4ForLoop ident
