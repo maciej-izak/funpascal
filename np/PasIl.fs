@@ -27,6 +27,20 @@ type IndirectKind =
     | Ind_R8
     | Ind_Ref
 
+type ConvKind =
+    | Conv_I
+    | Conv_I1
+    | Conv_I2
+    | Conv_I4
+    | Conv_I8
+    | Conv_U
+    | Conv_U1
+    | Conv_U2
+    | Conv_U4
+    | Conv_U8
+    | Conv_R4
+    | Conv_R8
+
 type ElemKind =
     | Elem of TypeReference
     | Elem_I
@@ -54,8 +68,10 @@ type IlBranch =
     | IlBge // >=
 
 type LdcKind =
-    | LdcI4 of int
+    | LdcI4 of int32
+    | LdcI8 of int64
     | LdcR4 of single
+    | LdcR8 of double
 
 type AtomInstruction =
     | Unknown
@@ -77,7 +93,7 @@ type AtomInstruction =
     | Stloc of VariableDefinition
     | Stfld of FieldDefinition
     | Stind of IndirectKind
-    | Conv_I
+    | Conv of ConvKind
     | Cpblk
     | Cpobj of TypeReference
     | Stobj of TypeReference
@@ -153,15 +169,6 @@ type Intrinsic =
     | ChrFunc
     | SizeOfFunc
 
-type MethodSym =
-    | Referenced of MethodReference
-    | Intrinsic of Intrinsic
-with
-    member self.ReturnType =
-        match self with
-        | Referenced mr -> mr.ReturnType
-        | Intrinsic _ -> null
-
 type ConstEvalResult =
     | CERString of string
     | CERInt of int
@@ -175,44 +182,131 @@ type ParamRefKind =
     | RefUntypedConst
     | RefNone
 
+type TypeName =
+    | StringName of string
+    | TypedName of TypeIdentifier
+    | AnonName
+with
+    static member FromTypeId = function
+        | TIdIdent(DIdent([PIName(id)])) -> StringName id
+        | TIdIdent _ -> failwith "IE"
+        | ti -> TypedName ti
+
+
+let ptrSize = 4
+type AtomValue =
+    | SysType of TypeReference
+    | ProxyType of PasType
+with
+    member this.Raw =
+        match this with
+        | SysType r -> r
+        | ProxyType({kind=TkValue(_,p)}) -> p.Raw
+        | _ -> failwith "IE"
+
+and TypeKind =
+    | TkUnknown of int
+    | TkValue of int * AtomValue // TODO find REAL base type ?
+    | TkRecord of Dictionary<string,FieldDefinition*PasType> * int
+    | TkPointer of PasType
+    | TkArray of (ArrayDim list * PasType)
+    | TkEnumeration of PasType
+with
+    member this.Raw p =
+        match this with
+        | TkValue(_,v) -> v.Raw
+        | TkEnumeration pt -> pt.raw
+        | TkPointer _ -> p
+        | _ -> failwith "IE"
+
+and PasType = {
+      name: TypeName
+      kind: TypeKind
+      raw : TypeReference
+    }
+with
+    static member NewPtr(pt, ?name) =
+        let name = defaultArg name ""
+        {name=StringName name;raw=PointerType(pt.raw);kind=TkPointer(pt)}
+
+    member this.SizeOf =
+        match this.kind with
+        | TkValue (s, _) -> s
+        | TkRecord (_, s) -> s
+        | TkPointer _ -> ptrSize
+        | TkEnumeration t -> t.SizeOf
+        | TkArray _ -> (this.raw :?> TypeDefinition).ClassSize
+        | TkUnknown s -> s
+
+    member this.ResolveArraySelfType() =
+        match this.kind with
+        | TkArray(d,_) -> d.Head.selfType := this
+        | _ -> failwith "IE"
+        this
+and ArrayDim = { low: int; high: int; size: int; elemSize: int; elemType: PasType; selfType: PasType ref }
+
+type MethodParam = {
+    typ: PasType
+    ref: bool
+}
+
+type MethodInfo = {
+    paramList: MethodParam array
+    result: PasType option
+    raw: MethodReference
+}
+
+type MethodSym =
+    | Referenced of MethodInfo
+    | Intrinsic of Intrinsic
+with
+    member self.ReturnType =
+        match self with
+        | Referenced {result = result} -> result
+        | Intrinsic _ -> None
+
+type VariableParam = ParameterDefinition * PasType * ParamRefKind
+
 type Symbol =
-    | VariableParamSym of (ParameterDefinition * TypeReference * ParamRefKind)
-    | VariableSym of VariableKind
+    | VariableParamSym of VariableParam
+    | VariableSym of (VariableKind * PasType)
     | MethodSym of MethodSym
-    | TypeSym of TypeReference
+    | TypeSym of PasType
     | EnumValueSym of int
-    | WithSym of VariableKind * TypeReference
+    | WithSym of (VariableKind * PasType)
     | ConstSym of ConstEvalResult
     | UnknownSym
 
-type ArrayDim = { low: int; high: int; size: int; elemSize: int; elemType: TypeReference; selfType: TypeReference ref }
 
 type VariableLoadKind =
-    | LoadParam of (ParameterDefinition * TypeReference * ParamRefKind)
-    | LoadVar of VariableKind
+    | LoadParam of VariableParam
+    | LoadVar of (VariableKind * PasType)
 
 type SymbolLoad =
     | DerefLoad
-    | ElemLoad of (ExprEl * ArrayDim) list * TypeReference
-    | StructLoad of FieldDefinition list
+    | ElemLoad of (ExprEl * ArrayDim) list * PasType
+    | StructLoad of (FieldDefinition * PasType) list
     | VariableLoad of VariableLoadKind
     | ValueLoad of int
     | CallableLoad of MethodSym
-    | TypeCastLoad of TypeReference
+    | TypeCastLoad of PasType
 
 type ChainLoad =
-    | ChainLoad of (SymbolLoad list * TypeReference)
+    | ChainLoad of (SymbolLoad list * PasType option)
     | SymbolLoadError
 
 let chainToSLList = function
     | ChainLoad sl -> sl
     | SymbolLoadError -> failwith "IE"
 
-let caseSensitive = HashIdentity.Structural<string>
+let caseSensitive = HashIdentity.Structural<TypeName>
 let caseInsensitive =
     HashIdentity.FromFunctions
-        (fun (s: string) -> s.GetHashCode(StringComparison.InvariantCultureIgnoreCase))
-        (fun a b -> String.Equals(a, b, StringComparison.InvariantCultureIgnoreCase))
+        (function
+         | StringName s -> s.GetHashCode(StringComparison.InvariantCultureIgnoreCase)
+         | TypedName t -> t.GetHashCode()
+         | AnonName -> failwith "IE")
+        (fun a b -> String.Equals(string a, string b, StringComparison.InvariantCultureIgnoreCase))
 
 type SymbolsDict<'T>() =
     inherit Dictionary<string, 'T>()
@@ -223,30 +317,29 @@ type LangCtx() =
         with get() = ec = caseSensitive
         and set(cs) =  ec <- if cs then caseSensitive else caseInsensitive
 
-    interface IEqualityComparer<string> with
+    interface IEqualityComparer<TypeName> with
         member _.GetHashCode(x) = ec.GetHashCode(x)
         member _.Equals(x,y) = ec.Equals(x, y)
 
-type TypeInfo =
-    | SimpleType of int
-    | TypeSymbols of Dictionary<string,FieldDefinition> * int
-    | ArrayRange of ArrayDim list * TypeReference
-
 type SystemTypes = {
-        string: TypeReference
-        char: TypeReference
-        value: TypeReference
-        pointer: TypeReference
-        constParam: TypeReference
-        varParam: TypeReference
-        boolean: TypeReference
-        net_obj: TypeReference
+        int32: PasType
+        single: PasType
+        string: PasType
+        char: PasType
+        value: PasType
+        pointer: PasType
+        constParam: PasType
+        varParam: PasType
+        boolean: PasType
+        net_obj: PasType
+        net_void: PasType
     }
 
 type SystemProc = {
         GetMem: MethodReference
         FreeMem: MethodReference
         WriteLine: MethodReference
+        ConvertU1ToChar: MethodReference
         PtrToStringAnsi: MethodReference
     }
 
@@ -272,7 +365,7 @@ type ModuleDetails = {
             let attributes = TypeAttributes.SequentialLayout ||| TypeAttributes.AnsiClass ||| TypeAttributes.Sealed ||| TypeAttributes.Public
             let at = TypeDefinition(ns, name + string size, attributes)
             at.ClassSize <- size
-            at.PackingSize <- 0s;
+            at.PackingSize <- 1s;
             at.BaseType <- vt
             mb.Types.Add(at)
             at
@@ -281,7 +374,7 @@ type ModuleDetails = {
         match self.anonSizeTypes.TryGetValue size with
         | true, t -> t
         | _ ->
-            let at = ModuleDetails.NewSizedType self.ns self.moduleBuilder self.sysTypes.value size "anon"
+            let at = ModuleDetails.NewSizedType self.ns self.moduleBuilder self.sysTypes.value.raw size "anon"
             self.anonSizeTypes.Add(size, at)
             at
 
@@ -296,25 +389,21 @@ let stdIdent = PINameCreate >> List.singleton >> DIdent
 let stdType  = stdIdent >> TIdIdent
 
 type Ctx = {
-        variables: Dictionary<string,VariableKind> list
+        variables: List<VariableKind> list
         labels: Dictionary<string, BranchLabel ref> list
-        types: Dictionary<TypeIdentifier, TypeReference> list
-        symbols: Dictionary<string, Symbol> list
-        typeInfo: Dictionary<TypeReference,TypeInfo> list
-        forward: Dictionary<string, MethodDefinition * Dictionary<string,Symbol> * VariableKind option>
+        symbols: Dictionary<TypeName, Symbol> list
+        forward: Dictionary<string, MethodDefinition * Dictionary<TypeName,Symbol> * VariableKind option>
         localVariables: int ref
         lang: LangCtx
         res: List<MetaInstruction>
         details: ModuleDetails
         loop: Stack<BranchLabel ref * BranchLabel ref>
     } with
-    static member Create types symbols typeInfo (lang: LangCtx) details =
+    static member Create symbols (lang: LangCtx) details =
         {
-            variables = [Dictionary<_,_>(lang)]
-            labels = [Dictionary<_,_>(lang)]
-            types = [types]
+            variables = [List<VariableKind>()]
+            labels = [Dictionary<_,_>()]
             symbols = [symbols]
-            typeInfo = [typeInfo]
             forward = Dictionary<_, _>()
             localVariables = ref 0
             lang = lang
@@ -327,13 +416,21 @@ type Ctx = {
         { self with
             symbols = newSymbols::self.symbols
             localVariables = ref 0
-            variables = Dictionary<_,_>(self.lang)::self.variables
-            labels = Dictionary<_,_>(self.lang)::self.labels
+            variables = List<_>()::self.variables
+            labels = Dictionary<_,_>()::self.labels
             res = List<MetaInstruction>()
             loop = Stack<_>()}
 
     member self.FindSym sym =
         self.symbols |> List.tryPick (fun st -> match st.TryGetValue sym with | true, v -> Some v | _ -> None)
+
+    member self.FindType sym =
+        self.symbols |> List.tryPick (fun st -> match st.TryGetValue sym with | true, v -> Some v | _ -> None)
+        |> function
+           | Some(TypeSym ts) -> Some ts
+           | _ -> None
+
+    member self.FindTypeId = TypeName.FromTypeId >> self.FindType
 
     member self.EnsureVariable(?kind) =
         let ikey = !self.localVariables
@@ -344,28 +441,21 @@ type Ctx = {
 //                     | true, value ->
 //                         value
 //                     | _ ->
-        let varDef = defaultArg kind self.details.moduleBuilder.TypeSystem.Int32 |> VariableDefinition
+        let varType = defaultArg kind self.details.sysTypes.int32
+        let varDef = varType.raw |> VariableDefinition
         let varKind = varDef |> LocalVariable
         self.res.Add(DeclareLocal(varDef))
-        self.variables.Head.Add(key, varKind)
-        self.symbols.Head.Add(key, VariableSym(varKind))
+        self.variables.Head.Add(varKind)
+        self.symbols.Head.Add(StringName key, VariableSym(varKind, varType))
         (key, varDef)
 
     member self.findLabel name =
         self.labels |> List.tryPick (fun l -> match l.TryGetValue name with | true, bl-> Some bl | _ -> None)
 
-    member self.findTypeInfo typeRef =
-        self.typeInfo |> List.tryPick (fun l -> match l.TryGetValue typeRef with | true, ti-> Some ti | _ -> None)
-
     member self.findLabelUnsafe name =
         match self.findLabel name with
         | Some bl -> bl
         | _ -> failwithf "IE cannot find label %s" name
-
-    member self.findTypeInfoUnsafe typeRef =
-        match self.findTypeInfo typeRef with
-        | Some ti -> ti
-        | _ -> failwithf "IE cannot find typ info %A" typeRef
 
     static member resolveSysLabels head labels =
         match head with
@@ -401,7 +491,9 @@ and private atomInstr = function
     | Call mi      -> Instruction.Create(OpCodes.Call, mi)
     | Ldc k        -> match k with
                       | LdcI4 v -> Instruction.Create(OpCodes.Ldc_I4, v)
+                      | LdcI8 v -> Instruction.Create(OpCodes.Ldc_I8, v)
                       | LdcR4 v -> Instruction.Create(OpCodes.Ldc_R4, v)
+                      | LdcR8 v -> Instruction.Create(OpCodes.Ldc_R8, v)
     | Ldsfld f     -> Instruction.Create(OpCodes.Ldsfld, f)
     | Ldsflda f    -> Instruction.Create(OpCodes.Ldsflda, f)
     | Ldarg i      -> Instruction.Create(OpCodes.Ldarg, i)
@@ -444,7 +536,19 @@ and private atomInstr = function
                       | Ind_R4 -> Instruction.Create(OpCodes.Stind_R4)
                       | Ind_R8 -> Instruction.Create(OpCodes.Stind_R8)
                       | Ind_Ref -> Instruction.Create(OpCodes.Stind_Ref)
-    | Conv_I       -> Instruction.Create(OpCodes.Conv_I)
+    | Conv ck      -> match ck with
+                      | Conv_I  -> Instruction.Create(OpCodes.Conv_I)
+                      | Conv_I1 -> Instruction.Create(OpCodes.Conv_I1)
+                      | Conv_I2 -> Instruction.Create(OpCodes.Conv_I2)
+                      | Conv_I4 -> Instruction.Create(OpCodes.Conv_I4)
+                      | Conv_I8 -> Instruction.Create(OpCodes.Conv_I8)
+                      | Conv_U  -> Instruction.Create(OpCodes.Conv_U)
+                      | Conv_U1 -> Instruction.Create(OpCodes.Conv_U1)
+                      | Conv_U2 -> Instruction.Create(OpCodes.Conv_U2)
+                      | Conv_U4 -> Instruction.Create(OpCodes.Conv_U4)
+                      | Conv_U8 -> Instruction.Create(OpCodes.Conv_U8)
+                      | Conv_R4 -> Instruction.Create(OpCodes.Conv_R4)
+                      | Conv_R8 -> Instruction.Create(OpCodes.Conv_R8)
     | Cpblk        -> Instruction.Create(OpCodes.Cpblk)
     | Cpobj t      -> Instruction.Create(OpCodes.Cpobj, t)
     | Stobj t      -> Instruction.Create(OpCodes.Stobj, t)
@@ -596,47 +700,39 @@ public int[] values;
 
 *)
 
-// type may be pinned
-let absVariableType (vt: TypeReference) =
-    match vt with
-    | :? PinnedType as pt -> pt.ElementType
-    | _ -> vt
-
-let derefType (t: TypeReference) =
-    match t with
-    | :? PointerType as pt -> pt.ElementType
+let derefType (t: PasType) =
+    match t.kind with
+    | TkPointer t -> t
     | _ -> failwith "Cannot dereference non pointer type"
 
 let findSymbol (ctx: Ctx) (DIdent ident) =
-    let mainSym = ident.Head |> function | PIName n -> ctx.FindSym n
+    let mainSym = ident.Head |> function | PIName n -> ctx.FindSym(StringName n)
     
-    let rec findSym (ref: MemberReference) acc = function
+    let rec findSym ref acc = function
     | (Designator.Array a)::t -> acc, Designator.Array(a)::t // TODO ?
     | PIName(h)::t ->
         // TODO ? here is solved auto records dereference (x.y instead of x^.y) and dereference for array elements
-        let ref = match ref with | :? PointerType as pt -> pt.ElementType | _ -> ref :?> TypeReference
-        let symbols = match ctx.findTypeInfoUnsafe ref with | TypeSymbols (d,_) -> d | _ -> failwith "IE"
+        let ref = match ref.kind with | TkPointer r -> r | _ -> ref
+        let symbols = match ref.kind with | TkRecord(d,_) -> d | _ -> failwith "IE"
         let sym = symbols.[h]
-        findSym sym.FieldType (sym::acc) t
+        findSym (snd sym) (sym::acc) t
     | t -> acc, t
     
-    let rec resolveTail acc (vt: TypeReference)  = function
+    let rec resolveTail acc vt  = function
         | [] -> (List.rev acc, vt)
         | h::t ->
             match h with
             | Deref ->
                 // TODO check dereferencable
-                let tref = vt :?> TypeSpecification
-                resolveTail (DerefLoad::acc) tref.ElementType t
+                let tref = match vt.kind with | TkPointer t -> t | _ -> failwithf "IE cannot do deref of %A" vt.kind
+                resolveTail (DerefLoad::acc) tref t
             | Ident _ -> 
                 let sl, restOfTail = findSym vt [] (h::t)
-                let vt = (List.last sl).FieldType
-                resolveTail (StructLoad(sl)::acc) vt restOfTail
+                let vt = List.last sl
+                resolveTail (StructLoad(sl)::acc) (snd vt) restOfTail
             | Designator.Array exprs ->
-                let tref = vt :?> TypeDefinition
-                let dims, elemTyp = match ctx.findTypeInfo tref with
-                                    | Some(ArrayRange( dims , elemTyp )) -> dims, elemTyp
-                                    | _ -> failwith "IE"
+                let tref = match vt.kind with | TkArray a -> a | _ -> failwithf "IE array expected %A" vt.kind
+                let dims, elemTyp = tref
                 // TODO rework this slow comparison
                 if exprs.Length > dims.Length then failwith "IE"
                 // TODO assign sub array parts?
@@ -646,39 +742,36 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
                                |> fun dims -> ElemLoad (dims, elemTyp)
                 // TODO validation of dims ?
                 let subElemTyp = match List.tryHead tail with | Some h -> !h.selfType | _ -> elemTyp
-                let newAcc = match ctx.findTypeInfo subElemTyp with
-                             | Some(ArrayRange _) -> elemLoad::acc
-                             | _ -> elemLoad::acc
+                let newAcc = elemLoad::acc
                 resolveTail newAcc subElemTyp t
 
     let varLoadChain vt dlist vd =
-        let t = absVariableType vt
-        let (tail, finalType) = resolveTail [] t dlist
-        ChainLoad(VariableLoad(vd)::tail, finalType)
+        let (tail, finalType) = resolveTail [] vt dlist
+        ChainLoad(VariableLoad(vd)::tail, Some finalType)
 
     let mainSym = defaultArg mainSym UnknownSym
 
     match mainSym with
-    | VariableSym v -> LoadVar v |> varLoadChain (v.Type()) ident.Tail
-    | WithSym (v, td) -> LoadVar v |> varLoadChain td ident
-    | EnumValueSym(i) when ident.Tail = [] -> ChainLoad([ValueLoad(i)], ctx.details.moduleBuilder.TypeSystem.Int32)
-    | MethodSym r ->  ChainLoad([CallableLoad r], r.ReturnType)
+    | VariableSym (v, t as vt) -> LoadVar vt |> varLoadChain t ident.Tail
+    | WithSym (v, t as vt) -> LoadVar vt |> varLoadChain t ident
+    | EnumValueSym(i) when ident.Tail = [] -> ChainLoad([ValueLoad(i)], Some ctx.details.sysTypes.int32)
+    | MethodSym m ->  ChainLoad([CallableLoad m], m.ReturnType)
     | VariableParamSym ((i,t,r) as p) -> LoadParam p |> varLoadChain t ident.Tail
     | ConstSym v ->
         match v with
-        | CERInt i -> ChainLoad([ValueLoad(i)], ctx.details.moduleBuilder.TypeSystem.Int32)
+        | CERInt i -> ChainLoad([ValueLoad(i)], Some ctx.details.sysTypes.int32)
         | CERBool b ->
             let i = if b then 1 else 0
-            ChainLoad([ValueLoad(i)], ctx.details.moduleBuilder.TypeSystem.Int32)
+            ChainLoad([ValueLoad(i)], Some ctx.details.sysTypes.int32)
         | _ -> failwith "IE"
-    | TypeSym t -> ChainLoad([TypeCastLoad t], t)
+    | TypeSym t -> ChainLoad([TypeCastLoad t], Some t)
     | _ -> SymbolLoadError
 
 type LastTypePoint =
-    | LTPVar of VariableKind * TypeReference
-    | LTPParam of ParameterDefinition * TypeReference * ParamRefKind
-    | LTPDeref of TypeReference * bool
-    | LTPStruct of FieldDefinition
+    | LTPVar of VariableKind * PasType
+    | LTPParam of ParameterDefinition * PasType * ParamRefKind
+    | LTPDeref of PasType * bool
+    | LTPStruct of FieldDefinition * PasType
     | LTPNone
 with
     member self.ToTypeRef =
@@ -686,12 +779,12 @@ with
         | LTPVar(_,tr) -> tr
         | LTPParam(_,tr,_) -> tr
         | LTPDeref(tr, _) -> tr
-        | LTPStruct fd -> fd.FieldType
+        | LTPStruct(_, tr) -> tr
         | _ -> failwith "IE"
 
 type FoundFunction =
     | RealFunction of (MethodSym * IlInstruction option)
-    | TypeCast of TypeReference
+    | TypeCast of PasType
 
 let findFunction (ctx: Ctx) ident =
         let callChain = findSymbol ctx ident
@@ -699,14 +792,18 @@ let findFunction (ctx: Ctx) ident =
         match callChain with
         | ChainLoad([CallableLoad cl], _) ->
            match cl with
-           | Referenced mr -> RealFunction(cl, +Call(mr) |> Some)
+           | Referenced {raw=mr} -> RealFunction(cl, +Call(mr) |> Some)
            | Intrinsic _ -> RealFunction(cl, None)
         | ChainLoad([TypeCastLoad t], _) -> TypeCast t
         | _ -> failwith "Not supported"
 
-type ValueKind = ValueKind of IlInstruction list * TypeReference
+type ValueKind = ValueKind of IlInstruction list * PasType
 
 let Ldc_I4 i = LdcI4 i |> Ldc
+let Ldc_U1 (i: byte) = [
+    +Ldc (LdcI4 (int i))
+    +Conv Conv_U1
+]
 let Ldc_R4 r = LdcR4 r |> Ldc
 
 let rec exprToIl (ctx: Ctx) exprEl expectedType =
@@ -723,7 +820,7 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
                     ], at) |> ValueKind
         let inline add1OpIl a i =
             match exprToMetaExpr a et with
-            | ValueKind(a, at) -> ValueKind([ yield! a; yield +i], ctx.details.moduleBuilder.TypeSystem.Int32)
+            | ValueKind(a, at) -> ValueKind([ yield! a; yield +i], ctx.details.sysTypes.int32)
         match el with
         | Value v -> valueToValueKind ctx v et
         | Add(a, b) -> add2OpIl a b AddInst
@@ -742,15 +839,15 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
         | Equal(a, b) -> add2OpIl a b Ceq
         | NotEqual(a, b) ->
             match add2OpIl a b Ceq with
-            | ValueKind(o, ot) -> ([ yield! o; +Ldc_I4 0; +Ceq ], ctx.details.moduleBuilder.TypeSystem.Boolean) |> ValueKind
+            | ValueKind(o, ot) -> ([ yield! o; +Ldc_I4 0; +Ceq ], ctx.details.sysTypes.boolean) |> ValueKind
         | StrictlyLessThan(a, b) -> add2OpIl a b Clt
         | StrictlyGreaterThan(a, b) -> add2OpIl a b Cgt
         | LessThanOrEqual(a, b) ->
             match add2OpIl a b Cgt with
-            | ValueKind(o, ot) -> ([ yield! o; +Ldc_I4 0; +Ceq ], ctx.details.moduleBuilder.TypeSystem.Boolean) |> ValueKind
+            | ValueKind(o, ot) -> ([ yield! o; +Ldc_I4 0; +Ceq ], ctx.details.sysTypes.boolean) |> ValueKind
         | GreaterThanOrEqual(a, b) ->
             match add2OpIl a b Clt with
-            | ValueKind(o, ot) -> ([ yield! o; +Ldc_I4 0; +Ceq ], ctx.details.moduleBuilder.TypeSystem.Boolean) |> ValueKind
+            | ValueKind(o, ot) -> ([ yield! o; +Ldc_I4 0; +Ceq ], ctx.details.sysTypes.boolean) |> ValueKind
         | Addr(a) ->
             ([
                 match a with
@@ -762,13 +859,18 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
     match exprToMetaExpr exprEl expectedType with
     | ValueKind (a, at) -> a, at
 
-and callParamToIl ctx cp idx (mr: MethodReference option) =
-    let param = match mr with | Some mr -> Some mr.Parameters.[idx].ParameterType | _ -> None
+and callParamToIl ctx cp idx (mr: MethodInfo option) =
+    let param, byRef =
+        match mr with
+        | Some({paramList=pl}) ->
+            let p = pl.[idx]
+            Some p.typ, p.ref
+        | _ -> None, false
     match cp with
     | ParamExpr expr -> exprToIl ctx expr param
     | ParamIdent id ->
         match param with
-        | Some param when (param :? ByReferenceType) -> findSymbolAndGetPtr ctx id
+        | Some param when byRef -> findSymbolAndGetPtr ctx id
         | Some param when param = ctx.details.sysTypes.constParam -> findSymbolAndGetPtr ctx id
         | Some param when param = ctx.details.sysTypes.varParam -> findSymbolAndGetPtr ctx id
         | _ -> findSymbolAndLoad ctx id
@@ -778,10 +880,26 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
     | TypeCast t ->
         let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
         let callInstr, typ = callParamToIl ctx cp 0 None
+        let typeRefToConv (r: TypeReference) =
+            match r.MetadataType with
+            | MetadataType.Pointer -> +Conv Conv_U
+            | MetadataType.SByte   -> +Conv Conv_I1
+            | MetadataType.Int16   -> +Conv Conv_I2
+            | MetadataType.Int32   -> +Conv Conv_I4
+            | MetadataType.Int64   -> +Conv Conv_I8
+            | MetadataType.Byte    -> +Conv Conv_U1
+            | MetadataType.Boolean -> +Conv Conv_U1
+            | MetadataType.Single  -> +Conv Conv_R4
+            | MetadataType.UInt16  -> +Conv Conv_U2
+            | MetadataType.UInt32  -> +Conv Conv_U4
+            | MetadataType.UInt64  -> +Conv Conv_U8
+            | _ -> failwith "IE"
+
         // TODO some real conversion ? Conv_I4 + explicit operators?
         ([
             yield! callInstr
-        ], t)
+            typeRefToConv (t.kind.Raw ctx.details.sysTypes.pointer.raw)
+        ], Some t)
     | RealFunction rf ->
         match rf with
         | Referenced mr, Some f ->
@@ -790,9 +908,9 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                 |> List.mapi (fun i p -> fst <| callParamToIl ctx p i (Some mr))
                 |> List.concat
                 yield f
-                if popResult && mr.ReturnType.MetadataType <> MetadataType.Void then
+                if popResult && mr.result.IsSome then
                     yield +Pop
-             ], mr.ReturnType)
+             ], mr.result)
         | Intrinsic i, _ ->
             let deltaModify (instr: IlInstruction) id =
                 ([
@@ -802,22 +920,22 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                  +Ldc_I4 1
                  instr
                  +Stind Ind_I4
-                ], ctx.details.moduleBuilder.TypeSystem.Void)
+                ], None)
             match i, cp with
             | IncProc, [ParamIdent(id)] -> deltaModify +AddInst id
             | DecProc, [ParamIdent(id)] -> deltaModify +MinusInst id
             | ContinueProc, [] -> match ctx.loop.TryPeek() with
                                   | true, (continueLabel, _) ->
-                                    ([IlBranch(IlBr, continueLabel)], ctx.details.moduleBuilder.TypeSystem.Void)
+                                    ([IlBranch(IlBr, continueLabel)], None)
                                   | _ -> failwith "IE"
             | BreakProc, [] -> match ctx.loop.TryPeek() with
                                | true, (_, breakLabel) ->
-                                ([IlBranch(IlBr, breakLabel)], ctx.details.moduleBuilder.TypeSystem.Void)
+                                ([IlBranch(IlBr, breakLabel)], None)
                                | _ -> failwith "IE"
             | ExitProc, [] -> // TODO handle Exit(result);
                 ([
                     +Ret
-                 ], ctx.details.moduleBuilder.TypeSystem.Void)
+                 ], None)
             | WriteLnProc, _ ->
                 let high = ref 0
                 let cparams,str = cp |> List.mapi (fun i p -> incr high; callParamToIl ctx p i None, sprintf "{%d}" i) |> List.unzip
@@ -825,65 +943,71 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                 ([
                     +Ldstr str
                     +Ldc_I4 !high
-                    +Newarr ctx.details.sysTypes.net_obj
+                    +Newarr ctx.details.sysTypes.net_obj.raw
                     yield! cparams
                            |> List.mapi (
                                            fun idx (i, t) ->
-                                               let putArrayElem i elem =
+                                               let putArrayElem i elems =
                                                    +Dup::+Ldc_I4 idx::i @
-                                                   [+elem ; +Stelem Elem_Ref]
+                                                   [yield! elems ; +Stelem Elem_Ref]
 
                                                match t with
                                                | _ when t = ctx.details.sysTypes.string ->
-                                                   Call ctx.details.sysProc.PtrToStringAnsi
+                                                   [+Call ctx.details.sysProc.PtrToStringAnsi]
                                                    // TODO critical handle ptr to strings! bug found in .NET 32 bit
-                                                   |> putArrayElem (match ilToAtom i with | [Ldsfld f ; r] -> [+Ldsflda f ; +r] | _ -> i)
-                                               | _ -> Box t |> putArrayElem i
+                                                   |> putArrayElem (match ilToAtom i with | [Ldsfld f] -> [+Ldsflda f] | _ -> i)
+                                               | _ when t = ctx.details.sysTypes.char ->
+                                                   [
+                                                       +Conv Conv_U1
+                                                       +Call ctx.details.sysProc.ConvertU1ToChar
+                                                       +Box ctx.details.moduleBuilder.TypeSystem.Char
+                                                   ]
+                                                   |> putArrayElem i
+                                               | _ -> [+Box t.raw] |> putArrayElem i
                                         )
                            |> List.concat
                     +Call ctx.details.sysProc.WriteLine
-                 ], ctx.details.moduleBuilder.TypeSystem.Void)
+                 ], None)
             | ChrFunc, _ ->
                 let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
                 let callInstr, typ = callParamToIl ctx cp 0 None
                 ([
                     yield! callInstr
                     if popResult then yield +Pop // TODO or not generate call ?
-                 ], ctx.details.sysTypes.char)
+                 ], Some ctx.details.sysTypes.char)
             | OrdFunc, _ ->
                 let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
                 let callInstr, typ = callParamToIl ctx cp 0 None
                 ([
                     yield! callInstr
                     if popResult then yield +Pop // TODO or not generate call ?
-                 ], ctx.details.moduleBuilder.TypeSystem.Int32)
+                 ], Some ctx.details.sysTypes.int32)
             | SizeOfFunc, [ParamIdent(DIdent([PIName(id)]))] ->
-                let sym = match ctx.FindSym(id) with
+                let sym = match ctx.FindSym(StringName id) with
                           | Some sym -> sym
                           | _ -> failwith "IE cannot find sym"
 
                 let t = match sym with
                         | VariableParamSym (_,t,_) -> t
-                        | VariableSym vs -> vs.Type()
+                        | VariableSym(vs, t) -> t
                         | TypeSym t -> t
                         | _ -> failwithf "IE cannot get size of %A" sym
-                let size =
-                   match ctx.findTypeInfoUnsafe t with
-                   | TypeSymbols (_, size) -> size
-                   | SimpleType size -> size
-                   | ArrayRange _ -> (t :?> TypeDefinition).ClassSize
                 ([
-                    +Ldc_I4 size
+                    +Ldc_I4 t.SizeOf
                     if popResult then +Pop // TODO or not generate call ?
-                 ], ctx.details.moduleBuilder.TypeSystem.Int32)
+                 ], Some ctx.details.sysTypes.int32)
             | _ -> failwith "IE"
         | _ -> failwith "IE"
     | _ -> failwith "IE"
 
-and valueToValueKind ctx v (expectedType: TypeReference option) =
+and valueToValueKind ctx v (expectedType: PasType option) =
     match v with
-    | VInteger i -> ValueKind([+Ldc_I4 i], ctx.details.moduleBuilder.TypeSystem.Int32)
-    | VFloat f -> ValueKind([+Ldc_R4 (single f)], ctx.details.moduleBuilder.TypeSystem.Single)
+    | VInteger i ->
+        match expectedType with
+        | Some t when t.raw = ctx.details.moduleBuilder.TypeSystem.Single ->
+            ValueKind([+Ldc_I4 i; +Conv Conv_R4], ctx.details.sysTypes.single)
+        | _ -> ValueKind([+Ldc_I4 i], ctx.details.sysTypes.int32)
+    | VFloat f -> ValueKind([+Ldc_R4 (single f)], ctx.details.sysTypes.single)
     | VIdent i -> findSymbolAndLoad ctx i |> ValueKind
     | VString s ->
         // TODO protect string as char interpretation when needed
@@ -891,9 +1015,7 @@ and valueToValueKind ctx v (expectedType: TypeReference option) =
         | Some t when (t = ctx.details.sysTypes.char) -> // handle char
             if s.Length <> 1 then failwith "IE"
             let cv = byte(s.Chars 0)
-            ([
-                +Ldc_I4 (int cv)
-            ], ctx.details.sysTypes.char)
+            (Ldc_U1 cv, ctx.details.sysTypes.char)
             |> ValueKind
         | _ -> // handle string
             if s.Length >= 256 then failwith "IE"
@@ -918,31 +1040,34 @@ and valueToValueKind ctx v (expectedType: TypeReference option) =
 //            // Unaligned 1uy // ??? https://stackoverflow.com/questions/24122973/what-should-i-pin-when-working-on-arrays/24127524
 //            Cpblk
 //            Ldloc v
-    | VCallResult(ce) -> doCall ctx ce false |> ValueKind
+    | VCallResult(ce) ->
+        match doCall ctx ce false with
+        | ils, Some t -> ValueKind(ils, t)
+        | _ -> failwith "IE"
     | VNil -> ValueKind([+Ldnull], ctx.details.sysTypes.pointer)
     | _ -> failwith "IE"
 
-and chainReaderFactory asValue addr ltp =
+and chainReaderFactory (ctx: Ctx) asValue addr ltp =
     let valOrPtr v p (t: TypeReference) = (if asValue || (t :? PointerType && addr = false) then v else p) |> List.singleton
     match ltp with
     | LTPVar(v, vt) -> match v with
-                       | LocalVariable v -> valOrPtr +(Ldloc v) +(Ldloca v) vt
-                       | GlobalVariable v -> valOrPtr +(Ldsfld v) +(Ldsflda v) vt
+                       | LocalVariable v -> valOrPtr +(Ldloc v) +(Ldloca v) vt.raw
+                       | GlobalVariable v -> valOrPtr +(Ldsfld v) +(Ldsflda v) vt.raw
     | LTPParam(i,t,r) -> match r with // handle by ref params
-                         | RefNone | RefConst -> valOrPtr +(Ldarg i) +(Ldarga i) t
+                         | RefNone | RefConst -> valOrPtr +(Ldarg i) +(Ldarga i) t.raw
                          | RefVar ->
                              [
                                 +Ldarg i
                                 if asValue then
-                                    +Ldobj t
+                                    +Ldobj t.raw
                              ]
                          | RefUntypedVar | RefUntypedConst ->
                              if asValue then failwith "IE"
                              [+Ldarg i]
-    | LTPStruct fld -> valOrPtr +(Ldfld fld) +(Ldflda fld) fld.FieldType
+    | LTPStruct (fld, _) -> valOrPtr +(Ldfld fld) +(Ldflda fld) fld.FieldType
     | LTPDeref (dt, force) ->
-        if dt.MetadataType = MetadataType.ValueType then
-            if addr = false && force then [+Ldobj dt]
+        if dt.raw.MetadataType = MetadataType.ValueType then
+            if addr = false && force then [+Ldobj dt.raw]
             else []
         elif addr && force = false then []
         else
@@ -958,10 +1083,10 @@ and chainReaderFactory asValue addr ltp =
                 | MetadataType.UInt16  -> Ldind(Ind_U2)
                 | MetadataType.UInt32  -> Ldind(Ind_U4)
                 | MetadataType.UInt64  -> Ldind(Ind_U8)
-                | _ -> failwith "IE"
-            match dt.MetadataType with
-            | MetadataType.Class -> resolveMetadataType (dt.Resolve().BaseType.MetadataType)
-            | _ -> resolveMetadataType dt.MetadataType
+                | mt -> failwithf "IE %A" mt
+            match dt.raw.MetadataType with
+            | MetadataType.Class -> resolveMetadataType (dt.raw.Resolve().BaseType.MetadataType)
+            | _ -> resolveMetadataType dt.raw.MetadataType
             |> (~+) |> List.singleton
     | LTPNone -> []
 
@@ -973,10 +1098,10 @@ and chainWriterFactory (ctx: Ctx) = function
                            | RefNone | RefConst -> [+Starg i]
                            | RefVar -> chainWriterFactory ctx (LTPDeref(t, true))
                            | RefUntypedConst | RefUntypedVar -> failwith "IE"
-    | LTPStruct fld -> [+Stfld fld]
-    | LTPDeref (dt, _) ->
-        if dt.MetadataType = MetadataType.ValueType then
-            [+Stobj dt]
+    | LTPStruct(fld, _) -> [+Stfld fld]
+    | LTPDeref(dt, _) ->
+        if dt.raw.MetadataType = MetadataType.ValueType then
+            [+Stobj dt.raw]
         else
             let resolveMetadataType = function
                 | MetadataType.Pointer -> Stind(Ind_I)
@@ -991,16 +1116,16 @@ and chainWriterFactory (ctx: Ctx) = function
                 | MetadataType.UInt32 -> Stind(Ind_U4)
                 | MetadataType.UInt64 -> Stind(Ind_U8)
                 | _ -> failwith "IE"
-            match dt.MetadataType with
-            | MetadataType.Class -> resolveMetadataType (dt.Resolve().BaseType.MetadataType)
-            | _ -> resolveMetadataType dt.MetadataType
+            match dt.raw.MetadataType with
+            | MetadataType.Class -> resolveMetadataType (dt.raw.Resolve().BaseType.MetadataType)
+            | _ -> resolveMetadataType dt.raw.MetadataType
             |> (~+) |> List.singleton
     | LTPNone -> []
 
 and derefLastTypePoint = function
     | LTPVar(_, t) -> derefType t
     | LTPDeref(t, _) -> derefType t
-    | LTPStruct fd -> derefType fd.FieldType
+    | LTPStruct(_, t) -> derefType t
     | LTPParam(_,t,_) -> derefType t
     | _ -> failwith "cannot deref"
 
@@ -1009,9 +1134,9 @@ and findSymbolInternal value addr (ctx: Ctx) ident =
     let sl, t = findSymbol ctx ident
                 |> chainToSLList
     sl
-    |> List.collect (chainLoadToIl ctx lastPoint (chainReaderFactory false false))
-    |> fun l -> l @ (chainReaderFactory value addr !lastPoint)
-    ,t
+    |> List.collect (chainLoadToIl ctx lastPoint (chainReaderFactory ctx false false))
+    |> fun l -> l @ (chainReaderFactory ctx value addr !lastPoint)
+    ,match t with | Some t -> t | _ -> failwith "IE"
 
 and findSymbolAndLoad = findSymbolInternal true false
 
@@ -1022,7 +1147,7 @@ and chainLoadToIl ctx lastType factory symload =
     match symload with
     | VariableLoad vs ->
         lastType := match vs with
-                    | LoadVar vs -> LTPVar(vs, absVariableType (vs.Type()))
+                    | LoadVar vt -> LTPVar vt
                     | LoadParam p -> LTPParam p
         res
     | DerefLoad ->
@@ -1039,15 +1164,15 @@ and chainLoadToIl ctx lastType factory symload =
                 yield +AddInst
         ]
     | StructLoad fds ->
-        let instr, last, count = List.fold (fun (acc, _, c) f -> +Ldflda f::acc, f, c+1) ([],null,0) fds
+        let instr, last, count = List.fold (fun (acc, _, c) f -> +Ldflda (fst f)::acc, f, c+1) ([],Unchecked.defaultof<_>,0) fds
         lastType := LTPStruct last
         res @ (List.take (count-1) instr)
     | ValueLoad evs ->
         lastType := LTPNone
         res @ [+Ldc_I4 evs]
     | CallableLoad (Referenced mr) ->
-        if mr.ReturnType.MetadataType = MetadataType.Void then failwith "IE"
-        [+Call mr]
+        if mr.result.IsNone then failwith "IE"
+        [+Call mr.raw]
 
 //let splitStruct = function
 //    | StructLoad fdl ->
@@ -1181,16 +1306,14 @@ type BuildScope =
     | MainScope of (string * TypeDefinition)
     | LocalScope of Ctx
 
-type TypeName =
-    | StringName of string
-    | TypedName of TypeIdentifier
-
 type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let mb = moduleBuilder
     let writeLineMethod =
         typeof<System.Console>.GetMethod("WriteLine", [| typeof<string> ; typeof<obj array> |]) |> moduleBuilder.ImportReference
     let ptrToStringAnsi =
         typeof<System.Runtime.InteropServices.Marshal>.GetMethod("PtrToStringAnsi", [| typeof<nativeint> |]) |> moduleBuilder.ImportReference
+    let convertU1ToChar =
+        typeof<System.Convert>.GetMethod("ToChar", [| typeof<byte> |]) |> moduleBuilder.ImportReference
     let allocMem =
         typeof<System.Runtime.InteropServices.Marshal>.GetMethod("AllocCoTaskMem")  |> moduleBuilder.ImportReference
     let freeMem =
@@ -1213,7 +1336,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let exprToIl = exprToIl ctx
         let getVar4ForLoop = findSymbol ctx >>
                              function
-                             | ChainLoad([VariableLoad(LoadVar(LocalVariable vs))], _) -> vs
+                             | ChainLoad([VariableLoad(LoadVar(LocalVariable vs, _))], _) -> vs
                              | _ -> failwith "IE"
         let getVar4Assign (ident: DIdent) expr =
              // add param for findSymbol to set purpose (like this `assign`)
@@ -1221,7 +1344,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
              | ChainLoad(symbols,_) ->
                  let ltp = ref LTPNone
                  let loadDest =
-                     let load = List.collect (chainLoadToIl ctx ltp (chainReaderFactory false false)) symbols
+                     let load = List.collect (chainLoadToIl ctx ltp (chainReaderFactory ctx false false)) symbols
                      match symbols with // needed to proper store values to ref parameters in methods
                      | VariableLoad(LoadParam (i,_,RefVar))::[] -> +Ldarg i::load
                      | _ -> load
@@ -1239,28 +1362,28 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         match findSymbol ctx i with
                         | ChainLoad (symbols, _) ->
                             let ltp = ref LTPNone
-                            let cl = List.collect (chainLoadToIl ctx ltp (chainReaderFactory false false)) symbols
+                            let cl = List.collect (chainLoadToIl ctx ltp (chainReaderFactory ctx false false)) symbols
                             let vt = match !ltp with // TODO allow structs only ? (ValueType as records/classes only)
                                      | LTPVar(_,t) -> t
                                      | LTPParam(_,t,_) -> t
-                                     | LTPStruct f -> f.FieldType
-                                     | LTPDeref(dt,_) when dt.MetadataType = MetadataType.ValueType -> dt
+                                     | LTPStruct(_,t) -> t
+                                     | LTPDeref(dt,_) when dt.raw.MetadataType = MetadataType.ValueType -> dt
                                      | _ -> failwith "IE"
                             // TODO check type of vt for with ?
-                            let vt = vt :?> TypeDefinition
-                            let pvt = PointerType(vt)
+                            match vt.kind with | TkRecord _ -> () | _ -> failwithf "IE bad type for with %A" vt.kind
+                            let pvt = PasType.NewPtr(vt)
                             let (_, vv) = ctx.EnsureVariable(pvt)
                             ([
                                 yield! cl
-                                yield! chainReaderFactory false true !ltp
+                                yield! chainReaderFactory ctx false true !ltp
                                 +Stloc vv
-                            ], (vv, vt, pvt))
+                            ], (vv, vt.raw :?> TypeDefinition, pvt))
                         | _ -> failwith "IE"
 
-                    let newSymbols = Dictionary<string, Symbol>()
+                    let newSymbols = Dictionary<_,_>()
                     let (v, td, ptd) = snd loadVarW
                     for f in td.Fields do
-                        newSymbols.Add(f.Name, WithSym(LocalVariable v, ptd))
+                        newSymbols.Add(StringName f.Name, WithSym(LocalVariable v, ptd))
                     ils.Add(fst loadVarW)
                     newSymbols::symbols
                 ) ctx.symbols idents, ils
@@ -1440,21 +1563,21 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
 
     let stmtListToIl sl (ctx: Ctx) (res: VariableDefinition) =
         let finalizeVariables =
-            ctx.variables.Head.Values
+            ctx.variables.Head
             |> Seq.collect
                (function
                 | LocalVariable v ->
                      ctx.res.Add(DeclareLocal(v))
                      match v.VariableType with
-                     | t when t = ctx.details.sysTypes.string -> []//stmtListToIlList ctx (IfStm())
+                     //| t when t = ctx.details.sysTypes.string -> []//stmtListToIlList ctx (IfStm())
                      | _ -> []
                 | GlobalVariable v ->
                      match v.FieldType with
-                     | t when t = ctx.details.sysTypes.string ->
-                         [
+                     //| t when t = ctx.details.sysTypes.string ->
+//                         [
 //                             Ldsfld v |> ilResolve
 //                             Call ctx.details.FreeMem |> ilResolve
-                         ]
+//                         ]
                      | _ -> []
                 )
             |> List.ofSeq
@@ -1476,43 +1599,35 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         |> ctx.res.Add
         ctx.res
 
-    let ptrSize = 4
     let vt = mb.ImportReference(typeof<ValueType>)
     let ot = mb.ImportReference(typeof<obj>)
 
     let findType =
         typeIdToStr
 
-    let addType (dt: Dictionary<TypeIdentifier, TypeReference>) (symbols: Dictionary<string, Symbol>) (name: TypeName) (typ: TypeReference) =
-        match name with
-        | StringName name ->
-            dt.Add(stdType name, typ)
-            symbols.Add(name, TypeSym typ)
-        | TypedName tname -> dt.Add(tname, typ) // internal types like var s: ^^string
+    let addMetaType (symbols: Dictionary<_,_>) (name: TypeName) typ =
+        symbols.Add(name, TypeSym typ)
+        typ
 
-    let createStdTypes ns (dt: Dictionary<TypeIdentifier, TypeReference>) (ti: Dictionary<TypeReference, TypeInfo>) (symbols: Dictionary<string, Symbol>) =
-        let addType = addType dt symbols
-        addType (StringName "Real") mb.TypeSystem.Single
-        addType (StringName "Int64") mb.TypeSystem.Int64
-        addType (StringName "UInt64") mb.TypeSystem.UInt64
-        addType (StringName "Integer") mb.TypeSystem.Int32
-        addType (StringName "LongWord") mb.TypeSystem.UInt32
-        addType (StringName "SmallInt") mb.TypeSystem.Int16
-        addType (StringName "Word") mb.TypeSystem.UInt16
-        addType (StringName "ShortInt") mb.TypeSystem.SByte
-        addType (StringName "Byte") mb.TypeSystem.Byte
-        let boolType = mb.TypeSystem.Boolean
-        addType (StringName "Boolean") boolType
-        let ptrType = PointerType(mb.TypeSystem.Void)
-        addType (StringName "Pointer") ptrType
-        let charType = ModuleDetails.NewSizedType ns mb vt 1 ""
-        addType (StringName "Char") charType
-        let strType = (ModuleDetails.NewSizedType ns mb vt 256 "") :> TypeReference
-        dt.Add(TIdString, strType)
-        // name + handle
-        let fileType = (ModuleDetails.NewSizedType ns mb vt (256 + ptrSize) "") :> TypeReference
-        dt.Add(TIdFile, fileType)
-        // allow to use string as array
+    let createStdTypes ns (symbols: Dictionary<_,_>) =
+        let addType n t s =
+            let name = StringName n
+            let t = {name=name;raw=t;kind=TkValue(s, SysType(t))}
+            addMetaType symbols name t
+        let addArrayType n (p: PasType) ad =
+            let name = TypedName n
+            let t = {name=name;raw=p.raw;kind=ad}
+            addMetaType symbols name t
+
+        addType "Byte" mb.TypeSystem.Byte 1 |> ignore
+        addType "ShortInt" mb.TypeSystem.SByte 1 |> ignore
+        addType "Word" mb.TypeSystem.UInt16 2 |> ignore
+        addType "SmallInt" mb.TypeSystem.Int16 2 |> ignore
+        addType "LongWord" mb.TypeSystem.UInt32 4 |> ignore
+        addType "UInt64" mb.TypeSystem.UInt64 8 |> ignore
+        addType "Int64" mb.TypeSystem.Int64 8 |> ignore
+        let charType = addType "Char" mb.TypeSystem.Byte 1
+        let strType = {name=AnonName;raw=(ModuleDetails.NewSizedType ns mb vt 256 "") :> TypeReference;kind=TkUnknown 256}
         let strDim = {
                         low = 1
                         high = 256
@@ -1521,110 +1636,127 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         elemType = charType
                         selfType = ref strType
                      }
-        ti.Add(strType, ArrayRange([strDim], charType))
-        ti.Add(charType, SimpleType(1))
+        // allow to use string as array
+
+        // file = name + handle
+        let fileType = (ModuleDetails.NewSizedType ns mb vt (256 + ptrSize) "") :> TypeReference
+        addMetaType symbols (TypedName TIdFile) {name=TypedName TIdFile;kind=TkUnknown(256 + ptrSize);raw=fileType} |> ignore
         {
-            string = strType
+            int32 = addType "Integer" mb.TypeSystem.Int32 4
+            single = addType "Real" mb.TypeSystem.Single 4
+            string = addArrayType TIdString strType (TkArray([strDim], charType))
             char = charType
-            value = vt
-            pointer = ptrType
-            constParam = PointerType(mb.TypeSystem.Void)
-            varParam = PointerType(mb.TypeSystem.Void)
-            boolean = boolType
-            net_obj = ot
+            value = {name=AnonName;raw=vt;kind=TkUnknown 0}
+            pointer = addType "Pointer" (PointerType mb.TypeSystem.Void) ptrSize
+            constParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown -1}
+            varParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown -1}
+            boolean = addType "Boolean" mb.TypeSystem.Boolean 1
+            net_obj = {name=AnonName;raw=ot;kind=TkUnknown 0}
+            net_void = {name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}
         }
 
     member self.BuildIl(block: Block, buildScope, ?resVar) =
         let ctx = match buildScope with
                   | MainScope (ns, tb) ->
-                    let typeInfo = Dictionary<TypeReference,_>()
                     let langCtx = LangCtx()
-                    let newSymbols = Dictionary<_,_>(langCtx)
-                    let defTypes = Dictionary<TypeIdentifier, TypeReference>()
-                    let systemTypes = createStdTypes ns defTypes typeInfo newSymbols
+                    let newSymbols = Dictionary<TypeName,_>(langCtx)
+                    let systemTypes = createStdTypes ns newSymbols
                     let systemProc = {
                         GetMem = allocMem
                         FreeMem = freeMem
                         WriteLine = writeLineMethod
+                        ConvertU1ToChar = convertU1ToChar
                         PtrToStringAnsi = ptrToStringAnsi
                     }
-                    newSymbols.Add("true", CERBool true |> ConstSym)
-                    newSymbols.Add("false", CERBool false |> ConstSym)
+                    let tsingle = systemTypes.single
+                    newSymbols.Add(StringName "true", CERBool true |> ConstSym)
+                    newSymbols.Add(StringName "false", CERBool false |> ConstSym)
                     //newSymbols.Add("GetMem", Referenced allocMem |> MethodSym)
                     //newSymbols.Add("FreeMem", Referenced freeMem |> MethodSym)
-                    newSymbols.Add("Ln", Referenced mathLog |> MethodSym)
-                    newSymbols.Add("Trunc", Referenced mathTrunc |> MethodSym)
-                    newSymbols.Add("Exp", Referenced mathExp |> MethodSym)
-                    newSymbols.Add("Round", Referenced mathRound |> MethodSym)
-                    newSymbols.Add("Inc", Intrinsic IncProc |> MethodSym)
-                    newSymbols.Add("Dec", Intrinsic DecProc |> MethodSym)
-                    newSymbols.Add("WriteLn", Intrinsic WriteLnProc |> MethodSym)
-                    newSymbols.Add("Exit", Intrinsic ExitProc |> MethodSym)
-                    newSymbols.Add("Continue", Intrinsic ContinueProc |> MethodSym)
-                    newSymbols.Add("Break", Intrinsic BreakProc |> MethodSym)
-                    newSymbols.Add("Chr", Intrinsic ChrFunc |> MethodSym)
-                    newSymbols.Add("Ord", Intrinsic OrdFunc |> MethodSym)
-                    newSymbols.Add("SizeOf", Intrinsic SizeOfFunc |> MethodSym)
+                    let singleScalar raw =
+                       Referenced {
+                           paramList = [|{typ=tsingle;ref=false}|]
+                           result = Some tsingle
+                           raw = raw
+                       } |> MethodSym
+                    newSymbols.Add(StringName "Ln", singleScalar mathLog)
+                    newSymbols.Add(StringName "Trunc", singleScalar mathTrunc)
+                    newSymbols.Add(StringName "Exp", singleScalar mathExp)
+                    newSymbols.Add(StringName "Round", singleScalar mathRound)
+                    newSymbols.Add(StringName "Inc", Intrinsic IncProc |> MethodSym)
+                    newSymbols.Add(StringName "Dec", Intrinsic DecProc |> MethodSym)
+                    newSymbols.Add(StringName "WriteLn", Intrinsic WriteLnProc |> MethodSym)
+                    newSymbols.Add(StringName "Exit", Intrinsic ExitProc |> MethodSym)
+                    newSymbols.Add(StringName "Continue", Intrinsic ContinueProc |> MethodSym)
+                    newSymbols.Add(StringName "Break", Intrinsic BreakProc |> MethodSym)
+                    newSymbols.Add(StringName "Chr", Intrinsic ChrFunc |> MethodSym)
+                    newSymbols.Add(StringName "Ord", Intrinsic OrdFunc |> MethodSym)
+                    newSymbols.Add(StringName "SizeOf", Intrinsic SizeOfFunc |> MethodSym)
                     ModuleDetails.Create moduleBuilder ns tb systemTypes systemProc
-                    |> Ctx.Create defTypes newSymbols typeInfo langCtx
+                    |> Ctx.Create newSymbols langCtx
                   | LocalScope ctx -> ctx
-        let defTypes = ctx.types.Head
         let newSymbols = ctx.symbols.Head
         let result = match resVar with
                      | Some (name, Some(v)) ->
-                        ctx.variables.Head.Add(name, v)
+                        ctx.variables.Head.Add v
                         match v with
                         | LocalVariable v -> v
                         | _ -> null
                      | Some (_, None) -> null // no result (void)
-                     | _ -> null // main program
+                     | _ -> null // main p`rogram
 
-        let rec sizeOf (tr: TypeReference) (td: TypeDefinition) =
-            let sizeOfTD (td: TypeDefinition) = td.Fields |> Seq.sumBy (fun f -> sizeOf f.FieldType null)
-            match tr.MetadataType with
-            | MetadataType.SByte | MetadataType.Byte | MetadataType.Boolean  -> 1
-            | MetadataType.Int16 | MetadataType.UInt16 -> 2
-            | MetadataType.Int32 | MetadataType.UInt32 -> 4
-            | MetadataType.Int64  -> 8
-            | MetadataType.Single -> 4
-            | MetadataType.Double -> 8
-            | MetadataType.Void   -> ptrSize // TODO 4 or 8 -> target dependent
-            | MetadataType.Pointer-> ptrSize // TODO 4 or 8 -> target dependent
-            | MetadataType.ValueType ->
-                match ctx.findTypeInfo tr with
-                | Some(ArrayRange _) -> (tr :?> TypeDefinition).ClassSize
-                | Some(TypeSymbols _) ->
-                    // check mono_marshal_type_size -> https://github.com/dotnet/runtime/blob/487c940876b1932920454c44d2463d996cc8407c/src/mono/mono/metadata/marshal.c
-                    // check mono_type_to_unmanaged -> https://github.com/dotnet/runtime/blob/aa6d1ac74e6291b3aaaa9da60249d8c327593698/src/mono/mono/metadata/metadata.c
-                    sizeOfTD(tr :?> TypeDefinition)
-                | _ when td <> null -> sizeOfTD td
-                | _ -> failwith "IE"
-            | _ -> failwith "IE"
+//        let rec sizeOf (typ: PasType) (td: TypeDefinition) =
+//            let sizeOfTD (td: TypeDefinition) = td.Fields |> Seq.sumBy (fun f -> sizeOf f.FieldType null)
+//            match typ.raw.MetadataType with
+//            | MetadataType.SByte | MetadataType.Byte | MetadataType.Boolean  -> 1
+//            | MetadataType.Int16 | MetadataType.UInt16 -> 2
+//            | MetadataType.Int32 | MetadataType.UInt32 -> 4
+//            | MetadataType.Int64  -> 8
+//            | MetadataType.Single -> 4
+//            | MetadataType.Double -> 8
+//            | MetadataType.Void   -> ptrSize // TODO 4 or 8 -> target dependent
+//            | MetadataType.Pointer-> ptrSize // TODO 4 or 8 -> target dependent
+//            | MetadataType.ValueType ->
+//                match ctx.FindType typ with
+//                | Some(ArrayRange _) -> (tr :?> TypeDefinition).ClassSize
+//                | Some(TypeSymbols _) ->
+//                    // check mono_marshal_type_size -> https://github.com/dotnet/runtime/blob/487c940876b1932920454c44d2463d996cc8407c/src/mono/mono/metadata/marshal.c
+//                    // check mono_type_to_unmanaged -> https://github.com/dotnet/runtime/blob/aa6d1ac74e6291b3aaaa9da60249d8c327593698/src/mono/mono/metadata/metadata.c
+//                    sizeOfTD(tr :?> TypeDefinition)
+//                | Some(SimpleType(s,_)) -> s
+//                | _ when td <> null -> sizeOfTD td
+//                | _ -> failwith "IE"
+//            | _ -> failwith "IE"
 
-        let addType = addType defTypes newSymbols
-        let addTypePointer count typeId name =
-            let mutable pt = PointerType(defTypes.[typeId])
+        let addType = addMetaType newSymbols
+        let addTypePointer count typeName name =
+            let t =
+                match ctx.FindType typeName with
+                | Some t -> t
+                | _ -> failwith "IE unknown type"
+            let mutable pt = PointerType(t.raw)
             for i = 2 to count do pt <- PointerType(pt)
-            addType name (pt :> TypeReference)
-            pt :> TypeReference
+            addType name {name=name;kind=TkPointer(t);raw=pt:>TypeReference}
 
-        let rec getType t =
-            match defTypes.TryGetValue t with
-            | true, dt -> dt
-            | false, _ -> // inline type?
+
+        let rec getInternalType t =
+            let name = TypeName.FromTypeId t
+            match ctx.FindType name with
+            | Some t -> t
+            | None -> // inline type?
                 match t with
-                | TIdPointer(count, typeId) -> addTypePointer count typeId (TypedName t)
+                | TIdPointer(count, typeId) -> addTypePointer count (TypeName.FromTypeId typeId) (TypedName t)
                 | TIdArray(ArrayDef(_, dimensions, tname)) -> addTypeArray dimensions tname (TypedName t)
                 | _ -> failwith "IE"
 
         and addTypeArray dimensions tname name =
-            let newSubType (dims, size) (typ, typSize) name =
+            let newSubType (dims, size) (typ: PasType, typSize) name =
                 let size = size * typSize
                 let at = ModuleDetails.NewSizedType ctx.details.ns mb vt size ""
-                FieldDefinition("item0", FieldAttributes.Public, typ)
+                FieldDefinition("item0", FieldAttributes.Public, typ.raw)
                 |> at.Fields.Add
-                ctx.typeInfo.Head.Add(at, ArrayRange(dims, typ))
-                at
+                let name = StringName name
+                {name=name;raw=at;kind=TkArray(dims,typ)}.ResolveArraySelfType()
 
             let rec doArrayDef dimensions tname dims name =
 
@@ -1632,8 +1764,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     match tname with
                     | TIdArray(ArrayDef(_, dimensions, tname)) -> doArrayDef dimensions tname dims (name + "$a$")
                     | t ->
-                        let typ = getType t
-                        dims, (typ, sizeOf typ null), typ
+                        let typ = getInternalType t
+                        dims, (typ, typ.SizeOf), typ
 
                 let newArrayDim ad ((dims, totalSize), elemType, i, newTyp) =
                     match ad with
@@ -1648,13 +1780,11 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                             size = size
                             elemSize = totalSize*(snd typAndSize)
                             elemType = newTyp
-                            selfType = ref null
+                            selfType = ref Unchecked.defaultof<_>
                         }
-                        let dims = newDim::dims
                         let totalSize = totalSize * size
-                        let dimsAndSize = (dims, totalSize)
-                        let newTyp = (newSubType dimsAndSize typAndSize (name + "$" + string(i))) :> TypeReference
-                        newDim.selfType := newTyp
+                        let dimsAndSize = newDim::dims,totalSize
+                        let newTyp = newSubType dimsAndSize typAndSize (name + "$" + string(i))
                         dimsAndSize, elemType, i+1, newTyp
                     | _ -> failwith "IE"
 
@@ -1663,9 +1793,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
             // final array
             let strName = string ((string name).Length)
             let _,_,typ = doArrayDef dimensions tname ([], 1) strName
-            typ.Name <- strName
+            typ.raw.Name <- strName
             addType name typ
-            typ
             //(doArrayDef dimensions tname (ref []) name).Name <- name
 
 
@@ -1679,55 +1808,66 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                        for (name, decl) in types do
                            match decl with
                            | TypeAlias (_, origin) ->
-                               addType (StringName name) defTypes.[origin]
-                           | TypePtr (count, typeId) -> addTypePointer count typeId (StringName name) |> ignore
+                               let name = StringName name
+                               let originType = match ctx.FindTypeId origin with | Some t -> t | _ -> failwith "IE not found"
+                               {originType with name = name} |> addType name
+                           | TypePtr (count, typeId) ->
+                               let typ = match ctx.FindTypeId typeId with | Some t -> t | _ -> failwith "IE not found"
+                               addTypePointer count typ.name (StringName name)
                            | TypeEnum enumValues ->
-                               enumValues |> List.iteri (fun i v -> newSymbols.Add (v, EnumValueSym(i)))
-                               addType (StringName name) mb.TypeSystem.Int32
+                               enumValues |> List.iteri (fun i v -> newSymbols.Add (StringName v, EnumValueSym(i)))
+                               let name = StringName name
+                               let pint32 = ctx.details.sysTypes.int32
+                               addType name {name=name;kind=TkEnumeration(pint32);raw=pint32.raw}
                            | Record (packed, fields) -> 
+                                let mutable size = 0;
                                 let td = TypeDefinition(ctx.details.ns, name, TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout)
                                 td.ClassSize <- 0
                                 td.BaseType <- vt
-                                td.PackingSize <- if packed then 1s else 0s
+                                td.PackingSize <- 1s // if packed then 1s else 0s
                                 let fieldsMap = Dictionary<_,_>()
                                 for (names, typeName) in fields do
                                   for name in names do
-                                    let fd = FieldDefinition(name, FieldAttributes.Public, defTypes.[typeName])
+                                    let typ = match ctx.FindTypeId typeName with
+                                              | Some t -> t | _ -> failwith "IE cannot find"
+                                    let fd = FieldDefinition(name, FieldAttributes.Public, typ.raw)
                                     td.Fields.Add fd
-                                    fieldsMap.Add(name, fd)
+                                    fieldsMap.Add(name, (fd,typ))
+                                    size <- size + typ.SizeOf
                                 mb.Types.Add(td)
-                                addType (StringName name) td
-                                ctx.typeInfo.Head.Add(td, TypeSymbols(fieldsMap, sizeOf td td))
-                           | Array(ArrayDef(_, dimensions, tname)) -> addTypeArray dimensions tname (StringName name) |> ignore
+                                let name = StringName name
+                                addType name {name=name;kind=TkRecord(fieldsMap, size);raw=td}
+                           | Array(ArrayDef(_, dimensions, tname)) -> addTypeArray dimensions tname (StringName name)
                            | _ -> failwith "IE"
+                           |> ignore
                    )
                | Variables v ->
                    let addVar =
-                        let addVar v vk = (v, vk) |> ctx.variables.Head.Add
+                        let addVar vk = vk |> ctx.variables.Head.Add
                         match buildScope with
-                        | LocalScope _ -> fun (v, t) ->
-                                            VariableDefinition t
+                        | LocalScope _ -> fun (vn, t: PasType) ->
+                                            VariableDefinition t.raw
                                             |> LocalVariable
                                             |> fun vk ->
-                                                newSymbols.Add(v, VariableSym vk)
-                                                addVar v vk
+                                                newSymbols.Add(StringName vn, VariableSym(vk, t))
+                                                addVar vk
                         | MainScope _ -> fun (v, t) ->
-                                            let fd = FieldDefinition(v, FieldAttributes.Public ||| FieldAttributes.Static, t)
+                                            let fd = FieldDefinition(v, FieldAttributes.Public ||| FieldAttributes.Static, t.raw)
                                             fd |> GlobalVariable
                                             |> fun vk ->
-                                                newSymbols.Add(v, VariableSym vk)
+                                                newSymbols.Add(StringName v, VariableSym(vk,t))
                                                 ctx.details.tb.Fields.Add fd
-                                                addVar v vk
+                                                addVar vk
                    v
                    |> List.collect
                           (fun (l, t) ->
-                       let dt = getType t
+                       let dt = getInternalType t
                        l |> List.map (fun v -> v, dt))
                    |> List.iter addVar
                | Constants consts ->
                    for (name, ctype, value) in consts do
                     match value, ctype with
-                    | ConstExpr expr, None -> ctx.symbols.Head.Add(name, evalConstExpr expr |> ConstSym)
+                    | ConstExpr expr, None -> ctx.symbols.Head.Add(StringName name, evalConstExpr expr |> ConstSym)
                     | _ -> failwith "IE"
                    ()
                | Labels labels -> (for l in labels do ctx.labels.Head.Add(l, ref (UserLabel l)))
@@ -1745,32 +1885,39 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                            let newMethodSymbols = Dictionary<_,_>(ctx.lang)
                            let mRes, rVar = match mRes with
                                             | Some r ->
-                                                  let res = defTypes.[r]
-                                                  let resultVar = VariableDefinition res |> LocalVariable
-                                                  newMethodSymbols.Add("result", resultVar |> VariableSym)
+                                                  let res = match ctx.FindTypeId r with | Some t -> t | _ -> failwith "IE"
+                                                  let resultVar = VariableDefinition res.raw |> LocalVariable
+                                                  newMethodSymbols.Add(StringName "result", (resultVar, res) |> VariableSym)
                                                   res, Some resultVar
-                                            | _ -> moduleBuilder.TypeSystem.Void, None
+                                            | _ -> ctx.details.sysTypes.net_void, None
 
                            let ps = defaultArg mPara []
                                     |> List.collect
                                        (fun (k, (ps, t)) ->
-                                        let t = match t with Some t -> Some defTypes.[t] | _ -> None
+                                        let t = match t with Some t -> ctx.FindTypeId t | _ -> None
                                         [for p in ps do
-                                            let (typ, byref, t) = match k, t with
-                                                                  | Some Const, Some t -> t, RefConst, t
-                                                                  | Some Var, Some t -> ByReferenceType(t) :> TypeReference, RefVar, t
-                                                                  | Some Const, None -> ctx.details.sysTypes.constParam, RefUntypedConst, ctx.details.sysTypes.constParam
-                                                                  | Some Var, None -> ctx.details.sysTypes.varParam, RefUntypedVar, ctx.details.sysTypes.varParam
-                                                                  | None, Some t -> t, RefNone, t
-                                                                  | _ -> failwith "IE"
+                                            let (typ, byref, t, isref) =
+                                                match k, t with
+                                                | Some Const, Some t -> t.raw, RefConst, t, false
+                                                | Some Var, Some t -> ByReferenceType(t.raw) :> TypeReference, RefVar, t, true
+                                                | Some Const, None -> ctx.details.sysTypes.constParam.raw, RefUntypedConst, ctx.details.sysTypes.constParam, true
+                                                | Some Var, None -> ctx.details.sysTypes.varParam.raw, RefUntypedVar, ctx.details.sysTypes.varParam, true
+                                                | None, Some t -> t.raw, RefNone, t, false
+                                                | _ -> failwith "IE"
                                             let pd = ParameterDefinition(p, ParameterAttributes.None, typ)
-                                            newMethodSymbols.Add(p, VariableParamSym(pd, t, byref))
-                                            yield pd]
+                                            newMethodSymbols.Add(StringName p, VariableParamSym(pd, t, byref))
+                                            yield (pd, {typ=t;ref=isref})]
                                        )
+                           let ps, mp = ps |> List.unzip
                            let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
-                           let md = MethodDefinition(name, methodAttributes, mRes)
+                           let md = MethodDefinition(name, methodAttributes, mRes.raw)
                            List.iter md.Parameters.Add ps
-                           newSymbols.Add(name, Referenced (md :> MethodReference) |> MethodSym)
+                           let methodInfo = {
+                               paramList = Array.ofList mp
+                               result = if rVar.IsSome then Some mRes else None
+                               raw = md
+                           }
+                           newSymbols.Add(StringName name, Referenced methodInfo |> MethodSym)
                            md, newMethodSymbols, rVar
                    match d with
                    | BodyDeclr (decls, stmts) ->
