@@ -2,6 +2,24 @@
 open np.BasicParsers
 open FParsec
 
+//       """
+// var
+//   c: char;
+// begin
+//   repeat
+//     if c < 'A' then begin
+//       Inc(c);
+//       Continue;
+//     end;
+//     WriteLn(Ord(c), ' = ', c);
+//     if c = 'Z' then Break;
+//     Inc(c);
+//   until c = 'a';
+// end.
+//       """
+
+
+
 // """
 // type
 //   PChar = ^Char;

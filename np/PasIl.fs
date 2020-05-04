@@ -66,6 +66,9 @@ type IlBranch =
     | IlBgt // >
     | IlBle // <=
     | IlBge // >=
+    | IlBne_Un
+    | IlBgt_Un
+    | IlBlt_Un
 
 type LdcKind =
     | LdcI4 of int32
@@ -130,6 +133,9 @@ type AtomInstruction =
     | Bgt of Instruction
     | Ble of Instruction
     | Bge of Instruction
+    | Bne_Un of Instruction
+    | Bgt_Un of Instruction
+    | Blt_Un of Instruction
 
 type BranchLabel =
     | LazyLabel of IlInstruction
@@ -604,6 +610,9 @@ and private atomInstr = function
     | Bgt i        -> Instruction.Create(OpCodes.Bgt, i)
     | Ble i        -> Instruction.Create(OpCodes.Ble, i)
     | Bge i        -> Instruction.Create(OpCodes.Bge, i)
+    | Bne_Un i     -> Instruction.Create(OpCodes.Bne_Un, i)
+    | Bgt_Un i     -> Instruction.Create(OpCodes.Bgt_Un, i)
+    | Blt_Un i     -> Instruction.Create(OpCodes.Blt_Un, i)
 
 let private instr = function
     | IlBranch (bk, i) ->
@@ -614,8 +623,11 @@ let private instr = function
         | IlBeq     -> OpCodes.Beq
         | IlBgt     -> OpCodes.Bgt
         | IlBlt     -> OpCodes.Blt
-        | IlBge     -> OpCodes.Bge
         | IlBle     -> OpCodes.Ble
+        | IlBge     -> OpCodes.Bge
+        | IlBne_Un  -> OpCodes.Bne_Un
+        | IlBgt_Un  -> OpCodes.Bgt_Un
+        | IlBlt_Un  -> OpCodes.Blt_Un
         |> fun opc -> Instruction.Create(opc, brtoinstr i)
     | IlResolved(_,i) -> i
 
@@ -1320,7 +1332,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         let exprToIl = exprToIl ctx
         let getVar4ForLoop = findSymbol ctx >>
                              function
-                             | ChainLoad([VariableLoad(LoadVar(LocalVariable vs, _))], _) -> vs
+                             | ChainLoad([VariableLoad(LoadVar(vs, vt))], _) -> vs, vt
                              | _ -> failwith "IE"
         let getVar4Assign (ident: DIdent) expr =
              // add param for findSymbol to set purpose (like this `assign`)
@@ -1495,36 +1507,41 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                                 | _ -> condition.[0])))
                     ],[breakLabel])
                 | ForStm (ident, initExpr, delta, finiExpr, stmt) ->
-                    let exprLabel = ref ForwardLabel
-                    let var = getVar4ForLoop ident
-                    let (name, varFinal) = ctx.EnsureVariable()
-                    let (loopInit, _) = AssignStm(ident, initExpr) |> List.singleton |> stmtToIlList
+                    let var, varType = getVar4ForLoop ident
+                    let (varFinalName, varFinal) = ctx.EnsureVariable(varType)
                     // TODO optimization for simple values (dont store in var)
-                    let (loopFinal, _) = AssignStm(stdIdent name, finiExpr) |> List.singleton |> stmtToIlList
-                    let condition = [
-                        +Ldloc var
-                        +Ldloc varFinal
-                        match delta with
-                                    | 1 -> IlBranch(IlBle, exprLabel)
-                                    | -1 -> IlBranch(IlBge, exprLabel)
-                                    | _ -> failwith "IE"]
-                    let conditionLabel = ref <| LazyLabel(condition.Head)
+                    let (loopInitializeVariables, _) =
+                        [AssignStm(ident, initExpr);AssignStm(stdIdent varFinalName, finiExpr)] |> stmtToIlList
+                    let breakLabel = ref ForwardLabel
+                    let varLoad = match var with | GlobalVariable vk -> +Ldsfld vk | LocalVariable vk -> +Ldloc vk
+                    let loopInitialize =
+                        [
+                            varLoad
+                            +Ldloc varFinal
+                            IlBranch((if delta = 1 then IlBgt_Un else IlBlt_Un), breakLabel)
+                            +Ldloc varFinal
+                            +Ldc_I4 delta
+                            +AddInst
+                            +Stloc varFinal
+                        ]
                     let (incLoopVar, _) = [AssignStm(ident, Add(Value(VIdent(ident)), Value(VInteger delta)))] |> stmtToIlList
                     // push loop context between
-                    let breakLabel = ref ForwardLabel
                     let continueLabel = ref (LazyLabel incLoopVar.Head)
                     ctx.loop.Push(continueLabel, breakLabel)
                     let (forBranch, forLabels) = stmtToIlList stmt
-                    exprLabel := (LazyLabel
-                                                (match List.tryHead forBranch with
-                                                | Some h -> h
-                                                | _ -> condition.Head))
+                    let stmtLabel = defaultArg (List.tryHead forBranch) incLoopVar.Head |> LazyLabel |> ref
+                    let condition =
+                        [
+                          // TODO move simple global loop variables into local void variable
+                          varLoad
+                          +Ldloc varFinal
+                          IlBranch(IlBne_Un, stmtLabel)
+                        ]
                     Ctx.resolveSysLabels (List.tryHead incLoopVar) forLabels
                     ctx.loop.Pop() |> ignore
                     ([
-                        yield! loopInit
-                        yield! loopFinal
-                        yield IlBranch(IlBr, conditionLabel)
+                        yield! loopInitializeVariables
+                        yield! loopInitialize
                         yield! forBranch
                         yield! incLoopVar
                         yield! condition

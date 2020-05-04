@@ -11,18 +11,23 @@ open NP
 let main argv =
     PasStreams.testAll
       """
+procedure DoC(const c: char);
+begin
+  case c of
+    '0'..'9': WriteLn('IS num   (', c, ') ', Ord(c));
+    'a'..'z': WriteLn('IS small (', c, ') ', Ord(c));
+    'A'..'Z': WriteLn('IS big   (', c, ') ', Ord(c));
+  else
+    WriteLn('unknown (', c, ') ', Ord(c));
+  end;
+end;
+
 var
   c: char;
 begin
-  repeat
-    if c < 'A' then begin
-      Inc(c);
-      Continue;
-    end;
-    WriteLn(Ord(c), ' = ', c);
-    if c = 'Z' then Break;
-    Inc(c);
-  until c = 'a';
+  for c := #0 to #255 do if c < #32 then continue else doC(c);
+  for c := #255 downto #0 do doC(c);
+  for c := #0 to #255 do ;
 end.
       """
     |> printfn "%A"
