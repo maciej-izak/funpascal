@@ -99,7 +99,7 @@ and PasStream(s: Stream) = class
         let addInc() =    
             let pos = finalStream.Position
             finalStream.Seek(finalStream.Length, SeekOrigin.Begin) |> ignore
-            let fn= if File.Exists fileName then fileName else searchPath + string Path.DirectorySeparatorChar + fileName
+            let fn= if File.Exists fileName then fileName else Path.Combine(searchPath, fileName)
             let str = "\013" + File.ReadAllText(fn) + "\000"
             let bytes = Encoding.Unicode.GetBytes(str)
             finalStream.Write(bytes, 0, bytes.Length)

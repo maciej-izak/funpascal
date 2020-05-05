@@ -34,7 +34,7 @@ let testPas p s i =
     let us = PasState.Create (new PasStream(s)) i
     use stream1 = new CharStream<PasState>(us.stream, Encoding.Unicode)
     stream1.UserState <- us
-    stream1.Name <- "some code"
+    stream1.Name <- "test"
     let result = applyParser pass1Parser stream1
     match result with
     | Success (_,s,_) -> s.stream.SaveToFile()
@@ -96,7 +96,7 @@ let private compileModule (ProgramAst(name, block)) = //, methods: Method list) 
 
 let testAll s =
     let strToStream (s: string) = s |> Encoding.Unicode.GetBytes |> fun s -> new MemoryStream(s)
-    let ast = testPas pascalModule (strToStream s) ""
+    let ast = testPas pascalModule (strToStream s) @"C:\_projects\newpascal\xdpw"
     match ast with
     | Success (r,_,_) -> 
                         let ad = compileModule(ProgramAst(fst r, Block.Create(snd r)))

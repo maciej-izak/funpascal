@@ -11,7 +11,13 @@ open NP
 let main argv =
     PasStreams.testAll
       """
+{$I system.inc}
+var
+  r: Real;
+  c: integer;
 begin
+  Val('3.14', r, c);
+  WriteLn(r);
   WriteLn(Succ(byte(255)), '  ', Pred(0));
 end.
       """
