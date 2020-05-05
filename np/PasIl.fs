@@ -1689,19 +1689,32 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                            result = Some tsingle
                            raw = raw
                        } |> MethodSym
-                    newSymbols.Add(StringName "Ln", singleScalar mathLog)
-                    newSymbols.Add(StringName "Trunc", singleScalar mathTrunc)
-                    newSymbols.Add(StringName "Exp", singleScalar mathExp)
-                    newSymbols.Add(StringName "Round", singleScalar mathRound)
                     newSymbols.Add(StringName "Inc", Intrinsic IncProc |> MethodSym)
                     newSymbols.Add(StringName "Dec", Intrinsic DecProc |> MethodSym)
+                    // procedure Read([var F: file;] var x1 {; var xi});
+                    // procedure Write([var F: file;] x1[:w[:d]] {; xi[:w[:d]]});
+                    // procedure ReadLn([var F: file;] var x1 {; var xi});
                     newSymbols.Add(StringName "WriteLn", Intrinsic WriteLnProc |> MethodSym)
-                    newSymbols.Add(StringName "Exit", Intrinsic ExitProc |> MethodSym)
-                    newSymbols.Add(StringName "Continue", Intrinsic ContinueProc |> MethodSym)
+                    // procedure New(var P: Pointer);
+                    // procedure Dispose(var P: Pointer);
                     newSymbols.Add(StringName "Break", Intrinsic BreakProc |> MethodSym)
-                    newSymbols.Add(StringName "Chr", Intrinsic ChrFunc |> MethodSym)
-                    newSymbols.Add(StringName "Ord", Intrinsic OrdFunc |> MethodSym)
+                    newSymbols.Add(StringName "Continue", Intrinsic ContinueProc |> MethodSym)
+                    newSymbols.Add(StringName "Exit", Intrinsic ExitProc |> MethodSym)
+                    // procedure Halt[(const error: Integer)];
                     newSymbols.Add(StringName "SizeOf", Intrinsic SizeOfFunc |> MethodSym)
+                    newSymbols.Add(StringName "Ord", Intrinsic OrdFunc |> MethodSym)
+                    newSymbols.Add(StringName "Chr", Intrinsic ChrFunc |> MethodSym)
+                    // function Pred(x: T): T;
+                    // function Succ(x: T): T;
+                    newSymbols.Add(StringName "Round", singleScalar mathRound)
+                    // function Abs(x: T): T;
+                    // function Sqr(x: T): T;
+                    // function Sin(x: Real): Real;
+                    // function Cos(x: Real): Real;
+                    // function Arctan(x: Real): Real;
+                    newSymbols.Add(StringName "Exp", singleScalar mathExp)
+                    newSymbols.Add(StringName "Ln", singleScalar mathLog)
+                    newSymbols.Add(StringName "Trunc", singleScalar mathTrunc)
                     ModuleDetails.Create moduleBuilder ns tb systemTypes systemProc
                     |> Ctx.Create newSymbols langCtx
                   | LocalScope ctx -> ctx
