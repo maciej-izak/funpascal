@@ -167,6 +167,8 @@ with
 type Intrinsic =
     | IncProc
     | DecProc
+    | SuccProc
+    | PredProc
     | ExitProc
     | ContinueProc
     | BreakProc
@@ -940,20 +942,29 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                     yield +Pop
              ], mr.result)
         | Intrinsic i, _ ->
-            let deltaModify (instr: IlInstruction) id =
+            let deltaModify delta id =
                 let inst, typ = findSymbolAndGetPtr ctx id
                 let indKind = typ.IndKind
-                ([
+                ([ // TODO change indirect to normal load/store?
                  yield! inst
                  +Dup
                  +Ldind indKind
-                 +Ldc_I4 1
-                 instr
+                 +Ldc_I4 delta
+                 +AddInst
                  +Stind indKind
                 ], None)
+            let deltaAdd delta cp =
+                let inst, typ = callParamToIl ctx cp 0 None
+                ([ // TODO check type -> should be ordinal
+                 yield! inst
+                 +Ldc_I4 delta
+                 +AddInst
+                ], Some typ)
             match i, cp with
-            | IncProc, [ParamIdent(id)] -> deltaModify +AddInst id
-            | DecProc, [ParamIdent(id)] -> deltaModify +MinusInst id
+            | IncProc, [ParamIdent(id)] -> deltaModify +1 id
+            | DecProc, [ParamIdent(id)] -> deltaModify -1 id
+            | SuccProc, [cp] -> deltaAdd +1 cp
+            | PredProc, [cp] -> deltaAdd -1 cp
             | ContinueProc, [] -> match ctx.loop.TryPeek() with
                                   | true, (continueLabel, _) ->
                                     ([IlBranch(IlBr, continueLabel)], None)
@@ -1704,8 +1715,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     newSymbols.Add(StringName "SizeOf", Intrinsic SizeOfFunc |> MethodSym)
                     newSymbols.Add(StringName "Ord", Intrinsic OrdFunc |> MethodSym)
                     newSymbols.Add(StringName "Chr", Intrinsic ChrFunc |> MethodSym)
-                    // function Pred(x: T): T;
-                    // function Succ(x: T): T;
+                    newSymbols.Add(StringName "Pred", Intrinsic PredProc |> MethodSym)
+                    newSymbols.Add(StringName "Succ", Intrinsic SuccProc |> MethodSym)
                     newSymbols.Add(StringName "Round", singleScalar mathRound)
                     // function Abs(x: T): T;
                     // function Sqr(x: T): T;
