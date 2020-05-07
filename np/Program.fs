@@ -16,9 +16,13 @@ var
   r: Real;
   c: integer;
 begin
-  Val('3.14', r, c);
-  WriteLn(r);
-  WriteLn(Succ(byte(255)), '  ', Pred(0));
+  InitSystem;
+  c := 12;
+  WriteLine(StdOutputHandle);
+  WriteLn(c);
+  //Val('3.14', r, c);
+  //WriteLn(r:1:2);
+  //WriteLn(Succ(byte(255)), '  ', Pred(0));
 end.
       """
     |> printfn "%A"

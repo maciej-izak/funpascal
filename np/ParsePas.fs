@@ -316,19 +316,22 @@ let exprSet =
 let callExpr =
     let actualParam =
         (expr |>> function 
-                  | Value v -> match v with VIdent i -> ParamIdent(i) | v -> Value(v) |> ParamExpr
+                  | Value(VIdent(i)) -> ParamIdent i
                   | e -> ParamExpr e)
     let actualParamsList =
         between ``( `` ``) `` (sepEndBy actualParam ``, ``)
     designator .>>.? actualParamsList 
     |>> CallExpr
 
-let exprCall = 
-    callExpr |>> VCallResult
+let exprCall = callExpr |>> VCallResult
 
 let exprAtom =
-    choice[exprCall; exprIdent; attempt(exprInt); exprFloat; exprString; exprSet; exprNil] |>> Value
-    
+    let tupleValue = choice[exprCall; exprIdent; attempt(exprInt); exprFloat; exprString; exprSet; exprNil] |>> Value
+    (sepEndBy tupleValue ``: ``)
+      |>> function
+          | [e] -> e
+          | e -> TupleExpr e
+
 let exprExpr =
     between ``( `` ``) `` expr 
 

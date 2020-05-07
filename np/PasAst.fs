@@ -78,6 +78,7 @@ and ExprEl =
     | Addr of ExprEl
     | Is of ExprEl * ExprEl
     | In of ExprEl * ExprEl
+    | TupleExpr of ExprEl list
 
 and Designator = 
     | Ident of PIdent

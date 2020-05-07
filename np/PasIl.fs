@@ -173,6 +173,7 @@ type Intrinsic =
     | ContinueProc
     | BreakProc
     | WriteLnProc
+    | WriteLineProc
     | OrdFunc
     | ChrFunc
     | SizeOfFunc
@@ -180,7 +181,7 @@ type Intrinsic =
 type ConstEvalResult =
     | CERString of string
     | CERInt of int
-    | CERBool of bool
+    | CERBool of byte
     | CERUnknown
 
 type ParamRefKind =
@@ -200,32 +201,38 @@ with
         | TIdIdent _ -> failwith "IE"
         | ti -> TypedName ti
 
+type TOrdType =
+    | OtSByte of int * int
+    | OtUByte of int * int
+    | OtSWord of int * int
+    | OtUWord of int * int
+    | OtSLong of int * int
+    | OtULong of int * int
+    | OtSQWord of int64 * int64
+    | OtUQWord of uint64 * uint64
+
+let (|OrdTypeS|OrdTypeU|) = function
+    | OtSByte _ | OtSWord _ | OtSLong _ | OtSQWord _ -> OrdTypeS
+    | OtUByte _ | OtUWord _ | OtULong _ | OtUQWord _ -> OrdTypeU
+
+type TFloatType = | FtSingle // | FtDouble | FtExtended | FtComp | FtCurr
 
 let ptrSize = 4
-type AtomValue =
-    | SysType of TypeReference
-    | ProxyType of PasType
-with
-    member this.Raw =
-        match this with
-        | SysType r -> r
-        | ProxyType({kind=TkValue(_,p)}) -> p.Raw
-        | _ -> failwith "IE"
 
-and TypeKind =
+type TOrdKind =
+    | OkInteger
+    | OkBool
+    | OkEnumeration
+    | OkChar
+
+type TypeKind =
     | TkUnknown of int
-    | TkValue of int * AtomValue // TODO find REAL base type ?
+    | TkOrd of OrdKind: TOrdKind * OrdType: TOrdType
+    | TkSString of byte
+    | TkFloat of FloatType: TFloatType
     | TkRecord of Dictionary<string,FieldDefinition*PasType> * int
     | TkPointer of PasType
     | TkArray of (ArrayDim list * PasType)
-    | TkEnumeration of PasType
-with
-    member this.Raw p =
-        match this with
-        | TkValue(_,v) -> v.Raw
-        | TkEnumeration pt -> pt.raw
-        | TkPointer _ -> p
-        | _ -> failwith "IE"
 
 and PasType = {
       name: TypeName
@@ -238,11 +245,20 @@ with
         {name=StringName name;raw=PointerType(pt.raw);kind=TkPointer(pt)}
 
     member this.SizeOf =
+        let ordTypeSize = function
+            | OtSByte _ | OtUByte _ -> 1
+            | OtSWord _ | OtUWord _ -> 2
+            | OtSLong _ | OtULong _ -> 4
+            | OtSQWord _ | OtUQWord _ -> 8
+
         match this.kind with
-        | TkValue (s, _) -> s
+        | TkOrd (_, ordType) -> ordTypeSize ordType
+        | TkSString _ -> 256
+        | TkFloat floatType ->
+            match floatType with
+            | FtSingle -> 4
         | TkRecord (_, s) -> s
         | TkPointer _ -> ptrSize
-        | TkEnumeration t -> t.SizeOf
         | TkArray _ -> (this.raw :?> TypeDefinition).ClassSize
         | TkUnknown s -> s
 
@@ -350,6 +366,7 @@ type SystemTypes = {
         single: PasType
         string: PasType
         char: PasType
+        file: PasType
         value: PasType
         pointer: PasType
         constParam: PasType
@@ -791,7 +808,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
         match v with
         | CERInt i -> ChainLoad([ValueLoad(i)], Some ctx.details.sysTypes.int32)
         | CERBool b ->
-            let i = if b then 1 else 0
+            let i = int b
             ChainLoad([ValueLoad(i)], Some ctx.details.sysTypes.int32)
         | _ -> failwith "IE"
     | TypeSym t -> ChainLoad([TypeCastLoad t], Some t)
@@ -904,10 +921,10 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
     match exprToMetaExpr exprEl expectedType with
     | ValueKind (a, at) -> a, at
 
-and callParamToIl ctx cp idx (mr: MethodInfo option) =
+and callParamToIl ctx cp (idxmr: Option<int * MethodInfo>) =
     let param, byRef =
-        match mr with
-        | Some({paramList=pl}) ->
+        match idxmr with
+        | Some(idx,{paramList=pl}) ->
             let p = pl.[idx]
             Some p.typ, p.ref
         | _ -> None, false
@@ -924,18 +941,18 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
     match findFunction ctx ident with
     | TypeCast t ->
         let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
-        let callInstr, typ = callParamToIl ctx cp 0 None
+        let callInstr, typ = callParamToIl ctx cp None
         // TODO some real conversion ? Conv_I4 + explicit operators?
         ([
             yield! callInstr
-            typeRefToConv (t.kind.Raw ctx.details.sysTypes.pointer.raw)
+            typeRefToConv t.raw
         ], Some t)
     | RealFunction rf ->
         match rf with
         | Referenced mr, Some f ->
             ([
                 yield! cp
-                |> List.mapi (fun i p -> fst <| callParamToIl ctx p i (Some mr))
+                |> List.mapi (fun i p -> fst <| callParamToIl ctx p (Some(i, mr)))
                 |> List.concat
                 yield f
                 if popResult && mr.result.IsSome then
@@ -954,7 +971,7 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                  +Stind indKind
                 ], None)
             let deltaAdd delta cp =
-                let inst, typ = callParamToIl ctx cp 0 None
+                let inst, typ = callParamToIl ctx cp None
                 ([ // TODO check type -> should be ordinal
                  yield! inst
                  +Ldc_I4 delta
@@ -978,8 +995,50 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                     +Ret
                  ], None)
             | WriteLnProc, _ ->
+                // WRITEINTF - for int
+                // WRITEBOOLEANF - for boolean
+                // WRITEREALF - for real
+                // WRITEPOINTERF - for pointer
+                // WRITESTRINGF - for string
+                let file, cp =
+                    match cp with
+                    | ParamIdent(id)::tail ->
+                        let sl, typ = findSymbolAndGetPtr ctx id
+                        if typ.raw = ctx.details.sysTypes.file.raw then Some sl, tail
+                        else None, cp
+                    | _ -> None, cp
+                let file = if file.IsNone then fst <| findSymbolAndGetPtr ctx (stdIdent "STDOUTPUTFILE")
+                           else file.Value
+
+                let doParam = fun (cp: CallParam) ->
+                    let someInt = Some ctx.details.sysTypes.int32
+                    let e,w,p = match cp with
+                                | ParamExpr(TupleExpr[v;w;p]) -> ParamExpr(v),fst(exprToIl ctx w someInt),fst(exprToIl ctx p someInt)
+                                | ParamExpr(TupleExpr[v;w]) -> ParamExpr(v),fst(exprToIl ctx w someInt),[+Ldc_I4 0]
+                                | _ -> cp,[+Ldc_I4 0],[+Ldc_I4 0]
+                    let valParam, typ = callParamToIl ctx e None
+
+                    let subWrite = match typ.kind with
+                                   | TkOrd(OkInteger,_) -> "WRITEINTF"
+                                   | TkOrd(OkBool,_) -> "WRITEBOOLEANF"
+                                   | TkOrd(OkChar,_) -> "WRITECHARF"
+                                   | TkFloat _ -> "WRITEREALF"
+                                   | TkPointer _ -> "WRITEPOINTERF"
+                                   | TkSString _ -> "WRITESTRINGF"
+                                   |> stdIdent |> findSymbol ctx |> chainToSLList
+                    let subWrite = match subWrite with | [CallableLoad(Referenced({raw=mr}))], _ -> mr | _ -> failwith "IE"
+                    [
+                        yield! file
+                        +Ldc_I4 0
+                        yield! valParam
+                        yield! w
+                        yield! p
+                        +Call subWrite
+                    ]
+                (cp |> List.collect doParam, None)
+            | WriteLineProc, _ ->
                 let high = ref 0
-                let cparams,str = cp |> List.mapi (fun i p -> incr high; callParamToIl ctx p i None, sprintf "{%d}" i) |> List.unzip
+                let cparams,str = cp |> List.mapi (fun i p -> incr high; callParamToIl ctx p None, sprintf "{%d}" i) |> List.unzip
                 let str = String.Concat(str)
                 ([
                     +Ldstr str
@@ -1010,14 +1069,14 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                  ], None)
             | ChrFunc, _ ->
                 let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
-                let callInstr, typ = callParamToIl ctx cp 0 None
+                let callInstr, typ = callParamToIl ctx cp None
                 ([
                     yield! callInstr
                     if popResult then yield +Pop // TODO or not generate call ?
                  ], Some ctx.details.sysTypes.char)
             | OrdFunc, _ ->
                 let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
-                let callInstr, typ = callParamToIl ctx cp 0 None
+                let callInstr, typ = callParamToIl ctx cp None
                 ([
                     yield! callInstr
                     if popResult then yield +Pop // TODO or not generate call ?
@@ -1159,7 +1218,10 @@ and chainLoadToIl ctx lastType factory symload =
         res
     | DerefLoad ->
         let dt = derefLastTypePoint !lastType
-        lastType := LTPDeref(dt, true)
+        match dt.kind with
+        // TODO what with arrays ?
+        | TkRecord _ -> lastType := LTPDeref(dt, false) // special case like someRec^.Field
+        | _ -> lastType := LTPDeref(dt, true)
         res
     | ElemLoad (exprs, rt) ->
         lastType := LTPDeref(rt, false)
@@ -1519,6 +1581,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     ],[breakLabel])
                 | ForStm (ident, initExpr, delta, finiExpr, stmt) ->
                     let var, varType = getVar4ForLoop ident
+                    // TODO allow only specified kind of variables for loops
                     let (varFinalName, varFinal) = ctx.EnsureVariable(varType)
                     // TODO optimization for simple values (dont store in var)
                     let (loopInitializeVariables, _) =
@@ -1529,7 +1592,12 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         [
                             varLoad
                             +Ldloc varFinal
-                            IlBranch((if delta = 1 then IlBgt_Un else IlBlt_Un), breakLabel)
+                            let doBranch(bgt, blt) = IlBranch((if delta = 1 then bgt else blt), breakLabel)
+                            match varType.kind with
+                            | TkOrd(_,ot) -> match ot with
+                                             | OrdTypeS -> IlBgt, IlBlt
+                                             | OrdTypeU -> IlBgt_Un, IlBlt_Un
+                                             |> doBranch
                             +Ldloc varFinal
                             +Ldc_I4 delta
                             +AddInst
@@ -1631,27 +1699,25 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         typ
 
     let createStdTypes ns (symbols: Dictionary<_,_>) =
-        let addType n t s =
-            let name = StringName n
-            let t = {name=name;raw=t;kind=TkValue(s, SysType(t))}
+        let addAnyType name raw kind =
+            let t = {name=name;raw=raw;kind=kind}
             addMetaType symbols name t
-        let addArrayType n (p: PasType) ad =
-            let name = TypedName n
-            let t = {name=name;raw=p.raw;kind=ad}
-            addMetaType symbols name t
+        let addOrdType name raw ordKind ordType = TkOrd(ordKind, ordType) |> addAnyType (StringName name) raw
+        let addFloatType name raw = TkFloat(FtSingle) |> addAnyType (StringName name) raw
+        let addArrayType name (p: PasType) ad = addAnyType name p.raw ad
 
-        addType "Byte" mb.TypeSystem.Byte 1 |> ignore
-        addType "ShortInt" mb.TypeSystem.SByte 1 |> ignore
-        addType "Word" mb.TypeSystem.UInt16 2 |> ignore
-        addType "SmallInt" mb.TypeSystem.Int16 2 |> ignore
-        addType "LongWord" mb.TypeSystem.UInt32 4 |> ignore
-        addType "UInt64" mb.TypeSystem.UInt64 8 |> ignore
-        addType "Int64" mb.TypeSystem.Int64 8 |> ignore
-        let charType = addType "Char" mb.TypeSystem.Byte 1
+        addOrdType "Byte" mb.TypeSystem.Byte OkInteger (OtUByte(int Byte.MinValue, int Byte.MaxValue)) |> ignore
+        addOrdType "ShortInt" mb.TypeSystem.SByte OkInteger (OtSByte(int SByte.MinValue, int SByte.MaxValue)) |> ignore
+        addOrdType "Word" mb.TypeSystem.UInt16 OkInteger (OtUWord(int UInt16.MinValue, int UInt16.MaxValue)) |> ignore
+        addOrdType "SmallInt" mb.TypeSystem.Int16 OkInteger (OtSWord(int Int16.MinValue, int Int16.MaxValue)) |> ignore
+        addOrdType "LongWord" mb.TypeSystem.UInt32 OkInteger (OtULong(int UInt32.MinValue, int UInt32.MaxValue)) |> ignore
+        addOrdType "UInt64" mb.TypeSystem.UInt64 OkInteger (OtUQWord(UInt64.MinValue, UInt64.MaxValue)) |> ignore
+        addOrdType "Int64" mb.TypeSystem.Int64 OkInteger (OtSQWord(Int64.MinValue, Int64.MaxValue)) |> ignore
+        let charType = addOrdType "Char" mb.TypeSystem.Byte OkChar (OtUByte(int Byte.MinValue, int Byte.MaxValue))
         let strType = {name=AnonName;raw=(ModuleDetails.NewSizedType ns mb vt 256 "") :> TypeReference;kind=TkUnknown 256}
         let strDim = {
                         low = 1
-                        high = 256
+                        high = 255
                         size = 256
                         elemSize = 1
                         elemType = charType
@@ -1661,17 +1727,18 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
 
         // file = name + handle
         let fileType = (ModuleDetails.NewSizedType ns mb vt (256 + ptrSize) "") :> TypeReference
-        addMetaType symbols (TypedName TIdFile) {name=TypedName TIdFile;kind=TkUnknown(256 + ptrSize);raw=fileType} |> ignore
+        let fileType = addMetaType symbols (TypedName TIdFile) {name=TypedName TIdFile;kind=TkUnknown(256 + ptrSize);raw=fileType}
         {
-            int32 = addType "Integer" mb.TypeSystem.Int32 4
-            single = addType "Real" mb.TypeSystem.Single 4
-            string = addArrayType TIdString strType (TkArray([strDim], charType))
+            int32 = addOrdType "Integer" mb.TypeSystem.Int32 OkInteger (OtSWord(int Int32.MinValue, int Int32.MaxValue))
+            single = addFloatType "Real" mb.TypeSystem.Single
+            string = addArrayType (TypedName TIdString) strType (TkArray([strDim], charType))
             char = charType
+            file = fileType
             value = {name=AnonName;raw=vt;kind=TkUnknown 0}
-            pointer = addType "Pointer" (PointerType mb.TypeSystem.Void) ptrSize
-            constParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown -1}
-            varParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown -1}
-            boolean = addType "Boolean" mb.TypeSystem.Boolean 1
+            pointer = addAnyType (StringName "Pointer") (PointerType mb.TypeSystem.Void) (TkPointer({name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}))
+            constParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown 0}
+            varParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown 0}
+            boolean = addOrdType "Boolean" mb.TypeSystem.Boolean OkBool (OtUByte(0, 1))
             net_obj = {name=AnonName;raw=ot;kind=TkUnknown 0}
             net_void = {name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}
         }
@@ -1690,8 +1757,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         PtrToStringAnsi = ptrToStringAnsi
                     }
                     let tsingle = systemTypes.single
-                    newSymbols.Add(StringName "true", CERBool true |> ConstSym)
-                    newSymbols.Add(StringName "false", CERBool false |> ConstSym)
+                    newSymbols.Add(StringName "true", CERBool 0uy |> ConstSym)
+                    newSymbols.Add(StringName "false", CERBool 255uy |> ConstSym)
                     //newSymbols.Add("GetMem", Referenced allocMem |> MethodSym)
                     //newSymbols.Add("FreeMem", Referenced freeMem |> MethodSym)
                     let singleScalar raw =
@@ -1706,6 +1773,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     // procedure Write([var F: file;] x1[:w[:d]] {; xi[:w[:d]]});
                     // procedure ReadLn([var F: file;] var x1 {; var xi});
                     newSymbols.Add(StringName "WriteLn", Intrinsic WriteLnProc |> MethodSym)
+                    newSymbols.Add(StringName "WriteLine", Intrinsic WriteLineProc |> MethodSym)
                     // procedure New(var P: Pointer);
                     // procedure Dispose(var P: Pointer);
                     newSymbols.Add(StringName "Break", Intrinsic BreakProc |> MethodSym)
@@ -1849,10 +1917,10 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                let typ = match ctx.FindTypeId typeId with | Some t -> t | _ -> failwith "IE not found"
                                addTypePointer count typ.name (StringName name)
                            | TypeEnum enumValues ->
-                               enumValues |> List.iteri (fun i v -> newSymbols.Add (StringName v, EnumValueSym(i)))
+                               let max = enumValues |> List.fold (fun i v -> newSymbols.Add (StringName v, EnumValueSym(i)); i+1) 0
                                let name = StringName name
                                let pint32 = ctx.details.sysTypes.int32
-                               addType name {name=name;kind=TkEnumeration(pint32);raw=pint32.raw}
+                               addType name {name=name;kind=TkOrd(OkEnumeration, OtULong(0, max));raw=pint32.raw}
                            | Record (packed, fields) -> 
                                 let mutable size = 0;
                                 let td = TypeDefinition(ctx.details.ns, name, TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout)

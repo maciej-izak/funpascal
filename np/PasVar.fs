@@ -155,4 +155,4 @@ type PasState with
             moduled = ModuleDef()
         }
 
-let opp = new OperatorPrecedenceParser<ExprEl,unit,PasState>()
+let opp = OperatorPrecedenceParser<ExprEl,unit,PasState>()
