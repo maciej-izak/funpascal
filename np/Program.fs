@@ -15,11 +15,18 @@ let main argv =
 var
   r: Real;
   c: integer;
+  s: string;
 begin
   InitSystem;
   c := 12;
   WriteLine(StdOutputHandle);
-  WriteLn(c);
+  r := 3.14;
+  Str(r,s,2);
+  WriteLine(s);
+  WriteLn(s);
+  WriteLn(3.14:0:2);
+  WriteLn(12:4);
+  WriteLn('c':4);
   //Val('3.14', r, c);
   //WriteLn(r:1:2);
   //WriteLn(Succ(byte(255)), '  ', Pred(0));

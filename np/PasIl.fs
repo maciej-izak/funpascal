@@ -225,14 +225,17 @@ type TOrdKind =
     | OkEnumeration
     | OkChar
 
+type TArrayKind =
+    | AkArray
+    | AkSString of byte
+
 type TypeKind =
     | TkUnknown of int
     | TkOrd of OrdKind: TOrdKind * OrdType: TOrdType
-    | TkSString of byte
     | TkFloat of FloatType: TFloatType
     | TkRecord of Dictionary<string,FieldDefinition*PasType> * int
     | TkPointer of PasType
-    | TkArray of (ArrayDim list * PasType)
+    | TkArray of (TArrayKind * ArrayDim list * PasType)
 
 and PasType = {
       name: TypeName
@@ -253,7 +256,6 @@ with
 
         match this.kind with
         | TkOrd (_, ordType) -> ordTypeSize ordType
-        | TkSString _ -> 256
         | TkFloat floatType ->
             match floatType with
             | FtSingle -> 4
@@ -264,7 +266,7 @@ with
 
     member this.ResolveArraySelfType() =
         match this.kind with
-        | TkArray(d,_) -> d.Head.selfType := this
+        | TkArray(_,d,_) -> d.Head.selfType := this
         | _ -> failwith "IE"
         this
 
@@ -779,7 +781,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
                 resolveTail (StructLoad(sl)::acc) (snd vt) restOfTail
             | Designator.Array exprs ->
                 let tref = match vt.kind with | TkArray a -> a | _ -> failwithf "IE array expected %A" vt.kind
-                let dims, elemTyp = tref
+                let _, dims, elemTyp = tref
                 // TODO rework this slow comparison
                 if exprs.Length > dims.Length then failwith "IE"
                 // TODO assign sub array parts?
@@ -813,6 +815,10 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
         | _ -> failwith "IE"
     | TypeSym t -> ChainLoad([TypeCastLoad t], Some t)
     | _ -> SymbolLoadError
+
+let findMethodReference ctx =
+    stdIdent >> findSymbol ctx >> chainToSLList >>
+    function | [CallableLoad(Referenced({raw=mr}))], _ -> mr | _ -> failwith "IE"
 
 type LastTypePoint =
     | LTPVar of VariableKind * PasType
@@ -874,7 +880,7 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
             match exprToMetaExpr a et with
             | ValueKind(a, at) ->
                 match exprToMetaExpr b (Some at) with
-                | ValueKind(b, bt) ->
+                | ValueKind(b, _) ->
                     ([
                         yield! a
                         yield! b
@@ -882,7 +888,7 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
                     ], at) |> ValueKind
         let inline add1OpIl a i =
             match exprToMetaExpr a et with
-            | ValueKind(a, at) -> ValueKind([ yield! a; yield +i], ctx.details.sysTypes.int32)
+            | ValueKind(a, at) -> ValueKind([ yield! a; yield +i; yield typeRefToConv at.raw], at)
         match el with
         | Value v -> valueToValueKind ctx v et
         | Add(a, b) -> add2OpIl a b AddInst
@@ -1024,18 +1030,22 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                                    | TkOrd(OkChar,_) -> "WRITECHARF"
                                    | TkFloat _ -> "WRITEREALF"
                                    | TkPointer _ -> "WRITEPOINTERF"
-                                   | TkSString _ -> "WRITESTRINGF"
-                                   |> stdIdent |> findSymbol ctx |> chainToSLList
-                    let subWrite = match subWrite with | [CallableLoad(Referenced({raw=mr}))], _ -> mr | _ -> failwith "IE"
+                                   | TkArray(AkSString _,_,_) -> "WRITESTRINGF"
+                                   |> findMethodReference ctx
                     [
                         yield! file
-                        +Ldc_I4 0
+                        +Ldnull
                         yield! valParam
                         yield! w
                         yield! p
                         +Call subWrite
                     ]
-                (cp |> List.collect doParam, None)
+                ([
+                        yield! cp |> List.collect doParam
+                        yield! file
+                        +Ldnull
+                        +Call(findMethodReference ctx "WRITENEWLINE")
+                 ], None)
             | WriteLineProc, _ ->
                 let high = ref 0
                 let cparams,str = cp |> List.mapi (fun i p -> incr high; callParamToIl ctx p None, sprintf "{%d}" i) |> List.unzip
@@ -1731,14 +1741,14 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         {
             int32 = addOrdType "Integer" mb.TypeSystem.Int32 OkInteger (OtSWord(int Int32.MinValue, int Int32.MaxValue))
             single = addFloatType "Real" mb.TypeSystem.Single
-            string = addArrayType (TypedName TIdString) strType (TkArray([strDim], charType))
+            string = addArrayType (TypedName TIdString) strType (TkArray(AkSString 255uy, [strDim], charType))
             char = charType
             file = fileType
             value = {name=AnonName;raw=vt;kind=TkUnknown 0}
             pointer = addAnyType (StringName "Pointer") (PointerType mb.TypeSystem.Void) (TkPointer({name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}))
             constParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown 0}
             varParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown 0}
-            boolean = addOrdType "Boolean" mb.TypeSystem.Boolean OkBool (OtUByte(0, 1))
+            boolean = addOrdType "Boolean" mb.TypeSystem.Byte OkBool (OtUByte(0, 1))
             net_obj = {name=AnonName;raw=ot;kind=TkUnknown 0}
             net_void = {name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}
         }
@@ -1757,8 +1767,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         PtrToStringAnsi = ptrToStringAnsi
                     }
                     let tsingle = systemTypes.single
-                    newSymbols.Add(StringName "true", CERBool 0uy |> ConstSym)
-                    newSymbols.Add(StringName "false", CERBool 255uy |> ConstSym)
+                    newSymbols.Add(StringName "true", CERBool 0xFFuy |> ConstSym)
+                    newSymbols.Add(StringName "false", CERBool 0uy |> ConstSym)
                     //newSymbols.Add("GetMem", Referenced allocMem |> MethodSym)
                     //newSymbols.Add("FreeMem", Referenced freeMem |> MethodSym)
                     let singleScalar raw =
@@ -1858,7 +1868,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 FieldDefinition("item0", FieldAttributes.Public, typ.raw)
                 |> at.Fields.Add
                 let name = StringName name
-                {name=name;raw=at;kind=TkArray(dims,typ)}.ResolveArraySelfType()
+                {name=name;raw=at;kind=TkArray(AkArray,dims,typ)}.ResolveArraySelfType()
 
             let rec doArrayDef dimensions tname dims name =
 
