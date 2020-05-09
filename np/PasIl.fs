@@ -137,18 +137,32 @@ type AtomInstruction =
     | Bgt_Un of Instruction
     | Blt_Un of Instruction
 
+let nullRef() = ref Unchecked.defaultof<Instruction>
+
 type BranchLabel =
-    | LazyLabel of IlInstruction
+    | LazyLabel of IlInstruction * Instruction ref
     | ForwardLabel
     | UserLabel of string
 
 and IlInstruction =
     | IlBranch of IlBranch * BranchLabel ref
     | IlResolved of (AtomInstruction * Instruction)
+    | IlResolvedEx of (AtomInstruction * Instruction * BranchLabel list ref)
+with
+    member this.FixRefs(newInstruction: Instruction) =
+        match this with
+        | IlResolvedEx (_, _, refs) ->
+            !refs |> List.iter
+                (function
+                 | LazyLabel(_,{contents=i}) when (i.Operand :? Instruction) -> i.Operand <- newInstruction
+                 | _ -> ()
+                )
+        | _ -> ()
+        newInstruction
 
 let ilToAtom ilList =
     ilList
-    |> List.map (function | IlResolved(a,_) -> a | _ -> failwith "IE")
+    |> List.map (function | IlResolved(a,_) -> a | IlResolvedEx(a,_,_) -> a | _ -> failwith "IE")
 
 type MetaInstruction =
     | DeclareLocal of VariableDefinition
@@ -502,7 +516,9 @@ type Ctx = {
 
     static member resolveSysLabels head labels =
         match head with
-        | Some h -> for l in labels do l := LazyLabel(h)
+        | Some((IlResolvedEx(_,_,rex)) as h) ->
+            rex := labels |> List.fold (fun s l -> let ll = LazyLabel(h, nullRef()) in (l := ll; ll::s)) !rex
+        | Some h -> for l in labels do l := LazyLabel(h, nullRef())
         | _ -> ()
 
 let inline toMap kvps =
@@ -512,10 +528,12 @@ let inline toMap kvps =
 
 let rec brtoinstr l =
     match !l with
-    | LazyLabel instr ->
+    | LazyLabel(instr,ref) ->
          match instr with
-         | IlBranch (_, i) -> brtoinstr i
+         | IlBranch(_, i) -> brtoinstr i |> fst
          | IlResolved(_, i) -> i
+         | IlResolvedEx(_, i, _) -> i
+         , ref
     | _ -> failwithf "IE"
 
 and private atomInstr = function
@@ -636,7 +654,7 @@ and private atomInstr = function
     | Blt_Un i     -> Instruction.Create(OpCodes.Blt_Un, i)
 
 let private instr = function
-    | IlBranch (bk, i) ->
+    | IlBranch(bk, i) ->
         match bk with
         | IlBrfalse -> OpCodes.Brfalse
         | IlBrtrue  -> OpCodes.Brtrue
@@ -649,10 +667,15 @@ let private instr = function
         | IlBne_Un  -> OpCodes.Bne_Un
         | IlBgt_Un  -> OpCodes.Bgt_Un
         | IlBlt_Un  -> OpCodes.Blt_Un
-        |> fun opc -> Instruction.Create(opc, brtoinstr i)
+        |> fun opc ->
+            let i, ref = brtoinstr i
+            ref := Instruction.Create(opc, i)
+            !ref
     | IlResolved(_,i) -> i
+    | IlResolvedEx(_,i,_) -> i
 
 let (~+) (i: AtomInstruction) = IlResolved(i, i |> atomInstr)
+let (~+.) (i: AtomInstruction) = IlResolvedEx(i, i |> atomInstr, ref [])
 
 let metaToIlList = function
     | InstructionList l -> l
@@ -664,20 +687,21 @@ let private emit (ilg : Cil.ILProcessor) inst =
     | DeclareLocal t -> t |> ilg.Body.Variables.Add
     | InstructionList p -> p |> List.iter (instr >> ilg.Append)
     | HandleFunction (instructionsBlock, finallyBlock, endOfAll) ->
-        let appendAndReplaceRetGen (brOpcode: OpCode) (goto: Instruction) (i: Instruction) =
-            if i.OpCode = OpCodes.Ret then
-                ilg.Append (Instruction.Create(brOpcode, goto))
-            else ilg.Append i
+        let appendAndReplaceRetGen (brOpcode: OpCode) (goto: Instruction) (il: IlInstruction) =
+            match il with
+            | IlResolvedEx(_,i,_) when i.OpCode = OpCodes.Ret -> il.FixRefs <| Instruction.Create(brOpcode, goto)
+            | _ -> il |> instr
+            |> (fun i -> ilg.Append i; i)
+
         let finallyBlock, appendAndReplaceRet = match finallyBlock with
                                                 | Some block -> block, appendAndReplaceRetGen OpCodes.Leave
                                                 | None -> [], appendAndReplaceRetGen OpCodes.Br
         let beginOfEnd = endOfAll.Head |> instr
         let processList replaceFun = function
             | head::tail ->
-                let s = head |> instr
-                s |> replaceFun
-                tail |> List.iter (instr >> replaceFun)
-                s
+                let result = head |> replaceFun
+                tail |> List.iter (replaceFun >> ignore)
+                result
             | [] -> beginOfEnd
         let replaceRet = appendAndReplaceRet beginOfEnd
         let start = processList replaceRet instructionsBlock
@@ -880,10 +904,11 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
             match exprToMetaExpr a et with
             | ValueKind(a, at) ->
                 match exprToMetaExpr b (Some at) with
-                | ValueKind(b, _) ->
+                | ValueKind(b, bt) ->
                     ([
                         yield! a
                         yield! b
+                        yield typeRefToConv at.raw
                         yield +i
                     ], at) |> ValueKind
         let inline add1OpIl a i =
@@ -998,7 +1023,7 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                                | _ -> failwith "IE"
             | ExitProc, [] -> // TODO handle Exit(result);
                 ([
-                    +Ret
+                    +.Ret
                  ], None)
             | WriteLnProc, _ ->
                 // WRITEINTF - for int
@@ -1482,7 +1507,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let (falseBranch, falseLabels) = stmtToIlList fb
                     let hasFalseBranch = falseBranch.Length > 0
                     // TODO rethink LazyLabel here
-                    let checkCondition = [IlBranch(IlBrfalse,if hasFalseBranch then ref (LazyLabel(falseBranch.[0])) else firstEnfOfStm)]
+                    let checkCondition = [IlBranch(IlBrfalse,if hasFalseBranch then ref (LazyLabel(falseBranch.[0], nullRef())) else firstEnfOfStm)]
                     ([
                         yield! condition
                         yield! checkCondition
@@ -1505,7 +1530,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let ensureOmitCase i =
                         match !omitCase with
                         | Some c ->
-                            c := LazyLabel i
+                            c := LazyLabel (i, nullRef())
                             omitCase := None
                         | _ -> ()
                     let casec =
@@ -1522,7 +1547,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                         match l with
                                         | CaseExpr(ConstExpr(ce)) ->
                                              yield! (fst <| exprToIl ce None) // TODO type handle
-                                             yield IlBranch(IlBeq,ref(LazyLabel(caseBranch.[0])))
+                                             yield IlBranch(IlBeq,ref(LazyLabel(caseBranch.[0], nullRef())))
                                         | CaseRange(ConstExpr(ce1), ConstExpr(ce2)) ->
                                              // TODO check proper range
                                              // lower range
@@ -1534,7 +1559,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                              yield +Ldloc var
                                              yield! (fst <| exprToIl ce2 None) //TODO type handle
                                              yield IlBranch(IlBgt, nextCase)
-                                             yield IlBranch(IlBr, ref(LazyLabel (caseBranch.[0])))
+                                             yield IlBranch(IlBr, ref(LazyLabel (caseBranch.[0], nullRef())))
                                         | _ -> failwith "IE";
                                     ], [yield! caseBranch ; IlBranch(IlBr, lastEndOfStm)], caseLabels)
                          let defaultCase = [yield! defBranch; IlBranch(IlBr, lastEndOfStm)]
@@ -1555,10 +1580,10 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                      , [yield! labels ; yield lastEndOfStm])
                 | WhileStm (expr, stmt) ->
                     let condition = fst <| exprToIl expr (Some ctx.details.sysTypes.boolean)
-                    let conditionLabel = ref (LazyLabel condition.Head)
+                    let conditionLabel = ref (LazyLabel (condition.Head, nullRef()))
                     // push loop context
                     let breakLabel = ref ForwardLabel
-                    let continueLabel = ref (LazyLabel condition.Head)
+                    let continueLabel = ref (LazyLabel (condition.Head, nullRef()))
                     ctx.loop.Push(continueLabel, breakLabel)
                     let (whileBranch, whileLabels) = stmtToIlList stmt
                     Ctx.resolveSysLabels (List.tryHead condition) whileLabels
@@ -1568,15 +1593,15 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         yield! whileBranch
                         yield! condition
                         yield IlBranch(IlBrtrue, ref (LazyLabel
-                                                (match List.tryHead whileBranch with
+                                               ((match List.tryHead whileBranch with
                                                 | Some h -> h
-                                                | _ -> condition.Head)))
+                                                | _ -> condition.Head), nullRef())))
                     ],[breakLabel])
                 | RepeatStm (stmt, expr) ->
                     let condition = fst <| exprToIl expr (Some ctx.details.sysTypes.boolean)
                     // push loop context
                     let breakLabel = ref ForwardLabel
-                    let continueLabel = ref (LazyLabel condition.Head)
+                    let continueLabel = ref (LazyLabel(condition.Head,nullRef()))
                     ctx.loop.Push(continueLabel, breakLabel)
                     let (repeatBranch, whileLabels) = stmtToIlList stmt
                     Ctx.resolveSysLabels (List.tryHead condition) whileLabels
@@ -1585,9 +1610,9 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         yield! repeatBranch
                         yield! condition
                         yield IlBranch(IlBrfalse,ref (LazyLabel
-                                                (match List.tryHead repeatBranch with
+                                               ((match List.tryHead repeatBranch with
                                                 | Some h -> h
-                                                | _ -> condition.[0])))
+                                                | _ -> condition.[0]),nullRef())))
                     ],[breakLabel])
                 | ForStm (ident, initExpr, delta, finiExpr, stmt) ->
                     let var, varType = getVar4ForLoop ident
@@ -1615,10 +1640,10 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         ]
                     let (incLoopVar, _) = [AssignStm(ident, Add(Value(VIdent(ident)), Value(VInteger delta)))] |> stmtToIlList
                     // push loop context between
-                    let continueLabel = ref (LazyLabel incLoopVar.Head)
+                    let continueLabel = ref (LazyLabel (incLoopVar.Head, nullRef()))
                     ctx.loop.Push(continueLabel, breakLabel)
                     let (forBranch, forLabels) = stmtToIlList stmt
-                    let stmtLabel = defaultArg (List.tryHead forBranch) incLoopVar.Head |> LazyLabel |> ref
+                    let stmtLabel = (defaultArg (List.tryHead forBranch) incLoopVar.Head, nullRef()) |> LazyLabel |> ref
                     let condition =
                         [
                           // TODO move simple global loop variables into local void variable
