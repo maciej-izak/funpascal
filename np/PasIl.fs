@@ -900,17 +900,21 @@ let typeRefToConv (r: TypeReference) =
 
 let rec exprToIl (ctx: Ctx) exprEl expectedType =
     let rec exprToMetaExpr el et =
-        let add2OpIl a b i =
+        let add2OpIlTyped a b i et =
             match exprToMetaExpr a et with
             | ValueKind(a, at) ->
                 match exprToMetaExpr b (Some at) with
                 | ValueKind(b, bt) ->
+                    let typ = match et with | Some t -> t | _ -> at
                     ([
                         yield! a
                         yield! b
-                        yield typeRefToConv at.raw
+                        if at <> bt then yield typeRefToConv at.raw
                         yield +i
-                    ], at) |> ValueKind
+                        if et.IsSome then yield typeRefToConv et.Value.raw
+                    ], typ) |> ValueKind
+        let add2OpIl a b i = add2OpIlTyped a b i et
+        let add2OpIlBool a b i = add2OpIlTyped a b i (Some ctx.details.sysTypes.boolean)
         let inline add1OpIl a i =
             match exprToMetaExpr a et with
             | ValueKind(a, at) -> ValueKind([ yield! a; yield +i; yield typeRefToConv at.raw], at)
@@ -931,15 +935,15 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
         | UnaryMinus(a) -> add1OpIl a NegInst
         | Equal(a, b) -> add2OpIl a b Ceq
         | NotEqual(a, b) ->
-            match add2OpIl a b Ceq with
+            match add2OpIlBool a b Ceq with
             | ValueKind(o, ot) -> ([ yield! o; +Ldc_I4 0; +Ceq ], ctx.details.sysTypes.boolean) |> ValueKind
-        | StrictlyLessThan(a, b) -> add2OpIl a b Clt
-        | StrictlyGreaterThan(a, b) -> add2OpIl a b Cgt
+        | StrictlyLessThan(a, b) -> add2OpIlBool a b Clt
+        | StrictlyGreaterThan(a, b) -> add2OpIlBool a b Cgt
         | LessThanOrEqual(a, b) ->
-            match add2OpIl a b Cgt with
+            match add2OpIlBool a b Cgt with
             | ValueKind(o, ot) -> ([ yield! o; +Ldc_I4 0; +Ceq ], ctx.details.sysTypes.boolean) |> ValueKind
         | GreaterThanOrEqual(a, b) ->
-            match add2OpIl a b Clt with
+            match add2OpIlBool a b Clt with
             | ValueKind(o, ot) -> ([ yield! o; +Ldc_I4 0; +Ceq ], ctx.details.sysTypes.boolean) |> ValueKind
         | Addr(a) ->
             ([
@@ -950,7 +954,13 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
         | _ -> failwith "IE"
 
     match exprToMetaExpr exprEl expectedType with
-    | ValueKind (a, at) -> a, at
+    | ValueKind (a, at) ->
+        [
+         yield! a
+         if expectedType.IsSome then
+            let typ = expectedType.Value
+            match typ.kind with | TkOrd _ | TkFloat _ -> yield typeRefToConv typ.raw | _ -> ()
+        ], at
 
 and callParamToIl ctx cp (idxmr: Option<int * MethodInfo>) =
     let param, byRef =
@@ -1136,11 +1146,7 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
 
 and valueToValueKind ctx v (expectedType: PasType option) =
     match v with
-    | VInteger i ->
-        match expectedType with
-        | Some t when t.raw = ctx.details.moduleBuilder.TypeSystem.Single ->
-            ValueKind([+Ldc_I4 i; +Conv Conv_R4], ctx.details.sysTypes.single)
-        | _ -> ValueKind([+Ldc_I4 i], ctx.details.sysTypes.int32)
+    | VInteger i -> ValueKind([+Ldc_I4 i], ctx.details.sysTypes.int32)
     | VFloat f -> ValueKind([+Ldc_R4 (single f)], ctx.details.sysTypes.single)
     | VIdent i -> findSymbolAndLoad ctx i |> ValueKind
     | VString s ->

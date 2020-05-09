@@ -18,13 +18,7 @@ var
   s: string;
 begin
   InitSystem;
-  c := 12;
-  WriteLine(StdOutputHandle);
-  r := 3.14;
-  Str(r,s,2);
-  //WriteLine(s);
-  //WriteLn(s);
-  //WriteLn(3.14:0:2);
+  WriteLn(3.14:4:4);
   //WriteLn(12:4);
   //WriteLn('c':4);
   //Val('3.14', r, c);
