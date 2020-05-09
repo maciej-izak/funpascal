@@ -14,11 +14,20 @@ let main argv =
 {$I system.inc}
 var
   r: Real;
-  c: integer;
+  //c: integer;
   s: string;
+  c: char;
 begin
   InitSystem;
+  ReadLn(c);
+  WriteLn(c);
   WriteLn(3.14:4:4);
+  case c of
+    'p': WriteLn(3.14:4:4);
+    'w': WriteLn('w');
+  else
+    WriteLn('Something else :)');
+  end;
   //WriteLn(12:4);
   //WriteLn('c':4);
   //Val('3.14', r, c);
@@ -26,7 +35,9 @@ begin
   //WriteLn(Succ(byte(255)), '  ', Pred(0));
 end.
       """
-    |> printfn "%A"
+    |> function
+       | Success _ -> printfn "Compilation success!"
+       | Failure(s,_,_) -> printfn "%s" s
     0
     (*let errorHandler = ProcessExiter(colorizer = function ErrorCode.HelpText -> None | _ -> Some ConsoleColor.Red)
     let parser = ArgumentParser.Create<NpArguments>(programName = "ls", errorHandler = errorHandler)

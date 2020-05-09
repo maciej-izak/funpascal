@@ -73,7 +73,7 @@ let private compileModule (ProgramAst(name, block)) = //, methods: Method list) 
         MethodDefinition(methodName, methodAttributes, moduleBuilder.TypeSystem.Void)
     let ilBuilder = IlBuilder(moduleBuilder)
     let bb = ilBuilder.BuildIl(block, MainScope(moduleName, typeBuilder))
-    printfn "bb = %A" bb
+    //printfn "bb = %A" bb
     let mainBlock = compileBlock methodBuilder typeBuilder bb
     mainBlock.Body.InitLocals <- true
     // https://github.com/jbevain/cecil/issues/365
@@ -101,8 +101,8 @@ let testAll s =
     | Success (r,_,_) -> 
                         let ad = compileModule(ProgramAst(fst r, Block.Create(snd r)))
                         ad.Write("test.dll")
-                        Some(r)
-    | _ -> None
+                        ast
+    | _ -> ast
 
 
 let toString (x:'a) = 

@@ -105,6 +105,7 @@ let keywords = [
   ]
 
 let expr = opp.ExpressionParser
+let pexpr = popp.ExpressionParser
 
 let keywordsSet = HashSet<string>(keywords);
 
@@ -315,9 +316,9 @@ let exprSet =
     
 let callExpr =
     let actualParam =
-        (expr |>> function 
-                  | Value(VIdent(i)) -> ParamIdent i
-                  | e -> ParamExpr e)
+        (pexpr |>> function
+                   | Value(VIdent(i)) -> ParamIdent i
+                   | e -> ParamExpr e)
     let actualParamsList =
         between ``( `` ``) `` (sepEndBy actualParam ``, ``)
     designator .>>.? actualParamsList 
@@ -325,9 +326,9 @@ let callExpr =
 
 let exprCall = callExpr |>> VCallResult
 
+let basicExprAtom = choice[exprCall; exprIdent; attempt(exprInt); exprFloat; exprString; exprSet; exprNil] |>> Value
 let exprAtom =
-    let tupleValue = choice[exprCall; exprIdent; attempt(exprInt); exprFloat; exprString; exprSet; exprNil] |>> Value
-    (sepEndBy tupleValue ``: ``)
+    (sepEndBy basicExprAtom ``: ``)
       |>> function
           | [e] -> e
           | e -> TupleExpr e
@@ -335,8 +336,8 @@ let exprAtom =
 let exprExpr =
     between ``( `` ``) `` expr 
 
-let term = (exprExpr <|> exprAtom) .>> wsc
-opp.TermParser <- term
+opp.TermParser <- (exprExpr <|> basicExprAtom) .>> wsc
+popp.TermParser <- (exprExpr <|> exprAtom) .>> wsc
 
 addOperators()
 

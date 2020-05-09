@@ -186,7 +186,10 @@ type Intrinsic =
     | ExitProc
     | ContinueProc
     | BreakProc
+    | WriteProc
     | WriteLnProc
+    | ReadProc
+    | ReadLnProc
     | WriteLineProc
     | OrdFunc
     | ChrFunc
@@ -1000,6 +1003,93 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                     yield +Pop
              ], mr.result)
         | Intrinsic i, _ ->
+            let doWrite() =
+                // WRITEINTF - for int
+                // WRITEBOOLEANF - for boolean
+                // WRITEREALF - for real
+                // WRITEPOINTERF - for pointer
+                // WRITESTRINGF - for string
+                let file, cp =
+                    match cp with
+                    | ParamIdent(id)::tail ->
+                        let sl, typ = findSymbolAndGetPtr ctx id
+                        if typ.raw = ctx.details.sysTypes.file.raw then Some sl, tail
+                        else None, cp
+                    | _ -> None, cp
+                let file() = if file.IsNone then fst <| findSymbolAndGetPtr ctx (stdIdent "STDOUTPUTFILE")
+                             else file.Value
+
+                let doParam = fun (cp: CallParam) ->
+                    let someInt = Some ctx.details.sysTypes.int32
+                    let e,w,p = match cp with
+                                | ParamExpr(TupleExpr[v;w;p]) -> ParamExpr(v),fst(exprToIl ctx w someInt),fst(exprToIl ctx p someInt)
+                                | ParamExpr(TupleExpr[v;w]) -> ParamExpr(v),fst(exprToIl ctx w someInt),[+Ldc_I4 0]
+                                | _ -> cp,[+Ldc_I4 0],[+Ldc_I4 0]
+                    let valParam, typ = callParamToIl ctx e None
+
+                    let subWrite = match typ.kind with
+                                   | TkOrd(OkInteger,_) -> "WRITEINTF"
+                                   | TkOrd(OkBool,_) -> "WRITEBOOLEANF"
+                                   | TkOrd(OkChar,_) -> "WRITECHARF"
+                                   | TkFloat _ -> "WRITEREALF"
+                                   | TkPointer _ -> "WRITEPOINTERF"
+                                   | TkArray(AkSString _,_,_) -> "WRITESTRINGF"
+                                   |> findMethodReference ctx
+                    [
+                        yield! file()
+                        +Ldnull
+                        yield! valParam
+                        yield! w
+                        yield! p
+                        +Call subWrite
+                    ]
+                file, cp |> List.collect doParam
+
+            let doRead() =
+                // READINT - Integer argument
+                // READSMALLINT - Small integer argument
+                // READSHORTINT - Short integer argument
+                // READWORD - Word argument
+                // READBYTE - Byte argument
+                // READBOOLEAN - Boolean argument
+                // READCH - Character argument
+                // READREAL - Real argument
+                // READSTRING - String argument
+
+                let file, cp =
+                    match cp with
+                    | ParamIdent(id)::tail ->
+                        let sl, typ = findSymbolAndGetPtr ctx id
+                        if typ.raw = ctx.details.sysTypes.file.raw then Some sl, tail
+                        else None, cp
+                    | _ -> None, cp
+                let file() = if file.IsNone then fst <| findSymbolAndGetPtr ctx (stdIdent "STDINPUTFILE")
+                             else file.Value
+
+                let doParam = function
+                    | ParamIdent(id) ->
+                        let valParam, typ = findSymbolAndGetPtr ctx id
+                        let subWrite = match typ.kind with
+                                       | TkOrd(OkInteger,OtUByte _) -> "READBYTE"
+                                       | TkOrd(OkInteger,OtSByte _) -> "READSHORTINT"
+                                       | TkOrd(OkInteger,OtUWord _) -> "READWORD"
+                                       | TkOrd(OkInteger,OtSWord _) -> "READSMALLINT"
+                                       | TkOrd(OkInteger,OtULong _) -> "READINT"
+                                       | TkOrd(OkInteger,OtSLong _) -> "READINT"
+                                       | TkOrd(OkBool,_) -> "READBOOLEAN"
+                                       | TkOrd(OkChar,_) -> "READCH"
+                                       | TkFloat _ -> "READREAL"
+                                       | TkArray(AkSString _,_,_) -> "READSTRING"
+                                       |> findMethodReference ctx
+                        [
+                            yield! file()
+                            +Ldnull
+                            yield! valParam
+                            +Call subWrite
+                        ]
+                    | _ -> failwith "IE"
+                file, cp |> List.collect doParam
+
             let deltaModify delta id =
                 let inst, typ = findSymbolAndGetPtr ctx id
                 let indKind = typ.IndKind
@@ -1035,51 +1125,27 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                 ([
                     +.Ret
                  ], None)
+            | WriteProc, _ ->
+                let _, writeParams = doWrite()
+                (writeParams, None)
             | WriteLnProc, _ ->
-                // WRITEINTF - for int
-                // WRITEBOOLEANF - for boolean
-                // WRITEREALF - for real
-                // WRITEPOINTERF - for pointer
-                // WRITESTRINGF - for string
-                let file, cp =
-                    match cp with
-                    | ParamIdent(id)::tail ->
-                        let sl, typ = findSymbolAndGetPtr ctx id
-                        if typ.raw = ctx.details.sysTypes.file.raw then Some sl, tail
-                        else None, cp
-                    | _ -> None, cp
-                let file = if file.IsNone then fst <| findSymbolAndGetPtr ctx (stdIdent "STDOUTPUTFILE")
-                           else file.Value
-
-                let doParam = fun (cp: CallParam) ->
-                    let someInt = Some ctx.details.sysTypes.int32
-                    let e,w,p = match cp with
-                                | ParamExpr(TupleExpr[v;w;p]) -> ParamExpr(v),fst(exprToIl ctx w someInt),fst(exprToIl ctx p someInt)
-                                | ParamExpr(TupleExpr[v;w]) -> ParamExpr(v),fst(exprToIl ctx w someInt),[+Ldc_I4 0]
-                                | _ -> cp,[+Ldc_I4 0],[+Ldc_I4 0]
-                    let valParam, typ = callParamToIl ctx e None
-
-                    let subWrite = match typ.kind with
-                                   | TkOrd(OkInteger,_) -> "WRITEINTF"
-                                   | TkOrd(OkBool,_) -> "WRITEBOOLEANF"
-                                   | TkOrd(OkChar,_) -> "WRITECHARF"
-                                   | TkFloat _ -> "WRITEREALF"
-                                   | TkPointer _ -> "WRITEPOINTERF"
-                                   | TkArray(AkSString _,_,_) -> "WRITESTRINGF"
-                                   |> findMethodReference ctx
-                    [
-                        yield! file
-                        +Ldnull
-                        yield! valParam
-                        yield! w
-                        yield! p
-                        +Call subWrite
-                    ]
+                let file, writeParams = doWrite()
                 ([
-                        yield! cp |> List.collect doParam
-                        yield! file
-                        +Ldnull
-                        +Call(findMethodReference ctx "WRITENEWLINE")
+                    yield! writeParams
+                    yield! file()
+                    +Ldnull
+                    +Call(findMethodReference ctx "WRITENEWLINE")
+                 ], None)
+            | ReadProc, _ ->
+                let _, readParams = doRead()
+                (readParams, None)
+            | ReadLnProc, _ ->
+                let file, readParams = doRead()
+                ([
+                    yield! readParams
+                    yield! file()
+                    +Ldnull
+                    +Call(findMethodReference ctx "READNEWLINE")
                  ], None)
             | WriteLineProc, _ ->
                 let high = ref 0
@@ -1542,7 +1608,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let casec =
                         [for (tocheck, stmt) in mainLabels do
                             let (caseBranch, caseLabels) = stmtToIlList stmt
-                            yield
+                            if List.isEmpty caseBranch = false then
+                              yield
                                 (
                                  [
                                     for l in tocheck do
@@ -1810,9 +1877,9 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                        } |> MethodSym
                     newSymbols.Add(StringName "Inc", Intrinsic IncProc |> MethodSym)
                     newSymbols.Add(StringName "Dec", Intrinsic DecProc |> MethodSym)
-                    // procedure Read([var F: file;] var x1 {; var xi});
-                    // procedure Write([var F: file;] x1[:w[:d]] {; xi[:w[:d]]});
-                    // procedure ReadLn([var F: file;] var x1 {; var xi});
+                    newSymbols.Add(StringName "Read", Intrinsic ReadProc |> MethodSym)
+                    newSymbols.Add(StringName "Write", Intrinsic WriteProc |> MethodSym)
+                    newSymbols.Add(StringName "ReadLn", Intrinsic ReadLnProc |> MethodSym)
                     newSymbols.Add(StringName "WriteLn", Intrinsic WriteLnProc |> MethodSym)
                     newSymbols.Add(StringName "WriteLine", Intrinsic WriteLineProc |> MethodSym)
                     // procedure New(var P: Pointer);
@@ -1942,7 +2009,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
 
 
 
-        printfn "%A" block.decl
+        //printfn "%A" block.decl
         block.decl
         |> List.iter 
                (function

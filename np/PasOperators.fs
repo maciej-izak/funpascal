@@ -58,14 +58,16 @@ let prefixOperators = {
 let addInfixOperators (ops: InfixOperators) =
     let imap o = fun (x: ExprEl) (y: ExprEl) -> o(x, y) 
     for s, op in ops.operators do
-        InfixOperator(s, wsc, ops.priority, Associativity.Left, imap op)
-        |> opp.AddOperator
+        let op = InfixOperator(s, wsc, ops.priority, Associativity.Left, imap op)
+        opp.AddOperator op
+        popp.AddOperator op
 
 let addPrefixOperators ops =
     let pmap o = fun (x: ExprEl) -> o(x) 
     for s, op in ops.operators do
-        PrefixOperator(s, wsc, ops.priority, true, pmap op) 
-        |> opp.AddOperator
+        let op = PrefixOperator(s, wsc, ops.priority, true, pmap op)
+        opp.AddOperator op
+        popp.AddOperator op
 
 let addOperators() =
     for ops in infixOperators do addInfixOperators ops
