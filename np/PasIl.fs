@@ -184,6 +184,7 @@ type Intrinsic =
     | SuccProc
     | PredProc
     | ExitProc
+    | HaltProc
     | ContinueProc
     | BreakProc
     | WriteProc
@@ -399,6 +400,7 @@ type SystemProc = {
         GetMem: MethodReference
         FreeMem: MethodReference
         WriteLine: MethodReference
+        Exit: MethodReference
         ConvertU1ToChar: MethodReference
         PtrToStringAnsi: MethodReference
     }
@@ -1178,6 +1180,16 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                            |> List.concat
                     +Call ctx.details.sysProc.WriteLine
                  ], None)
+            | HaltProc, _ ->
+                let exitCode = match cp with
+                               | [] -> [+Ldc_I4 0]
+                               | [cp] -> fst <| callParamToIl ctx cp None // TODO typecheck ?
+                               | _ -> failwith "IE only one param allowed"
+                ([
+
+                     yield! exitCode
+                     +Call ctx.details.sysProc.Exit
+                ], None)
             | ChrFunc, _ ->
                 let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
                 let callInstr, typ = callParamToIl ctx cp None
@@ -1484,6 +1496,8 @@ type BuildScope =
 
 type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let mb = moduleBuilder
+    let exitMethod =
+        typeof<System.Environment>.GetMethod("Exit", [| typeof<int> |]) |> moduleBuilder.ImportReference
     let writeLineMethod =
         typeof<System.Console>.GetMethod("WriteLine", [| typeof<string> ; typeof<obj array> |]) |> moduleBuilder.ImportReference
     let ptrToStringAnsi =
@@ -1861,6 +1875,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         GetMem = allocMem
                         FreeMem = freeMem
                         WriteLine = writeLineMethod
+                        Exit = exitMethod
                         ConvertU1ToChar = convertU1ToChar
                         PtrToStringAnsi = ptrToStringAnsi
                     }
@@ -1887,7 +1902,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     newSymbols.Add(StringName "Break", Intrinsic BreakProc |> MethodSym)
                     newSymbols.Add(StringName "Continue", Intrinsic ContinueProc |> MethodSym)
                     newSymbols.Add(StringName "Exit", Intrinsic ExitProc |> MethodSym)
-                    // procedure Halt[(const error: Integer)];
+                    newSymbols.Add(StringName "Halt", Intrinsic HaltProc |> MethodSym)
                     newSymbols.Add(StringName "SizeOf", Intrinsic SizeOfFunc |> MethodSym)
                     newSymbols.Add(StringName "Ord", Intrinsic OrdFunc |> MethodSym)
                     newSymbols.Add(StringName "Chr", Intrinsic ChrFunc |> MethodSym)

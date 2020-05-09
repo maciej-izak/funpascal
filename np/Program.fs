@@ -23,11 +23,20 @@ begin
   WriteLn(c);
   WriteLn(3.14:4:4);
   case c of
-    'p': WriteLn(3.14:4:4);
-    'w': WriteLn('w');
+    'p': begin
+        WriteLn(3.14:4:4);
+        Halt(1)
+      end;
+    'w':
+      begin
+        WriteLn('w');
+        Halt(2)
+      end;
   else
     WriteLn('Something else :)');
   end;
+  Halt;
+  WriteLn('end')
   //WriteLn(12:4);
   //WriteLn('c':4);
   //Val('3.14', r, c);
