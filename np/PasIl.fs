@@ -1186,6 +1186,9 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                  ], None)
             | NewProc, [ParamIdent(id)] ->
                 let ils, t = findSymbolAndGetPtr ctx id
+                let t = match t.kind with
+                        | TkPointer pt -> pt
+                        | _ -> failwith "IE"
                 ([
                     yield! ils
                     +Ldc_I4 t.SizeOf
