@@ -100,6 +100,7 @@ type AtomInstruction =
     | Cpblk
     | Cpobj of TypeReference
     | Stobj of TypeReference
+    | Initobj of TypeReference
     | Newarr of TypeReference
     | Stelem of ElemKind
     | Unaligned of byte
@@ -192,6 +193,8 @@ type Intrinsic =
     | ReadProc
     | ReadLnProc
     | WriteLineProc
+    | NewProc
+    | DisposeProc
     | OrdFunc
     | ChrFunc
     | SizeOfFunc
@@ -618,6 +621,7 @@ and private atomInstr = function
     | Cpblk        -> Instruction.Create(OpCodes.Cpblk)
     | Cpobj t      -> Instruction.Create(OpCodes.Cpobj, t)
     | Stobj t      -> Instruction.Create(OpCodes.Stobj, t)
+    | Initobj t    -> Instruction.Create(OpCodes.Initobj, t)
     | Newarr e     -> Instruction.Create(OpCodes.Newarr, e)
     | Stelem ek    -> match ek with
                       | Elem e   -> Instruction.Create(OpCodes.Stelem_Any, e)
@@ -1180,6 +1184,22 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                            |> List.concat
                     +Call ctx.details.sysProc.WriteLine
                  ], None)
+            | NewProc, [ParamIdent(id)] ->
+                let ils, t = findSymbolAndGetPtr ctx id
+                ([
+                    yield! ils
+                    +Ldc_I4 t.SizeOf
+                    +Call ctx.details.sysProc.GetMem
+                    +Dup
+                    +Initobj t.raw
+                    +Stind Ind_U
+                ], None)
+            | DisposeProc, [ParamIdent(id)] ->
+                let ils, _ = findSymbolAndLoad ctx id
+                ([
+                    yield! ils
+                    +Call ctx.details.sysProc.FreeMem
+                ], None)
             | HaltProc, _ ->
                 let exitCode = match cp with
                                | [] -> [+Ldc_I4 0]
@@ -1897,8 +1917,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     newSymbols.Add(StringName "ReadLn", Intrinsic ReadLnProc |> MethodSym)
                     newSymbols.Add(StringName "WriteLn", Intrinsic WriteLnProc |> MethodSym)
                     newSymbols.Add(StringName "WriteLine", Intrinsic WriteLineProc |> MethodSym)
-                    // procedure New(var P: Pointer);
-                    // procedure Dispose(var P: Pointer);
+                    newSymbols.Add(StringName "New", Intrinsic NewProc |> MethodSym)
+                    newSymbols.Add(StringName "Dispose", Intrinsic DisposeProc |> MethodSym)
                     newSymbols.Add(StringName "Break", Intrinsic BreakProc |> MethodSym)
                     newSymbols.Add(StringName "Continue", Intrinsic ContinueProc |> MethodSym)
                     newSymbols.Add(StringName "Exit", Intrinsic ExitProc |> MethodSym)

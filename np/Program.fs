@@ -14,9 +14,9 @@ let main argv =
 {$I system.inc}
 var
   r: Real;
-  //c: integer;
   s: string;
   c: char;
+  sp: ^string;
 begin
   InitSystem;
   ReadLn(c);
@@ -35,6 +35,10 @@ begin
   else
     WriteLn('Something else :)');
   end;
+  New(sp);
+  sp^ := 'fooo';
+  WriteLn(sp^, Length(sp^));
+  Dispose(sp);
   Halt;
   WriteLn('end')
   //WriteLn(12:4);
