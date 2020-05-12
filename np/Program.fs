@@ -12,12 +12,27 @@ let main argv =
     PasStreams.testAll
       """
 {$I system.inc}
+
+type
+  TTest = (a1, a2, a3);
+  TTests = set of TTest;
+  TA = array[0..1] of byte;
+
+//const
+//  Arr: TA = ($4D, $5A);
+
+const
+  Digits:    set of Char = ['0'..'9', 'Z'];
+
 var
   r: Real;
   s: string;
   c: char;
   sp: ^string;
+  t: set of TTest;
+  d: set of char;
 begin
+  d := Digits;
   InitSystem;
   ReadLn(c);
   WriteLn(c);

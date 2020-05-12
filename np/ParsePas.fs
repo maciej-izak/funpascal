@@ -282,7 +282,7 @@ let typeDeclarations =
     (``type `` >>.
         many1 (
             (identifier .>> ``= ``)
-            .>>. ((choice[structType;attempt(arrayType);typePtr;attempt(typeRange);typeAlias;typeProc;typeSet;attempt(typeEnum)]).>> ``; ``)
+            .>>. ((choice[structType;attempt(arrayType);typePtr;attempt(typeRange);attempt(typeSet);attempt(typeProc);typeAlias;attempt(typeEnum)]).>> ``; ``)
             |>> Type)) 
     |>> Types
  
