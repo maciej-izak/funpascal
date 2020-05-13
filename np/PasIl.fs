@@ -339,7 +339,8 @@ type ConstSym =
     | ConstInt of int
     | ConstFloat of single
     | ConstBool of byte
-    | ConstValue of byte[] * FieldDefinition * PasType
+    | ConstTempValue of byte[] * PasType
+    | ConstValue of FieldDefinition * PasType
 
 type Symbol =
     | VariableParamSym of VariableParam
@@ -859,7 +860,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
         match v with
         | ConstInt i -> ChainLoad([ValueLoad(ValueInt i)], Some ctx.details.sysTypes.int32)
         | ConstFloat f -> ChainLoad([ValueLoad(ValueFloat f)], Some ctx.details.sysTypes.single)
-        | ConstValue(_, fd, pt) -> ChainLoad([VariableLoad(LoadVar(GlobalVariable fd, pt))], Some pt)
+        | ConstValue(fd, pt) -> ChainLoad([VariableLoad(LoadVar(GlobalVariable fd, pt))], Some pt)
         | ConstBool b ->
             let i = int b
             ChainLoad([ValueLoad(ValueInt i)], Some ctx.details.sysTypes.int32)
@@ -2114,7 +2115,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     match t.kind with
                     | TkSet pt ->
                         match evalConstExpr ctx (Some pt) expr with
-                        | CEROrdSet(b, _) -> ConstValue(b, null, pt)
+                        | CEROrdSet(b, _) -> ConstTempValue(b, pt)
                         | _ -> failwith "IE"
                     | TkOrd _ ->
                         match evalConstExpr ctx pt expr with
@@ -2137,14 +2138,14 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                 match pt.kind with
                                 | TkOrd (OkChar, _) -> [|byte(s.Chars 0)|]
                             | ConstBool b -> [|b|]
-                            | ConstValue(b,_,_) -> b
-                        (exprs |> List.map (addConstAtom (Some pt) >> symToBytes) |> Array.concat, null, t)
-                        |> ConstValue
+                            | ConstTempValue(b,_) -> b
+                        (exprs |> List.map (addConstAtom (Some pt) >> symToBytes) |> Array.concat, t)
+                        |> ConstTempValue
                     //| Some t, ConstStructConstr exprs -> () // handle records
                     | _ -> failwith "IE"
                 | _ -> failwith "IE"
             match addConstAtom typ ce with
-            | ConstValue(b, _, t) -> ConstValue(b, ctx.details.AddBytesConst b, t) // add final as static value
+            | ConstTempValue(b, t) -> ConstValue(ctx.details.AddBytesConst b, t) // add final as static value
             | c -> c
             |> ConstSym
 
