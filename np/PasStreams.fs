@@ -36,9 +36,9 @@ let testPas p s i =
     stream1.UserState <- us
     stream1.Name <- "test"
     let result = applyParser pass1Parser stream1
-    match result with
-    | Success (_,s,_) -> s.stream.SaveToFile()
-    | Failure (_,_,s) -> s.stream.SaveToFile()
+//    match result with
+//    | Success (_,s,_) -> s.stream.SaveToFile()
+//    | Failure (_,_,s) -> s.stream.SaveToFile()
     us.handleInclude := pass2IncludeHandler
     printfn ">>> SECOND PASS"
     use stream2 = new CharStream<PasState>(us.stream, Encoding.Unicode)

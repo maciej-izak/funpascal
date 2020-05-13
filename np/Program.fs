@@ -18,8 +18,8 @@ type
   TTests = set of TTest;
   TA = array[0..1] of byte;
 
-//const
-//  Arr: TA = ($4D, $5A);
+const
+  Arr: TA = ($4D, $5A);
 
 const
   Digits:    set of Char = ['0'..'9', 'Z'];
@@ -31,9 +31,12 @@ var
   sp: ^string;
   t: set of TTest;
   d: set of char;
+  a: TA;
 begin
-  d := Digits;
   InitSystem;
+  d := Digits;
+  a := Arr;
+  WriteLn(chr(a[0]), chr(a[1]));
   ReadLn(c);
   WriteLn(c);
   WriteLn(3.14:4:4);
