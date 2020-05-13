@@ -938,7 +938,13 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
                         yield! a
                         yield! b
                         if at <> bt then yield typeRefToConv at.raw
-                        yield +i
+                        match i with
+                        | AddInst when at = ctx.details.sysTypes.string && at = bt->
+                            let _,v = ctx.EnsureVariable(ctx.details.sysTypes.string)
+                            yield +Ldloca v
+                            yield +Call(findMethodReference ctx "ConcatStr")
+                            yield +Ldloc v
+                        | _ -> yield +i
                         if et.IsSome then yield typeRefToConv et.Value.raw
                     ], typ) |> ValueKind
         let add2OpIl a b i = add2OpIlTyped a b i et

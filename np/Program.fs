@@ -37,6 +37,7 @@ begin
   d := Digits;
   a := Arr;
   WriteLn(chr(a[0]), chr(a[1]));
+  WriteLn('AB' + 'CD');
   ReadLn(c);
   WriteLn(c);
   WriteLn(3.14:4:4);
