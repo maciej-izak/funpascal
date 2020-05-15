@@ -248,7 +248,12 @@ let paramList1 =
     paramListDecl sepBy1
 
 let formalParam  = 
-        opt ((``const `` >>. preturn ParamKind.Const) <|> (``var `` >>. preturn Var))
+        choice
+            [
+                attempt(wrd_wsc "const" >>% Some ParamKind.Const)
+                attempt(wrd_wsc "var" >>% Some Var)
+                preturn None
+            ]
         .>>. paramList1
         
 let formalParamsList =
