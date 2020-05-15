@@ -324,6 +324,12 @@ let isStrType = function | StrType -> true | _ -> false
 let strToSStr s =
     if (s:string).Length >= 256 then failwith "IE"
     (s + (String.replicate (256-s.Length) "\000")) |> Encoding.ASCII.GetBytes
+let rec sameTypeKind = function
+    | {kind=TkArray(a,_,_)}, {kind=TkArray(b,_,_)} when a = b -> true
+    | {kind=TkOrd(aok,aot)}, {kind=TkOrd(bok,bot)} when aok = bok && aot = bot -> true
+    | {kind=TkFloat a}, {kind=TkFloat b} when a = b -> true
+    | {kind=TkSet a}, {kind=TkSet b} when sameTypeKind(a,b) -> true
+    | _ -> false
 
 type ConstEvalResult =
     | CERString of string
@@ -881,7 +887,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
         match v with
         | ConstInt i -> ChainLoad([ValueLoad(ValueInt i)], Some ctx.details.sysTypes.int32)
         | ConstFloat f -> ChainLoad([ValueLoad(ValueFloat f)], Some ctx.details.sysTypes.single)
-        | ConstValue(fd, pt) -> ChainLoad([VariableLoad(LoadVar(GlobalVariable fd, pt))], Some pt)
+        | ConstValue(fd, pt) -> LoadVar(GlobalVariable fd, pt) |> varLoadChain pt ident.Tail
         | ConstBool b ->
             let i = int b
             ChainLoad([ValueLoad(ValueInt i)], Some ctx.details.sysTypes.int32)
@@ -986,7 +992,7 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
                     ([
                         yield! a
                         yield! b
-                        if at <> bt then yield typeRefToConv at.raw
+                        if sameTypeKind(at, bt) = false then yield typeRefToConv at.raw
                         match i with
                         | AddInst when isStrType at && at = bt->
                             let _,v = ctx.EnsureVariable(ctx.details.sysTypes.string)
@@ -1406,9 +1412,10 @@ and valueToValueKind ctx v (expectedType: PasType option) =
         | _ -> failwith "IE"
     | VNil -> [+Ldnull], ctx.details.sysTypes.pointer
     | VSet al ->
+        let expType = match expectedType with | Some t -> t | _ -> failwith "IE"
         let fd = match SetValueToCER ctx expectedType al with | CEROrdSet(b,_) -> b | _ -> failwith "IE"
                  |> ctx.details.AddBytesConst
-        [+Ldsfld fd], ctx.details.sysTypes.setStorage
+        [+Ldsfld fd], expType
 
 and chainReaderFactory (ctx: Ctx) asValue addr ltp =
     let valOrPtr v p (t: TypeReference) = (if asValue || (t :? PointerType && addr = false) then v else p) |> List.singleton
