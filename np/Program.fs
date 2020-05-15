@@ -12,6 +12,7 @@ let main argv =
     PasStreams.testAll
       """
 {$I system.inc}
+{$I Common.inc}
 
 type
   TTest = (a1, a2, a3);
@@ -36,6 +37,10 @@ begin
   InitSystem;
   d := Digits;
   a := Arr;
+  WriteLn('z' in Digits);
+  WriteLn('A');
+  WriteLn('b');
+  WriteLn('A' + 'b');
   WriteLn(chr(a[0]), chr(a[1]));
   WriteLn('AB' + 'CD');
   ReadLn(c);

@@ -304,6 +304,27 @@ with
 
 and ArrayDim = { low: int; high: int; size: int; elemSize: int; elemType: PasType; selfType: PasType ref }
 
+let (|StrType|ChrType|OtherType|) = function
+    | {kind=TkArray(AkSString _,_,_)} -> StrType
+    | {kind=TkOrd(OkChar,_)} -> ChrType
+    | _ -> OtherType
+
+let (|SetType|_|) = function
+    | {kind=TkSet(pt)} -> Some pt
+    | _ -> None
+
+let (|OrdType|_|) = function
+    | {kind=TkOrd _} -> Some OrdType
+    | _ -> None
+
+let isCharacterType = function | StrType | ChrType -> true | _ -> false
+let isOptCharacterType = function | Some t -> isCharacterType t | None -> false
+let isChrType = function | ChrType -> true | _ -> false
+let isStrType = function | StrType -> true | _ -> false
+let strToSStr s =
+    if (s:string).Length >= 256 then failwith "IE"
+    (s + (String.replicate (256-s.Length) "\000")) |> Encoding.ASCII.GetBytes
+
 type ConstEvalResult =
     | CERString of string
     | CERInt of int
@@ -872,6 +893,10 @@ let findMethodReference ctx =
     stdIdent >> findSymbol ctx >> chainToSLList >>
     function | [CallableLoad(Referenced({raw=mr}))], _ -> mr | _ -> failwith "IE"
 
+let findConstSym ctx =
+    findSymbol ctx >> chainToSLList >>
+    function | [ValueLoad(v)], _ -> v | _ -> failwith "IE"
+
 type LastTypePoint =
     | LTPVar of VariableKind * PasType
     | LTPParam of ParameterDefinition * PasType * ParamRefKind
@@ -926,32 +951,60 @@ let typeRefToConv (r: TypeReference) =
     | MetadataType.UInt64  -> +Conv Conv_U8
     | _ -> failwith "IE"
 
+let evalExprOp2 (opS: Option<string->string->string>) (opI: Option<int->int->int>) (r1, r2) =
+    match       r1,     opS,     opI with
+    | CERString s1, Some so,       _ -> match r2 with CERString s2 -> CERString(so s1 s2) | _ -> assert(false); CERUnknown
+    | CERInt    i1,       _, Some io -> match r2 with CERInt    i2 -> CERInt   (io i1 i2) | _ -> assert(false); CERUnknown
+    | _ -> CERUnknown
+
+let evalExprOp1 (opS: Option<string->string>) (opI: Option<int->int>) r1 =
+    match r1, opS, opI with
+    | CERString s1, Some so, _ -> CERString(so s1)
+    | CERInt i1, _, Some io -> CERInt(io i1)
+    | _ -> CERUnknown
+
 let rec exprToIl (ctx: Ctx) exprEl expectedType =
     let rec exprToMetaExpr el et =
-        let add2OpIlTyped a b i et =
-            match exprToMetaExpr a et with
+        let add2OpIlTyped aExpr bExpr i et =
+            match exprToMetaExpr aExpr et with
             | ValueKind(a, at) ->
-                match exprToMetaExpr b (Some at) with
+                match exprToMetaExpr bExpr (Some at) with
                 | ValueKind(b, bt) ->
+                    // TODO handle bool operators and other scenarios
+                    let useStrWhenNeeded x (defX, t) =
+                        if isChrType t && isOptCharacterType et then
+                                 match exprToMetaExpr x (Some ctx.details.sysTypes.string) with
+                                 | ValueKind(newA, newAt) ->
+                                     if isStrType newAt then
+                                         failwith "IE"
+                                     else
+                                         (newA, newAt)
+                        else (defX, t)
+                    let a, at = useStrWhenNeeded aExpr (a, at)
+                    let b, bt = useStrWhenNeeded bExpr (b, bt)
                     let typ = match et with | Some t -> t | _ -> at
                     ([
                         yield! a
                         yield! b
                         if at <> bt then yield typeRefToConv at.raw
                         match i with
-                        | AddInst when at = ctx.details.sysTypes.string && at = bt->
+                        | AddInst when isStrType at && at = bt->
                             let _,v = ctx.EnsureVariable(ctx.details.sysTypes.string)
                             yield +Ldloca v
                             yield +Call(findMethodReference ctx "ConcatStr")
                             yield +Ldloc v
                         | _ -> yield +i
-                        if et.IsSome then yield typeRefToConv et.Value.raw
-                    ], typ) |> ValueKind
+                        // need to cast to proper type (for simple types)
+                        match et with
+                        | Some({kind=TkOrd _}) | Some({kind=TkFloat _}) | Some({kind=TkPointer _}) ->
+                            yield typeRefToConv et.Value.raw
+                        | _ -> ()
+                    ], typ)
         let add2OpIl a b i = add2OpIlTyped a b i et
         let add2OpIlBool a b i = add2OpIlTyped a b i (Some ctx.details.sysTypes.boolean)
         let inline add1OpIl a i =
             match exprToMetaExpr a et with
-            | ValueKind(a, at) -> ValueKind([ yield! a; yield +i; yield typeRefToConv at.raw], at)
+            | ValueKind(a, at) -> [ yield! a; yield +i; yield typeRefToConv at.raw], at
         match el with
         | Value v -> valueToValueKind ctx v et
         | Add(a, b) -> add2OpIl a b AddInst
@@ -970,22 +1023,38 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
         | Equal(a, b) -> add2OpIl a b Ceq
         | NotEqual(a, b) ->
             match add2OpIlBool a b Ceq with
-            | ValueKind(o, ot) -> ([ yield! o; +Ldc_I4 0; +Ceq ], ctx.details.sysTypes.boolean) |> ValueKind
+            | o, ot -> ([ yield! o; +Ldc_I4 0; +Ceq ], ctx.details.sysTypes.boolean)
         | StrictlyLessThan(a, b) -> add2OpIlBool a b Clt
         | StrictlyGreaterThan(a, b) -> add2OpIlBool a b Cgt
         | LessThanOrEqual(a, b) ->
             match add2OpIlBool a b Cgt with
-            | ValueKind(o, ot) -> ([ yield! o; +Ldc_I4 0; +Ceq ], ctx.details.sysTypes.boolean) |> ValueKind
+            | o, ot -> [ yield! o; +Ldc_I4 0; +Ceq ], ctx.details.sysTypes.boolean
         | GreaterThanOrEqual(a, b) ->
             match add2OpIlBool a b Clt with
-            | ValueKind(o, ot) -> ([ yield! o; +Ldc_I4 0; +Ceq ], ctx.details.sysTypes.boolean) |> ValueKind
+            | o, ot -> [ yield! o; +Ldc_I4 0; +Ceq ], ctx.details.sysTypes.boolean
+        | In(a, b) ->
+            [
+                match exprToMetaExpr a None with
+                | ValueKind(a, at) ->
+                    match at with | {kind=TkOrd _} -> () | _ -> failwith "IE"
+                    yield! a
+                match b with
+                | Value(VIdent i) ->
+                    let ils, t = findSymbolAndGetPtr ctx i
+                    match t with | {kind=TkSet _} -> () | _ -> failwith "IE"
+                    yield! ils
+
+                yield +Call(findMethodReference ctx "INSET")
+            ], ctx.details.sysTypes.boolean
+
         | Addr(a) ->
             ([
                 match a with
                 | Value(VIdent i) -> yield! (findSymbolAndGetPtr ctx i |> fst)
                 | _ -> failwith "IE"
-            ], ctx.details.sysTypes.pointer) |> ValueKind
+            ], ctx.details.sysTypes.pointer)
         | _ -> failwith "IE"
+        |> ValueKind
 
     match exprToMetaExpr exprEl expectedType with
     | ValueKind (a, at) ->
@@ -1193,11 +1262,11 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                                                    +Dup::+Ldc_I4 idx::i @
                                                    [yield! elems ; +Stelem Elem_Ref]
                                                match t with
-                                               | _ when t = ctx.details.sysTypes.string ->
+                                               | StrType ->
                                                    [+Call ctx.details.sysProc.PtrToStringAnsi]
                                                    // TODO critical handle ptr to strings! bug found in .NET 32 bit
                                                    |> putArrayElem (match ilToAtom i with | [Ldsfld f] -> [+Ldsflda f] | _ -> i)
-                                               | _ when t = ctx.details.sysTypes.char ->
+                                               | ChrType ->
                                                    [
                                                        +Conv Conv_U1
                                                        +Call ctx.details.sysProc.ConvertU1ToChar
@@ -1270,27 +1339,53 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
         | _ -> failwith "IE"
     | _ -> failwith "IE"
 
+and inline eval1 ctx typ e1 = evalConstExpr ctx typ e1
+
+and SetValueToCER ctx typ al =
+    let inline eval1 e1 = eval1 ctx typ e1
+
+    let exprToByteValue = function
+        | CERString s when s.Length = 1 -> byte(s.Chars 0)
+        | CERInt i when i >= 0 && i <= 255 -> byte(i)
+        | _ -> failwith "IE"
+
+    let exprToSetItem = function
+        | SValue e -> eval1 e |> exprToByteValue |> List.singleton
+        | SRange(e1, e2) ->
+            let r1 = eval1 e1 |> exprToByteValue
+            let r2 = eval1 e2 |> exprToByteValue
+            if r2 < r1 then failwith "IE"
+            [r1..r2]
+
+    let finalSet: byte[] = Array.zeroCreate 256
+    List.collect exprToSetItem al
+    |> List.fold (fun s i -> if Set.contains i s then failwith "IE" else Set.add i s) Set.empty // TODO contains better error
+    |> Set.iter (fun i -> finalSet.[int i] <- 0xFFuy)
+    match typ with
+    | Some t -> CEROrdSet(finalSet, t)
+    | _ -> failwith "IE"
+
 and valueToValueKind ctx v (expectedType: PasType option) =
     match v with
-    | VInteger i -> ValueKind([+Ldc_I4 i], ctx.details.sysTypes.int32)
-    | VFloat f -> ValueKind([+Ldc_R4 (single f)], ctx.details.sysTypes.single)
-    | VIdent i -> findSymbolAndLoad ctx i |> ValueKind
+    | VInteger i -> [+Ldc_I4 i], ctx.details.sysTypes.int32
+    | VFloat f -> [+Ldc_R4 (single f)], ctx.details.sysTypes.single
+    | VIdent i -> findSymbolAndLoad ctx i
     | VString s ->
+        let doChr() =
+            let cv = int(s.Chars 0)
+            [+Ldc_I4 cv], ctx.details.sysTypes.char
         // TODO protect string as char interpretation when needed
         match expectedType with
-        | _ when s.Length = 1 -> // handle char
-            let cv = int(s.Chars 0)
-            ([+Ldc_I4 cv], ctx.details.sysTypes.char)
-            |> ValueKind
+        | None when s.Length = 1 -> doChr()
+        | Some ChrType ->
+            if s.Length <> 1 then failwith "IE"
+            else doChr()
         | _ -> // handle string
-            if s.Length >= 256 then failwith "IE"
-            let strBytes = (s + (String.replicate (256-s.Length) "\000")) |> Encoding.ASCII.GetBytes
             ([
-                strBytes
+                strToSStr s
                 |> ctx.details.AddBytesConst
                 |> Ldsfld |> (~+)
             ], ctx.details.sysTypes.string)
-            |> ValueKind
 
 // let _,v = ctx.EnsureVariable(ctx.details.sysTypes.string)
 // TODO Ref count strin -> below some simple dynamic allocation for further rework
@@ -1307,10 +1402,13 @@ and valueToValueKind ctx v (expectedType: PasType option) =
 //            Ldloc v
     | VCallResult(ce) ->
         match doCall ctx ce false with
-        | ils, Some t -> ValueKind(ils, t)
+        | ils, Some t -> ils, t
         | _ -> failwith "IE"
-    | VNil -> ValueKind([+Ldnull], ctx.details.sysTypes.pointer)
-    | _ -> failwith "IE"
+    | VNil -> [+Ldnull], ctx.details.sysTypes.pointer
+    | VSet al ->
+        let fd = match SetValueToCER ctx expectedType al with | CEROrdSet(b,_) -> b | _ -> failwith "IE"
+                 |> ctx.details.AddBytesConst
+        [+Ldsfld fd], ctx.details.sysTypes.setStorage
 
 and chainReaderFactory (ctx: Ctx) asValue addr ltp =
     let valOrPtr v p (t: TypeReference) = (if asValue || (t :? PointerType && addr = false) then v else p) |> List.singleton
@@ -1396,7 +1494,7 @@ and chainLoadToIl ctx lastType factory symload =
             yield! res
             for e, d in exprs do
                 // do not minus if not needed
-                yield! fst <| exprToIl ctx (Multiply(Minus(e,d.low |> VInteger |> Value), d.elemSize |> VInteger |> Value)) (Some rt)
+                yield! fst <| exprToIl ctx (Multiply(Minus(e,d.low |> VInteger |> Value), d.elemSize |> VInteger |> Value)) (Some ctx.details.sysTypes.int32)
                 yield +AddInst
         ]
     | StructLoad fds ->
@@ -1414,6 +1512,54 @@ and chainLoadToIl ctx lastType factory symload =
     | CallableLoad (Referenced mr) ->
         if mr.result.IsNone then failwith "IE"
         [+Call mr.raw]
+
+and evalConstExpr (ctx: Ctx) typ expr =
+
+    let inline eval2 e1 e2 = (evalConstExpr ctx typ e1, evalConstExpr ctx typ e2)
+    let inline eval1 e1 = eval1 ctx typ e1
+
+    match expr with
+    | Value v ->
+        match v with
+        | VFloat f -> CERFloat <| single f
+        | VInteger i -> CERInt i
+        | VString s -> CERString s
+        | VIdent id ->
+            match findConstSym ctx id with
+            | ValueInt i -> CERInt i
+            | _ -> failwith "IE"
+        | VCallResult _ -> CERUnknown
+        | VNil -> CERUnknown
+        | VSet al -> SetValueToCER ctx typ al
+    | Expr e -> evalConstExpr ctx typ e
+    | Add(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 (Some (+)) (Some (+)  )
+    | Multiply(e1, e2) -> eval2 e1 e2 |> evalExprOp2 None       (Some (*)  )
+    | Minus(e1, e2)    -> eval2 e1 e2 |> evalExprOp2 None       (Some (-)  )
+    | Divide(e1, e2)   -> eval2 e1 e2 |> evalExprOp2 None       (Some (/)  )
+    | And(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (&&&))
+    | Or(e1, e2)       -> eval2 e1 e2 |> evalExprOp2 None       (Some (|||))
+    | Xor(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (^^^))
+    | Mod(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (%)  )
+    | Div(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (/)  )
+    | Shl(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (<<<))
+    | Shr(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (>>>))
+    | Not(e1)          -> eval1 e1 |> evalExprOp1 None (Some (~~~))
+    | UnaryPlus(e1)    -> eval1 e1 |> evalExprOp1 None (Some Microsoft.FSharp.Core.Operators.(~+) )
+    | UnaryMinus(e1)   -> eval1 e1 |> evalExprOp1 None (Some (~-) )
+    | _ -> CERUnknown
+    (*
+    | As of ExprEl * ExprEl
+    | Addr of ExprEl
+    | Equal of ExprEl * ExprEl
+    | NotEqual of ExprEl * ExprEl
+    | StrictlyLessThan of ExprEl * ExprEl
+    | StrictlyGreaterThan of ExprEl * ExprEl
+    | LessThanOrEqual of ExprEl * ExprEl
+    | GreaterThanOrEqual of ExprEl * ExprEl
+    | Is of ExprEl * ExprEl
+    | In of ExprEl * ExprEl
+    *)
+
 
 //let splitStruct = function
 //    | StructLoad fdl ->
@@ -1451,83 +1597,6 @@ let compileBlock (methodBuilder: MethodDefinition) (typeBuilder : TypeDefinition
 
 let simplifiedDIdent = List.map <| function | PIName s -> s
 let inline packedToStr(p: bool) = if p then "1" else "0"
-
-let evalExprOp2 (opS: Option<string->string->string>) (opI: Option<int->int->int>) (r1, r2) =
-    match       r1,     opS,     opI with
-    | CERString s1, Some so,       _ -> match r2 with CERString s2 -> CERString(so s1 s2) | _ -> assert(false); CERUnknown
-    | CERInt    i1,       _, Some io -> match r2 with CERInt    i2 -> CERInt   (io i1 i2) | _ -> assert(false); CERUnknown
-    | _ -> CERUnknown
-
-let evalExprOp1 (opS: Option<string->string>) (opI: Option<int->int>) r1 =
-    match r1, opS, opI with
-    | CERString s1, Some so, _ -> CERString(so s1)
-    | CERInt i1, _, Some io -> CERInt(io i1)
-    | _ -> CERUnknown
-
-let rec evalConstExpr (ctx: Ctx) typ expr =
-
-    let inline eval2 e1 e2 = (evalConstExpr ctx typ e1, evalConstExpr ctx typ e2)
-    let inline eval1 e1 = evalConstExpr ctx typ e1
-
-    let exprToByteValue = function
-        | CERString s when s.Length = 1 -> byte(s.Chars 0)
-        | CERInt i when i >= 0 && i <= 255 -> byte(i)
-        | _ -> failwith "IE"
-
-    let exprToSetItem = function
-        | SValue e -> eval1 e |> exprToByteValue |> List.singleton
-        | SRange(e1, e2) ->
-            let r1 = eval1 e1 |> exprToByteValue
-            let r2 = eval1 e2 |> exprToByteValue
-            if r2 < r1 then failwith "IE"
-            [r1..r2]
-
-    match expr with
-    | Value v ->
-        match v with
-        | VFloat f -> CERFloat <| single f
-        | VInteger i -> CERInt i
-        | VString s -> CERString s
-        | VIdent _ -> CERUnknown
-        | VCallResult _ -> CERUnknown
-        | VNil -> CERUnknown
-        | VSet al ->
-            let finalSet: byte[] = Array.zeroCreate 256
-            List.collect exprToSetItem al
-            |> List.fold (fun s i -> if Set.contains i s then failwith "IE" else Set.add i s) Set.empty // TODO contains better error
-            |> Set.iter (fun i -> finalSet.[int i] <- 0xFFuy)
-            match typ with
-            | Some t -> CEROrdSet(finalSet, t)
-            | _ -> failwith "IE"
-    | Expr e -> evalConstExpr ctx typ e
-    | Add(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 (Some (+)) (Some (+)  )
-    | Multiply(e1, e2) -> eval2 e1 e2 |> evalExprOp2 None       (Some (*)  )
-    | Minus(e1, e2)    -> eval2 e1 e2 |> evalExprOp2 None       (Some (-)  )
-    | Divide(e1, e2)   -> eval2 e1 e2 |> evalExprOp2 None       (Some (/)  )
-    | And(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (&&&))
-    | Or(e1, e2)       -> eval2 e1 e2 |> evalExprOp2 None       (Some (|||))
-    | Xor(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (^^^))
-    | Mod(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (%)  )
-    | Div(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (/)  )
-    | Shl(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (<<<))
-    | Shr(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (>>>))
-    | Not(e1)          -> eval1 e1 |> evalExprOp1 None (Some (~~~))
-    | UnaryPlus(e1)    -> eval1 e1 |> evalExprOp1 None (Some Microsoft.FSharp.Core.Operators.(~+) )
-    | UnaryMinus(e1)   -> eval1 e1 |> evalExprOp1 None (Some (~-) )
-    | _ -> CERUnknown
-    (*
-    | As of ExprEl * ExprEl
-    | Addr of ExprEl
-    | Equal of ExprEl * ExprEl
-    | NotEqual of ExprEl * ExprEl
-    | StrictlyLessThan of ExprEl * ExprEl
-    | StrictlyGreaterThan of ExprEl * ExprEl
-    | LessThanOrEqual of ExprEl * ExprEl
-    | GreaterThanOrEqual of ExprEl * ExprEl
-    | Is of ExprEl * ExprEl
-    | In of ExprEl * ExprEl
-    *)
-
 
 let evalConstExprToStr (ctx: Ctx) = function
     | ConstExpr expr ->
@@ -2118,14 +2187,18 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     | CERFloat f -> ConstFloat f
                     | _ -> failwith "IE"
                 | Some t, ConstExpr expr ->
-                    match t.kind with
-                    | TkSet pt ->
+                    match t with
+                    | SetType pt ->
                         match evalConstExpr ctx (Some pt) expr with
-                        | CEROrdSet(b, _) -> ConstTempValue(b, pt)
+                        | CEROrdSet(b, _) -> ConstTempValue(b, t)
                         | _ -> failwith "IE"
-                    | TkOrd _ ->
+                    | OrdType ->
                         match evalConstExpr ctx pt expr with
                         | CERInt i -> ConstInt i
+                        | _ -> failwith "IE"
+                    | StrType ->
+                        match evalConstExpr ctx pt expr with
+                        | CERString s -> ConstString s
                         | _ -> failwith "IE"
                     | _ -> failwith "IE"
                 | Some t, ConstConstr exprs ->
@@ -2141,8 +2214,10 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                 | _ -> failwith "IE"
                             | ConstFloat f -> BitConverter.GetBytes(f)
                             | ConstString s ->
-                                match pt.kind with
-                                | TkOrd (OkChar, _) -> [|byte(s.Chars 0)|]
+                                match pt with
+                                | ChrType -> [|byte(s.Chars 0)|]
+                                | StrType -> strToSStr s
+                                | _ -> failwith "IE"
                             | ConstBool b -> [|b|]
                             | ConstTempValue(b,_) -> b
                         (exprs |> List.map (addConstAtom (Some pt) >> symToBytes) |> Array.concat, t)
@@ -2186,8 +2261,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                 let fieldsMap = Dictionary<_,_>()
                                 for (names, typeName) in fields do
                                   for name in names do
-                                    let typ = match ctx.FindTypeId typeName with
-                                              | Some t -> t | _ -> failwith "IE cannot find"
+                                    let typ = getInternalType typeName
                                     let fd = FieldDefinition(name, FieldAttributes.Public, typ.raw)
                                     td.Fields.Add fd
                                     fieldsMap.Add(name, (fd,typ))
