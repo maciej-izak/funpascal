@@ -317,6 +317,12 @@ let (|OrdType|_|) = function
     | {kind=TkOrd _} -> Some OrdType
     | _ -> None
 
+let (|NumericType|_|) = function
+    | {kind=TkOrd _} | {kind=TkFloat _} | {kind=TkPointer _} -> Some NumericType
+    | _ -> None
+
+let (|BoolOp|_|) = function | Clt | Cgt | Ceq -> Some BoolOp | _ -> None
+
 let isCharacterType = function | StrType | ChrType -> true | _ -> false
 let isOptCharacterType = function | Some t -> isCharacterType t | None -> false
 let isChrType = function | ChrType -> true | _ -> false
@@ -964,6 +970,21 @@ let typeConvertTo (fromV, fromT) (toV, toT) =
     | _ when sameTypeKind(toT, fromT) -> [yield! toV; yield! fromV]
     | _ -> [yield! toV; yield! fromV; typeRefToConv toT.raw]
 
+let useHelperOp ctx helperName valueType =
+    let _,v = (ctx: Ctx).EnsureVariable(valueType)
+    [
+        +Ldloca v
+        +Call(findMethodReference ctx helperName)
+        +Ldloc v
+    ]
+
+let handleOperator (ctx: Ctx) = function
+    | (StrType as t), StrType, AddInst -> useHelperOp ctx "ConcatStr" t
+    | (StrType as t), StrType, (BoolOp as op) -> [yield! useHelperOp ctx "CompareStr" t; yield +op]
+    | (SetType at), (SetType bt), AddInst when at = bt -> useHelperOp ctx "SetUnion" at
+    | (SetType at), (SetType bt), MinusInst when at = bt -> useHelperOp ctx "SetDifference" at
+    | NumericType, NumericType, op -> [+op]
+
 let evalExprOp2 (opS: Option<string->string->string>) (opI: Option<int->int->int>) (r1, r2) =
     match       r1,     opS,     opI with
     | CERString s1, Some so,       _ -> match r2 with CERString s2 -> CERString(so s1 s2) | _ -> assert(false); CERUnknown
@@ -999,17 +1020,10 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
                     let typ = match et with | Some t -> t | _ -> aat
                     ([
                         yield! typeConvertTo (bb, bbt) (aa, aat)
-                        match i with
-                        | AddInst when isStrType aat && aat = bbt->
-                            let _,v = ctx.EnsureVariable(ctx.details.sysTypes.string)
-                            yield +Ldloca v
-                            yield +Call(findMethodReference ctx "ConcatStr")
-                            yield +Ldloc v
-                        | _ -> yield +i
+                        yield! handleOperator ctx (aat, bbt, i)
                         // need to cast to proper type (for simple types)
                         match et with
-                        | Some({kind=TkOrd _}) | Some({kind=TkFloat _}) | Some({kind=TkPointer _}) ->
-                            yield typeRefToConv et.Value.raw
+                        | Some NumericType -> yield typeRefToConv et.Value.raw
                         | _ -> ()
                     ], typ)
         let add2OpIl a b i = add2OpIlTyped a b i et
