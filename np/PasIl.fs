@@ -457,37 +457,42 @@ type SystemProc = {
     }
 
 type ModuleDetails = {
+        typesCount: int ref
         moduleBuilder: ModuleDefinition
         ns: string
         tb: TypeDefinition
+        vt: TypeReference
         anonSizeTypes: Dictionary<int, TypeDefinition>
-        sysTypes: SystemTypes
-        sysProc: SystemProc
     } with
-    static member Create moduleBuilder ns tb sysTypes sysProc =
+    static member Create moduleBuilder ns tb =
         {
+            typesCount = ref 0
             moduleBuilder = moduleBuilder
             ns = ns
             tb = tb
+            vt = moduleBuilder.ImportReference(typeof<ValueType>)
             anonSizeTypes = Dictionary<_, _>()
-            sysTypes = sysTypes
-            sysProc = sysProc
         }
 
-    static member NewSizedType ns (mb: ModuleDefinition) vt size name =
+    member self.UniqueTypeName() =
+        incr self.typesCount
+        "T" + string !self.typesCount
+
+    member self.NewSizedType size =
             let attributes = TypeAttributes.SequentialLayout ||| TypeAttributes.AnsiClass ||| TypeAttributes.Sealed ||| TypeAttributes.Public
-            let at = TypeDefinition(ns, name + string size, attributes)
+            let at = TypeDefinition(self.ns, self.UniqueTypeName(), attributes)
+
             at.ClassSize <- size
             at.PackingSize <- 1s;
-            at.BaseType <- vt
-            mb.Types.Add(at)
+            at.BaseType <- self.vt
+            self.moduleBuilder.Types.Add(at)
             at
 
     member self.SelectAnonSizeType size =
         match self.anonSizeTypes.TryGetValue size with
         | true, t -> t
         | _ ->
-            let at = ModuleDetails.NewSizedType self.ns self.moduleBuilder self.sysTypes.value.raw size "anon"
+            let at = self.NewSizedType size
             self.anonSizeTypes.Add(size, at)
             at
 
@@ -501,6 +506,10 @@ type ModuleDetails = {
 let stdIdent = PINameCreate >> List.singleton >> DIdent
 let stdType  = stdIdent >> TIdIdent
 
+let addMetaType (symbols: Dictionary<_,_>) (name: TypeName) typ =
+    symbols.Add(name, TypeSym typ)
+    typ
+
 type Ctx = {
         variables: List<VariableKind> list
         labels: Dictionary<string, BranchLabel ref> list
@@ -511,9 +520,82 @@ type Ctx = {
         res: List<MetaInstruction>
         details: ModuleDetails
         loop: Stack<BranchLabel ref * BranchLabel ref>
+        sysTypes: SystemTypes
+        sysProc: SystemProc
     } with
-    static member Create symbols (lang: LangCtx) details =
+
+    static member CreateStdTypes(details, (symbols: Dictionary<TypeName, Symbol>)) =
+        let mb = details.moduleBuilder
+        let vt = mb.ImportReference(typeof<ValueType>)
+        let ot = mb.ImportReference(typeof<obj>)
+        let addAnyType name raw kind =
+            let t = {name=name;raw=raw;kind=kind}
+            addMetaType symbols name t
+        let addOrdType name raw ordKind ordType = TkOrd(ordKind, ordType) |> addAnyType (StringName name) raw
+        let addFloatType name raw = TkFloat(FtSingle) |> addAnyType (StringName name) raw
+        let addArrayType name (p: PasType) ad = addAnyType name p.raw ad
+
+        addOrdType "Byte" mb.TypeSystem.Byte OkInteger (OtUByte(int Byte.MinValue, int Byte.MaxValue)) |> ignore
+        addOrdType "ShortInt" mb.TypeSystem.SByte OkInteger (OtSByte(int SByte.MinValue, int SByte.MaxValue)) |> ignore
+        addOrdType "Word" mb.TypeSystem.UInt16 OkInteger (OtUWord(int UInt16.MinValue, int UInt16.MaxValue)) |> ignore
+        addOrdType "SmallInt" mb.TypeSystem.Int16 OkInteger (OtSWord(int Int16.MinValue, int Int16.MaxValue)) |> ignore
+        addOrdType "LongWord" mb.TypeSystem.UInt32 OkInteger (OtULong(int UInt32.MinValue, int UInt32.MaxValue)) |> ignore
+        addOrdType "UInt64" mb.TypeSystem.UInt64 OkInteger (OtUQWord(UInt64.MinValue, UInt64.MaxValue)) |> ignore
+        addOrdType "Int64" mb.TypeSystem.Int64 OkInteger (OtSQWord(Int64.MinValue, Int64.MaxValue)) |> ignore
+        let charType = addOrdType "Char" mb.TypeSystem.Byte OkChar (OtUByte(int Byte.MinValue, int Byte.MaxValue))
+        let strType = {name=AnonName;raw=(details.NewSizedType 256) :> TypeReference;kind=TkUnknown 256}
+        let strDim = {
+                        low = 1
+                        high = 255
+                        size = 256
+                        elemSize = 1
+                        elemType = charType
+                        selfType = ref strType
+                     }
+        // allow to use string as array
+
+        // file = name + handle
+        let fileType = (details.NewSizedType (256 + ptrSize)) :> TypeReference
+        let fileType = addMetaType symbols (TypedName TIdFile) {name=TypedName TIdFile;kind=TkUnknown(256 + ptrSize);raw=fileType}
         {
+            int32 = addOrdType "Integer" mb.TypeSystem.Int32 OkInteger (OtSWord(int Int32.MinValue, int Int32.MaxValue))
+            single = addFloatType "Real" mb.TypeSystem.Single
+            string = addArrayType (TypedName TIdString) strType (TkArray(AkSString 255uy, [strDim], charType))
+            setStorage = {name=AnonName;raw=details.NewSizedType 256;kind=TkUnknown 0}
+            char = charType
+            file = fileType
+            value = {name=AnonName;raw=vt;kind=TkUnknown 0}
+            pointer = addAnyType (StringName "Pointer") (PointerType mb.TypeSystem.Void) (TkPointer({name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}))
+            constParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown 0}
+            varParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown 0}
+            boolean = addOrdType "Boolean" mb.TypeSystem.Byte OkBool (OtUByte(0, 1))
+            net_obj = {name=AnonName;raw=ot;kind=TkUnknown 0}
+            net_void = {name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}
+        }
+
+    static member Create symbols (lang: LangCtx) details =
+        let moduleBuilder = details.moduleBuilder
+        let exitMethod =
+            typeof<System.Environment>.GetMethod("Exit", [| typeof<int> |]) |> moduleBuilder.ImportReference
+        let writeLineMethod =
+            typeof<System.Console>.GetMethod("WriteLine", [| typeof<string> ; typeof<obj array> |]) |> moduleBuilder.ImportReference
+        let ptrToStringAnsi =
+            typeof<System.Runtime.InteropServices.Marshal>.GetMethod("PtrToStringAnsi", [| typeof<nativeint> |]) |> moduleBuilder.ImportReference
+        let convertU1ToChar =
+            typeof<System.Convert>.GetMethod("ToChar", [| typeof<byte> |]) |> moduleBuilder.ImportReference
+        let allocMem =
+            typeof<System.Runtime.InteropServices.Marshal>.GetMethod("AllocCoTaskMem")  |> moduleBuilder.ImportReference
+        let freeMem =
+            typeof<System.Runtime.InteropServices.Marshal>.GetMethod("FreeCoTaskMem")  |> moduleBuilder.ImportReference
+        let mathLog =
+            typeof<System.MathF>.GetMethod("Log", [| typeof<single> |])  |> moduleBuilder.ImportReference
+        let mathTrunc =
+            typeof<System.MathF>.GetMethod("Truncate", [| typeof<single> |])  |> moduleBuilder.ImportReference
+        let mathExp =
+            typeof<System.MathF>.GetMethod("Exp", [| typeof<single> |])  |> moduleBuilder.ImportReference
+        let mathRound =
+            typeof<System.MathF>.GetMethod("Round", [| typeof<single> |])  |> moduleBuilder.ImportReference
+        let res = {
             variables = [List<VariableKind>()]
             labels = [Dictionary<_,_>()]
             symbols = [symbols]
@@ -523,7 +605,56 @@ type Ctx = {
             res = List<MetaInstruction>()
             details = details
             loop = Stack<_>()
+            sysTypes = Ctx.CreateStdTypes(details,symbols)
+            sysProc = {
+                            GetMem = allocMem
+                            FreeMem = freeMem
+                            WriteLine = writeLineMethod
+                            Exit = exitMethod
+                            ConvertU1ToChar = convertU1ToChar
+                            PtrToStringAnsi = ptrToStringAnsi
+                      }
         }
+
+        let tsingle = res.sysTypes.single
+        symbols.Add(StringName "true", ConstBool 0xFFuy |> ConstSym)
+        symbols.Add(StringName "false", ConstBool 0uy |> ConstSym)
+        //newSymbols.Add("GetMem", Referenced allocMem |> MethodSym)
+        //newSymbols.Add("FreeMem", Referenced freeMem |> MethodSym)
+        let singleScalar raw =
+           Referenced {
+               paramList = [|{typ=tsingle;ref=false}|]
+               result = Some tsingle
+               raw = raw
+           } |> MethodSym
+        symbols.Add(StringName "Inc", Intrinsic IncProc |> MethodSym)
+        symbols.Add(StringName "Dec", Intrinsic DecProc |> MethodSym)
+        symbols.Add(StringName "Read", Intrinsic ReadProc |> MethodSym)
+        symbols.Add(StringName "Write", Intrinsic WriteProc |> MethodSym)
+        symbols.Add(StringName "ReadLn", Intrinsic ReadLnProc |> MethodSym)
+        symbols.Add(StringName "WriteLn", Intrinsic WriteLnProc |> MethodSym)
+        symbols.Add(StringName "WriteLine", Intrinsic WriteLineProc |> MethodSym)
+        symbols.Add(StringName "New", Intrinsic NewProc |> MethodSym)
+        symbols.Add(StringName "Dispose", Intrinsic DisposeProc |> MethodSym)
+        symbols.Add(StringName "Break", Intrinsic BreakProc |> MethodSym)
+        symbols.Add(StringName "Continue", Intrinsic ContinueProc |> MethodSym)
+        symbols.Add(StringName "Exit", Intrinsic ExitProc |> MethodSym)
+        symbols.Add(StringName "Halt", Intrinsic HaltProc |> MethodSym)
+        symbols.Add(StringName "SizeOf", Intrinsic SizeOfFunc |> MethodSym)
+        symbols.Add(StringName "Ord", Intrinsic OrdFunc |> MethodSym)
+        symbols.Add(StringName "Chr", Intrinsic ChrFunc |> MethodSym)
+        symbols.Add(StringName "Pred", Intrinsic PredProc |> MethodSym)
+        symbols.Add(StringName "Succ", Intrinsic SuccProc |> MethodSym)
+        symbols.Add(StringName "Round", singleScalar mathRound)
+        // function Abs(x: T): T;
+        // function Sqr(x: T): T;
+        // function Sin(x: Real): Real;
+        // function Cos(x: Real): Real;
+        // function Arctan(x: Real): Real;
+        symbols.Add(StringName "Exp", singleScalar mathExp)
+        symbols.Add(StringName "Ln", singleScalar mathLog)
+        symbols.Add(StringName "Trunc", singleScalar mathTrunc)
+        res
 
     member self.Inner newSymbols =
         { self with
@@ -554,7 +685,7 @@ type Ctx = {
 //                     | true, value ->
 //                         value
 //                     | _ ->
-        let varType = defaultArg kind self.details.sysTypes.int32
+        let varType = defaultArg kind self.sysTypes.int32
         let varDef = varType.raw |> VariableDefinition
         let varKind = varDef |> LocalVariable
         self.res.Add(DeclareLocal(varDef))
@@ -579,7 +710,7 @@ type Ctx = {
 
 let (|CharacterType|_|) (ctx: Ctx) = function
     | StrType as t -> Some(CharacterType t)
-    | ChrType -> Some(CharacterType ctx.details.sysTypes.string)
+    | ChrType -> Some(CharacterType ctx.sysTypes.string)
     | _ -> None
 
 let inline toMap kvps =
@@ -890,17 +1021,17 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
     match mainSym with
     | VariableSym (v, t as vt) -> LoadVar vt |> varLoadChain t ident.Tail
     | WithSym (v, t as vt) -> LoadVar vt |> varLoadChain t ident
-    | EnumValueSym(i) when ident.Tail = [] -> ChainLoad([ValueLoad(ValueInt(i))], Some ctx.details.sysTypes.int32)
+    | EnumValueSym(i) when ident.Tail = [] -> ChainLoad([ValueLoad(ValueInt(i))], Some ctx.sysTypes.int32)
     | MethodSym m ->  ChainLoad([CallableLoad m], m.ReturnType)
     | VariableParamSym ((i,t,r) as p) -> LoadParam p |> varLoadChain t ident.Tail
     | ConstSym v ->
         match v with
-        | ConstInt i -> ChainLoad([ValueLoad(ValueInt i)], Some ctx.details.sysTypes.int32)
-        | ConstFloat f -> ChainLoad([ValueLoad(ValueFloat f)], Some ctx.details.sysTypes.single)
+        | ConstInt i -> ChainLoad([ValueLoad(ValueInt i)], Some ctx.sysTypes.int32)
+        | ConstFloat f -> ChainLoad([ValueLoad(ValueFloat f)], Some ctx.sysTypes.single)
         | ConstValue(fd, pt) -> LoadVar(GlobalVariable fd, pt) |> varLoadChain pt ident.Tail
         | ConstBool b ->
             let i = int b
-            ChainLoad([ValueLoad(ValueInt i)], Some ctx.details.sysTypes.int32)
+            ChainLoad([ValueLoad(ValueInt i)], Some ctx.sysTypes.int32)
         | _ -> failwith "IE"
     | TypeSym t -> ChainLoad([TypeCastLoad t], Some t)
     | _ -> SymbolLoadError
@@ -1036,7 +1167,7 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
                     +Stind Ind_U1
                     +Ldloc v
                 ]
-            let strt = ctx.details.sysTypes.string
+            let strt = ctx.sysTypes.string
             op,
             match op, aTyp, bTyp with
             | BoolOp, _, _ -> [yield! aVal; yield! bVal],aTyp,bTyp
@@ -1064,7 +1195,7 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
                         | _ -> ()
                     ], typ)
         let add2OpIl a b i = add2OpIlTyped a b i et
-        let add2OpIlBool a b i = add2OpIlTyped a b i (Some ctx.details.sysTypes.boolean)
+        let add2OpIlBool a b i = add2OpIlTyped a b i (Some ctx.sysTypes.boolean)
         let inline add1OpIl a i =
             match exprToMetaExpr a et with
             | ValueKind(a, at) -> [ yield! a; yield +i; yield typeRefToConv at.raw], at
@@ -1086,22 +1217,22 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
         | Equal(a, b) -> add2OpIl a b Ceq
         | NotEqual(a, b) ->
             match add2OpIlBool a b Ceq with
-            | o, ot -> ([ yield! o; +Ldc_I4 0; +Ceq ], ctx.details.sysTypes.boolean)
+            | o, ot -> ([ yield! o; +Ldc_I4 0; +Ceq ], ctx.sysTypes.boolean)
         | StrictlyLessThan(a, b) -> add2OpIlBool a b Clt
         | StrictlyGreaterThan(a, b) -> add2OpIlBool a b Cgt
         | LessThanOrEqual(a, b) ->
             match add2OpIlBool a b Cgt with
-            | o, ot -> [ yield! o; +Ldc_I4 0; +Ceq ], ctx.details.sysTypes.boolean
+            | o, ot -> [ yield! o; +Ldc_I4 0; +Ceq ], ctx.sysTypes.boolean
         | GreaterThanOrEqual(a, b) ->
             match add2OpIlBool a b Clt with
-            | o, ot -> [ yield! o; +Ldc_I4 0; +Ceq ], ctx.details.sysTypes.boolean
+            | o, ot -> [ yield! o; +Ldc_I4 0; +Ceq ], ctx.sysTypes.boolean
         | In(a, b) -> add2OpIlBool a b InInst
         | Addr(a) ->
             ([
                 match a with
                 | Value(VIdent i) -> yield! (findSymbolAndGetPtr ctx i |> fst)
                 | _ -> failwith "IE"
-            ], ctx.details.sysTypes.pointer)
+            ], ctx.sysTypes.pointer)
         | _ -> failwith "IE"
         |> ValueKind
 
@@ -1126,8 +1257,8 @@ and callParamToIl ctx cp (idxmr: Option<int * MethodInfo>) =
     | ParamIdent id ->
         match param with
         | Some param when byRef -> findSymbolAndGetPtr ctx id
-        | Some param when param = ctx.details.sysTypes.constParam -> findSymbolAndGetPtr ctx id
-        | Some param when param = ctx.details.sysTypes.varParam -> findSymbolAndGetPtr ctx id
+        | Some param when param = ctx.sysTypes.constParam -> findSymbolAndGetPtr ctx id
+        | Some param when param = ctx.sysTypes.varParam -> findSymbolAndGetPtr ctx id
         | _ -> findSymbolAndLoad ctx id
 
 and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
@@ -1162,14 +1293,14 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                     match cp with
                     | ParamIdent(id)::tail ->
                         let sl, typ = findSymbolAndGetPtr ctx id
-                        if typ.raw = ctx.details.sysTypes.file.raw then Some sl, tail
+                        if typ.raw = ctx.sysTypes.file.raw then Some sl, tail
                         else None, cp
                     | _ -> None, cp
                 let file() = if file.IsNone then fst <| findSymbolAndGetPtr ctx (stdIdent "STDOUTPUTFILE")
                              else file.Value
 
                 let doParam = fun (cp: CallParam) ->
-                    let someInt = Some ctx.details.sysTypes.int32
+                    let someInt = Some ctx.sysTypes.int32
                     let e,w,p = match cp with
                                 | ParamExpr(TupleExpr[v;w;p]) -> ParamExpr(v),fst(exprToIl ctx w someInt),fst(exprToIl ctx p someInt)
                                 | ParamExpr(TupleExpr[v;w]) -> ParamExpr(v),fst(exprToIl ctx w someInt),[+Ldc_I4 0]
@@ -1209,7 +1340,7 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                     match cp with
                     | ParamIdent(id)::tail ->
                         let sl, typ = findSymbolAndGetPtr ctx id
-                        if typ.raw = ctx.details.sysTypes.file.raw then Some sl, tail
+                        if typ.raw = ctx.sysTypes.file.raw then Some sl, tail
                         else None, cp
                     | _ -> None, cp
                 let file() = if file.IsNone then fst <| findSymbolAndGetPtr ctx (stdIdent "STDINPUTFILE")
@@ -1303,7 +1434,7 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                 ([
                     +Ldstr str
                     +Ldc_I4 !high
-                    +Newarr ctx.details.sysTypes.net_obj.raw
+                    +Newarr ctx.sysTypes.net_obj.raw
                     yield! cparams
                            |> List.mapi (
                                            fun idx (i, t) ->
@@ -1312,20 +1443,20 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                                                    [yield! elems ; +Stelem Elem_Ref]
                                                match t with
                                                | StrType ->
-                                                   [+Call ctx.details.sysProc.PtrToStringAnsi]
+                                                   [+Call ctx.sysProc.PtrToStringAnsi]
                                                    // TODO critical handle ptr to strings! bug found in .NET 32 bit
                                                    |> putArrayElem (match ilToAtom i with | [Ldsfld f] -> [+Ldsflda f] | _ -> i)
                                                | ChrType ->
                                                    [
                                                        +Conv Conv_U1
-                                                       +Call ctx.details.sysProc.ConvertU1ToChar
+                                                       +Call ctx.sysProc.ConvertU1ToChar
                                                        +Box ctx.details.moduleBuilder.TypeSystem.Char
                                                    ]
                                                    |> putArrayElem i
                                                | _ -> [+Box t.raw] |> putArrayElem i
                                         )
                            |> List.concat
-                    +Call ctx.details.sysProc.WriteLine
+                    +Call ctx.sysProc.WriteLine
                  ], None)
             | NewProc, [ParamIdent(id)] ->
                 let ils, t = findSymbolAndGetPtr ctx id
@@ -1335,7 +1466,7 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                 ([
                     yield! ils
                     +Ldc_I4 t.SizeOf
-                    +Call ctx.details.sysProc.GetMem
+                    +Call ctx.sysProc.GetMem
                     +Dup
                     +Initobj t.raw
                     +Stind Ind_U
@@ -1344,7 +1475,7 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                 let ils, _ = findSymbolAndLoad ctx id
                 ([
                     yield! ils
-                    +Call ctx.details.sysProc.FreeMem
+                    +Call ctx.sysProc.FreeMem
                 ], None)
             | HaltProc, _ ->
                 let exitCode = match cp with
@@ -1354,7 +1485,7 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                 ([
 
                      yield! exitCode
-                     +Call ctx.details.sysProc.Exit
+                     +Call ctx.sysProc.Exit
                 ], None)
             | ChrFunc, _ ->
                 let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
@@ -1362,14 +1493,14 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                 ([
                     yield! callInstr
                     if popResult then yield +Pop // TODO or not generate call ?
-                 ], Some ctx.details.sysTypes.char)
+                 ], Some ctx.sysTypes.char)
             | OrdFunc, _ ->
                 let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
                 let callInstr, typ = callParamToIl ctx cp None
                 ([
                     yield! callInstr
                     if popResult then yield +Pop // TODO or not generate call ?
-                 ], Some ctx.details.sysTypes.int32)
+                 ], Some ctx.sysTypes.int32)
             | SizeOfFunc, [ParamIdent id] ->
                 let t = match id with
                         | VariablePasType ctx t -> t
@@ -1378,7 +1509,7 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                 ([
                     +Ldc_I4 t.SizeOf
                     if popResult then +Pop // TODO or not generate call ?
-                 ], Some ctx.details.sysTypes.int32)
+                 ], Some ctx.sysTypes.int32)
             | _ -> failwith "IE"
         | _ -> failwith "IE"
     | _ -> failwith "IE"
@@ -1411,13 +1542,13 @@ and SetValueToCER ctx typ al =
 
 and valueToValueKind ctx v (expectedType: PasType option) =
     match v with
-    | VInteger i -> [+Ldc_I4 i], ctx.details.sysTypes.int32
-    | VFloat f -> [+Ldc_R4 (single f)], ctx.details.sysTypes.single
+    | VInteger i -> [+Ldc_I4 i], ctx.sysTypes.int32
+    | VFloat f -> [+Ldc_R4 (single f)], ctx.sysTypes.single
     | VIdent i -> findSymbolAndLoad ctx i
     | VString s ->
         let doChr() =
             let cv = int(s.Chars 0)
-            [+Ldc_I4 cv], ctx.details.sysTypes.char
+            [+Ldc_I4 cv], ctx.sysTypes.char
         // TODO protect string as char interpretation when needed
         match expectedType with
         | None when s.Length = 1 -> doChr()
@@ -1429,9 +1560,9 @@ and valueToValueKind ctx v (expectedType: PasType option) =
                 strToSStr s
                 |> ctx.details.AddBytesConst
                 |> Ldsfld |> (~+)
-            ], ctx.details.sysTypes.string)
+            ], ctx.sysTypes.string)
 
-// let _,v = ctx.EnsureVariable(ctx.details.sysTypes.string)
+// let _,v = ctx.EnsureVariable(ctx.sysTypes.string)
 // TODO Ref count strin -> below some simple dynamic allocation for further rework
 //            Ldc_I4 strBytes.Length
 //            Call ctx.details.GetMem
@@ -1448,7 +1579,7 @@ and valueToValueKind ctx v (expectedType: PasType option) =
         match doCall ctx ce false with
         | ils, Some t -> ils, t
         | _ -> failwith "IE"
-    | VNil -> [+Ldnull], ctx.details.sysTypes.pointer
+    | VNil -> [+Ldnull], ctx.sysTypes.pointer
     | VSet al ->
         let expType = match expectedType with | Some t -> t | _ -> failwith "IE"
         let fd = match SetValueToCER ctx expectedType al with | CEROrdSet(b,_) -> b | _ -> failwith "IE"
@@ -1539,7 +1670,7 @@ and chainLoadToIl ctx lastType factory symload =
             yield! res
             for e, d in exprs do
                 // do not minus if not needed
-                yield! fst <| exprToIl ctx (Multiply(Minus(e,d.low |> VInteger |> Value), d.elemSize |> VInteger |> Value)) (Some ctx.details.sysTypes.int32)
+                yield! fst <| exprToIl ctx (Multiply(Minus(e,d.low |> VInteger |> Value), d.elemSize |> VInteger |> Value)) (Some ctx.sysTypes.int32)
                 yield +AddInst
         ]
     | StructLoad fds ->
@@ -1645,7 +1776,7 @@ let inline packedToStr(p: bool) = if p then "1" else "0"
 
 let evalConstExprToStr (ctx: Ctx) = function
     | ConstExpr expr ->
-        match evalConstExpr ctx (Some ctx.details.sysTypes.string) expr with
+        match evalConstExpr ctx (Some ctx.sysTypes.string) expr with
         | CERString s -> s
         | CERInt i -> string i
         | CERUnknown -> ""
@@ -1684,30 +1815,6 @@ type BuildScope =
 
 type IlBuilder(moduleBuilder: ModuleDefinition) = class
     let mb = moduleBuilder
-    let exitMethod =
-        typeof<System.Environment>.GetMethod("Exit", [| typeof<int> |]) |> moduleBuilder.ImportReference
-    let writeLineMethod =
-        typeof<System.Console>.GetMethod("WriteLine", [| typeof<string> ; typeof<obj array> |]) |> moduleBuilder.ImportReference
-    let ptrToStringAnsi =
-        typeof<System.Runtime.InteropServices.Marshal>.GetMethod("PtrToStringAnsi", [| typeof<nativeint> |]) |> moduleBuilder.ImportReference
-    let convertU1ToChar =
-        typeof<System.Convert>.GetMethod("ToChar", [| typeof<byte> |]) |> moduleBuilder.ImportReference
-    let allocMem =
-        typeof<System.Runtime.InteropServices.Marshal>.GetMethod("AllocCoTaskMem")  |> moduleBuilder.ImportReference
-    let freeMem =
-        typeof<System.Runtime.InteropServices.Marshal>.GetMethod("FreeCoTaskMem")  |> moduleBuilder.ImportReference
-
-    let mathLog =
-        typeof<System.MathF>.GetMethod("Log", [| typeof<single> |])  |> moduleBuilder.ImportReference
-
-    let mathTrunc =
-        typeof<System.MathF>.GetMethod("Truncate", [| typeof<single> |])  |> moduleBuilder.ImportReference
-
-    let mathExp =
-        typeof<System.MathF>.GetMethod("Exp", [| typeof<single> |])  |> moduleBuilder.ImportReference
-
-    let mathRound =
-        typeof<System.MathF>.GetMethod("Round", [| typeof<single> |])  |> moduleBuilder.ImportReference
 
     let rec stmtToIl (ctx: Ctx) sysLabels (s: Statement): (MetaInstruction * BranchLabel ref list) =
         let stmtToIlList = stmtListToIlList ctx
@@ -1776,7 +1883,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     // if logic
                     let firstEnfOfStm = ref ForwardLabel
                     let lastEndOfStm = ref ForwardLabel
-                    let condition = fst <| exprToIl expr (Some ctx.details.sysTypes.boolean)
+                    let condition = fst <| exprToIl expr (Some ctx.sysTypes.boolean)
                     let (trueBranch, trueLabels) = stmtToIlList tb
                     let (falseBranch, falseLabels) = stmtToIlList fb
                     let hasFalseBranch = falseBranch.Length > 0
@@ -1854,7 +1961,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         ]
                      , [yield! labels ; yield lastEndOfStm])
                 | WhileStm (expr, stmt) ->
-                    let condition = fst <| exprToIl expr (Some ctx.details.sysTypes.boolean)
+                    let condition = fst <| exprToIl expr (Some ctx.sysTypes.boolean)
                     let conditionLabel = ref (LazyLabel (condition.Head, nullRef()))
                     // push loop context
                     let breakLabel = ref ForwardLabel
@@ -1873,7 +1980,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                                 | _ -> condition.Head), nullRef())))
                     ],[breakLabel])
                 | RepeatStm (stmt, expr) ->
-                    let condition = fst <| exprToIl expr (Some ctx.details.sysTypes.boolean)
+                    let condition = fst <| exprToIl expr (Some ctx.sysTypes.boolean)
                     // push loop context
                     let breakLabel = ref ForwardLabel
                     let continueLabel = ref (LazyLabel(condition.Head,nullRef()))
@@ -1968,11 +2075,11 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 | LocalVariable v ->
                      ctx.res.Add(DeclareLocal(v))
                      match v.VariableType with
-                     //| t when t = ctx.details.sysTypes.string -> []//stmtListToIlList ctx (IfStm())
+                     //| t when t = ctx.sysTypes.string -> []//stmtListToIlList ctx (IfStm())
                      | _ -> []
                 | GlobalVariable v ->
                      match v.FieldType with
-                     //| t when t = ctx.details.sysTypes.string ->
+                     //| t when t = ctx.sysTypes.string ->
 //                         [
 //                             Ldsfld v |> ilResolve
 //                             Call ctx.details.FreeMem |> ilResolve
@@ -1998,115 +2105,15 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         |> ctx.res.Add
         ctx.res
 
-    let vt = mb.ImportReference(typeof<ValueType>)
-    let ot = mb.ImportReference(typeof<obj>)
-
     let findType =
         typeIdToStr
-
-    let addMetaType (symbols: Dictionary<_,_>) (name: TypeName) typ =
-        symbols.Add(name, TypeSym typ)
-        typ
-
-    let createStdTypes ns (symbols: Dictionary<_,_>) =
-        let addAnyType name raw kind =
-            let t = {name=name;raw=raw;kind=kind}
-            addMetaType symbols name t
-        let addOrdType name raw ordKind ordType = TkOrd(ordKind, ordType) |> addAnyType (StringName name) raw
-        let addFloatType name raw = TkFloat(FtSingle) |> addAnyType (StringName name) raw
-        let addArrayType name (p: PasType) ad = addAnyType name p.raw ad
-
-        addOrdType "Byte" mb.TypeSystem.Byte OkInteger (OtUByte(int Byte.MinValue, int Byte.MaxValue)) |> ignore
-        addOrdType "ShortInt" mb.TypeSystem.SByte OkInteger (OtSByte(int SByte.MinValue, int SByte.MaxValue)) |> ignore
-        addOrdType "Word" mb.TypeSystem.UInt16 OkInteger (OtUWord(int UInt16.MinValue, int UInt16.MaxValue)) |> ignore
-        addOrdType "SmallInt" mb.TypeSystem.Int16 OkInteger (OtSWord(int Int16.MinValue, int Int16.MaxValue)) |> ignore
-        addOrdType "LongWord" mb.TypeSystem.UInt32 OkInteger (OtULong(int UInt32.MinValue, int UInt32.MaxValue)) |> ignore
-        addOrdType "UInt64" mb.TypeSystem.UInt64 OkInteger (OtUQWord(UInt64.MinValue, UInt64.MaxValue)) |> ignore
-        addOrdType "Int64" mb.TypeSystem.Int64 OkInteger (OtSQWord(Int64.MinValue, Int64.MaxValue)) |> ignore
-        let charType = addOrdType "Char" mb.TypeSystem.Byte OkChar (OtUByte(int Byte.MinValue, int Byte.MaxValue))
-        let strType = {name=AnonName;raw=(ModuleDetails.NewSizedType ns mb vt 256 "") :> TypeReference;kind=TkUnknown 256}
-        let strDim = {
-                        low = 1
-                        high = 255
-                        size = 256
-                        elemSize = 1
-                        elemType = charType
-                        selfType = ref strType
-                     }
-        // allow to use string as array
-
-        // file = name + handle
-        let fileType = (ModuleDetails.NewSizedType ns mb vt (256 + ptrSize) "") :> TypeReference
-        let fileType = addMetaType symbols (TypedName TIdFile) {name=TypedName TIdFile;kind=TkUnknown(256 + ptrSize);raw=fileType}
-        {
-            int32 = addOrdType "Integer" mb.TypeSystem.Int32 OkInteger (OtSWord(int Int32.MinValue, int Int32.MaxValue))
-            single = addFloatType "Real" mb.TypeSystem.Single
-            string = addArrayType (TypedName TIdString) strType (TkArray(AkSString 255uy, [strDim], charType))
-            setStorage = {name=AnonName;raw=ModuleDetails.NewSizedType ns mb vt (256) "SetStorage";kind=TkUnknown 0}
-            char = charType
-            file = fileType
-            value = {name=AnonName;raw=vt;kind=TkUnknown 0}
-            pointer = addAnyType (StringName "Pointer") (PointerType mb.TypeSystem.Void) (TkPointer({name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}))
-            constParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown 0}
-            varParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown 0}
-            boolean = addOrdType "Boolean" mb.TypeSystem.Byte OkBool (OtUByte(0, 1))
-            net_obj = {name=AnonName;raw=ot;kind=TkUnknown 0}
-            net_void = {name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}
-        }
 
     member self.BuildIl(block: Block, buildScope, ?resVar) =
         let ctx = match buildScope with
                   | MainScope (ns, tb) ->
                     let langCtx = LangCtx()
                     let newSymbols = Dictionary<TypeName,_>(langCtx)
-                    let systemTypes = createStdTypes ns newSymbols
-                    let systemProc = {
-                        GetMem = allocMem
-                        FreeMem = freeMem
-                        WriteLine = writeLineMethod
-                        Exit = exitMethod
-                        ConvertU1ToChar = convertU1ToChar
-                        PtrToStringAnsi = ptrToStringAnsi
-                    }
-                    let tsingle = systemTypes.single
-                    newSymbols.Add(StringName "true", ConstBool 0xFFuy |> ConstSym)
-                    newSymbols.Add(StringName "false", ConstBool 0uy |> ConstSym)
-                    //newSymbols.Add("GetMem", Referenced allocMem |> MethodSym)
-                    //newSymbols.Add("FreeMem", Referenced freeMem |> MethodSym)
-                    let singleScalar raw =
-                       Referenced {
-                           paramList = [|{typ=tsingle;ref=false}|]
-                           result = Some tsingle
-                           raw = raw
-                       } |> MethodSym
-                    newSymbols.Add(StringName "Inc", Intrinsic IncProc |> MethodSym)
-                    newSymbols.Add(StringName "Dec", Intrinsic DecProc |> MethodSym)
-                    newSymbols.Add(StringName "Read", Intrinsic ReadProc |> MethodSym)
-                    newSymbols.Add(StringName "Write", Intrinsic WriteProc |> MethodSym)
-                    newSymbols.Add(StringName "ReadLn", Intrinsic ReadLnProc |> MethodSym)
-                    newSymbols.Add(StringName "WriteLn", Intrinsic WriteLnProc |> MethodSym)
-                    newSymbols.Add(StringName "WriteLine", Intrinsic WriteLineProc |> MethodSym)
-                    newSymbols.Add(StringName "New", Intrinsic NewProc |> MethodSym)
-                    newSymbols.Add(StringName "Dispose", Intrinsic DisposeProc |> MethodSym)
-                    newSymbols.Add(StringName "Break", Intrinsic BreakProc |> MethodSym)
-                    newSymbols.Add(StringName "Continue", Intrinsic ContinueProc |> MethodSym)
-                    newSymbols.Add(StringName "Exit", Intrinsic ExitProc |> MethodSym)
-                    newSymbols.Add(StringName "Halt", Intrinsic HaltProc |> MethodSym)
-                    newSymbols.Add(StringName "SizeOf", Intrinsic SizeOfFunc |> MethodSym)
-                    newSymbols.Add(StringName "Ord", Intrinsic OrdFunc |> MethodSym)
-                    newSymbols.Add(StringName "Chr", Intrinsic ChrFunc |> MethodSym)
-                    newSymbols.Add(StringName "Pred", Intrinsic PredProc |> MethodSym)
-                    newSymbols.Add(StringName "Succ", Intrinsic SuccProc |> MethodSym)
-                    newSymbols.Add(StringName "Round", singleScalar mathRound)
-                    // function Abs(x: T): T;
-                    // function Sqr(x: T): T;
-                    // function Sin(x: Real): Real;
-                    // function Cos(x: Real): Real;
-                    // function Arctan(x: Real): Real;
-                    newSymbols.Add(StringName "Exp", singleScalar mathExp)
-                    newSymbols.Add(StringName "Ln", singleScalar mathLog)
-                    newSymbols.Add(StringName "Trunc", singleScalar mathTrunc)
-                    ModuleDetails.Create moduleBuilder ns tb systemTypes systemProc
+                    ModuleDetails.Create moduleBuilder ns tb
                     |> Ctx.Create newSymbols langCtx
                   | LocalScope ctx -> ctx
         let newSymbols = ctx.symbols.Head
@@ -2119,7 +2126,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                      | Some (_, None) -> null // no result (void)
                      | _ -> null // main p`rogram
 
-        let pint32 = ctx.details.sysTypes.int32
+        let pint32 = ctx.sysTypes.int32
 
 //        let rec sizeOf (typ: PasType) (td: TypeDefinition) =
 //            let sizeOfTD (td: TypeDefinition) = td.Fields |> Seq.sumBy (fun f -> sizeOf f.FieldType null)
@@ -2161,7 +2168,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     match t.kind with | TkOrd _ -> () | _ -> failwith "IE"
                     t
                 | _ -> failwith "IE unknown type"
-            addType name {name=name;kind=TkSet(t);raw=ctx.details.sysTypes.setStorage.raw}
+            addType name {name=name;kind=TkSet(t);raw=ctx.sysTypes.setStorage.raw}
 
 
         let rec getInternalType t =
@@ -2178,7 +2185,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         and addTypeArray dimensions tname name =
             let newSubType (dims, size) (typ: PasType, typSize) name =
                 let size = size * typSize
-                let at = ModuleDetails.NewSizedType ctx.details.ns mb vt size ""
+                let at = ctx.details.NewSizedType size
                 FieldDefinition("item0", FieldAttributes.Public, typ.raw)
                 |> at.Fields.Add
                 let name = StringName name
@@ -2219,7 +2226,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
             // final array
             let strName = string ((string name).Length)
             let _,_,typ = doArrayDef dimensions tname ([], 1) strName
-            typ.raw.Name <- strName
+            //typ.raw.Name <- strName
             addType name typ
             //(doArrayDef dimensions tname (ref []) name).Name <- name
 
@@ -2299,9 +2306,9 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                addType name {name=name;kind=TkOrd(OkEnumeration, OtULong(0, max));raw=pint32.raw}
                            | Record (packed, fields) -> 
                                 let mutable size = 0;
-                                let td = TypeDefinition(ctx.details.ns, name, TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout)
+                                let td = TypeDefinition(ctx.details.ns, ctx.details.UniqueTypeName(), TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout)
                                 td.ClassSize <- 0
-                                td.BaseType <- vt
+                                td.BaseType <- ctx.sysTypes.value.raw
                                 td.PackingSize <- 1s // if packed then 1s else 0s
                                 let fieldsMap = Dictionary<_,_>()
                                 for (names, typeName) in fields do
@@ -2364,7 +2371,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                                   let resultVar = VariableDefinition res.raw |> LocalVariable
                                                   newMethodSymbols.Add(StringName "result", (resultVar, res) |> VariableSym)
                                                   res, Some resultVar
-                                            | _ -> ctx.details.sysTypes.net_void, None
+                                            | _ -> ctx.sysTypes.net_void, None
 
                            let ps = defaultArg mPara []
                                     |> List.collect
@@ -2375,8 +2382,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                                 match k, t with
                                                 | Some Const, Some t -> t.raw, RefConst, t, false
                                                 | Some Var, Some t -> ByReferenceType(t.raw) :> TypeReference, RefVar, t, true
-                                                | Some Const, None -> ctx.details.sysTypes.constParam.raw, RefUntypedConst, ctx.details.sysTypes.constParam, true
-                                                | Some Var, None -> ctx.details.sysTypes.varParam.raw, RefUntypedVar, ctx.details.sysTypes.varParam, true
+                                                | Some Const, None -> ctx.sysTypes.constParam.raw, RefUntypedConst, ctx.sysTypes.constParam, true
+                                                | Some Var, None -> ctx.sysTypes.varParam.raw, RefUntypedVar, ctx.sysTypes.varParam, true
                                                 | None, Some t -> t.raw, RefNone, t, false
                                                 | _ -> failwith "IE"
                                             let pd = ParameterDefinition(p, ParameterAttributes.None, typ)
