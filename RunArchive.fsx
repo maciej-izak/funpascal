@@ -3,6 +3,71 @@ open np.BasicParsers
 open FParsec
 
 // """
+// {$I system.inc}
+// {$I Common.inc}
+// {.$I Scanner.inc}
+
+// type
+//   TTest = (a1, a2, a3);
+//   TTests = set of TTest;
+//   TA = array[0..1] of byte;
+
+// const
+//   Arr: TA = ($4D, $5A);
+
+// const
+//   Digits:    set of Char = ['0'..'9', 'Z'];
+
+// var
+//   r: Real;
+//   s: string;
+//   c: char;
+//   sp: ^string;
+//   t: set of TTest;
+//   d: set of char;
+//   a: TA;
+// begin
+//   InitSystem;
+//   d := Digits;
+//   a := Arr;
+//   WriteLn('z' in Digits);
+//   WriteLn('A');
+//   WriteLn('b');
+//   WriteLn('A' + 'b');
+//   WriteLn(chr(a[0]), chr(a[1]));
+//   WriteLn('AB' + 'CD');
+//   ReadLn(c);
+//   WriteLn(c);
+//   WriteLn(3.14:4:4);
+//   case c of
+//     'p': begin
+//         WriteLn(3.14:4:4);
+//         Halt(1)
+//       end;
+//     'w':
+//       begin
+//         WriteLn('w');
+//         Halt(2)
+//       end;
+//   else
+//     WriteLn('Something else :)');
+//   end;
+//   New(sp);
+//   sp^ := 'fooo';
+//   WriteLn(sp^, Length(sp^));
+//   Dispose(sp);
+//   Halt;
+//   WriteLn('end')
+//   //WriteLn(12:4);
+//   //WriteLn('c':4);
+//   //Val('3.14', r, c);
+//   //WriteLn(r:1:2);
+//   //WriteLn(Succ(byte(255)), '  ', Pred(0));
+// end.
+// """
+
+
+// """
 // procedure DoC(const c: char);
 // begin
 //   case c of

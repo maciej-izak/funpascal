@@ -137,6 +137,7 @@ type AtomInstruction =
     | Bne_Un of Instruction
     | Bgt_Un of Instruction
     | Blt_Un of Instruction
+    | InInst
 
 let nullRef() = ref Unchecked.defaultof<Instruction>
 
@@ -321,10 +322,8 @@ let (|NumericType|_|) = function
     | {kind=TkOrd _} | {kind=TkFloat _} | {kind=TkPointer _} -> Some NumericType
     | _ -> None
 
-let (|BoolOp|_|) = function | Clt | Cgt | Ceq -> Some BoolOp | _ -> None
+let (|BoolOp|_|) = function | Clt | Cgt | Ceq | InInst -> Some BoolOp | _ -> None
 
-let isCharacterType = function | StrType | ChrType -> true | _ -> false
-let isOptCharacterType = function | Some t -> isCharacterType t | None -> false
 let isChrType = function | ChrType -> true | _ -> false
 let isStrType = function | StrType -> true | _ -> false
 let strToSStr s =
@@ -578,6 +577,11 @@ type Ctx = {
             rex := labels |> List.fold (fun s l -> let ll = LazyLabel(h, nullRef()) in (l := ll; ll::s)) !rex
         | Some h -> for l in labels do l := LazyLabel(h, nullRef())
         | _ -> ()
+
+let (|CharacterType|_|) (ctx: Ctx) = function
+    | StrType as t -> Some(CharacterType t)
+    | ChrType -> Some(CharacterType ctx.details.sysTypes.string)
+    | _ -> None
 
 let inline toMap kvps =
     kvps
@@ -940,7 +944,7 @@ let findFunction (ctx: Ctx) ident =
         | ChainLoad([TypeCastLoad t], _) -> TypeCast t
         | _ -> failwith "Not supported"
 
-type ValueKind = ValueKind of IlInstruction list * PasType
+type ValueKind = ValueKind of (IlInstruction list * PasType)
 
 let Ldc_I4 i = LdcI4 i |> Ldc
 let Ldc_U1 (i: byte) = [
@@ -964,12 +968,6 @@ let typeRefToConv (r: TypeReference) =
     | MetadataType.UInt64  -> +Conv Conv_U8
     | _ -> failwith "IE"
 
-let typeConvertTo (fromV, fromT) (toV, toT) =
-    match fromT, toT with
-    | ChrType, StrType -> []
-    | _ when sameTypeKind(toT, fromT) -> [yield! toV; yield! fromV]
-    | _ -> [yield! toV; yield! fromV; typeRefToConv toT.raw]
-
 let useHelperOp ctx helperName valueType =
     let _,v = (ctx: Ctx).EnsureVariable(valueType)
     [
@@ -978,12 +976,16 @@ let useHelperOp ctx helperName valueType =
         +Ldloc v
     ]
 
-let handleOperator (ctx: Ctx) = function
+let handleOperator (ctx: Ctx) et (op, (ils, at, bt)) =
+    ils,
+    match at, bt, op with
+    | _, _, InInst -> [+Call(findMethodReference ctx "INSET")]
     | (StrType as t), StrType, AddInst -> useHelperOp ctx "ConcatStr" t
     | (StrType as t), StrType, (BoolOp as op) -> [yield! useHelperOp ctx "CompareStr" t; yield +op]
     | (SetType at), (SetType bt), AddInst when at = bt -> useHelperOp ctx "SetUnion" at
     | (SetType at), (SetType bt), MinusInst when at = bt -> useHelperOp ctx "SetDifference" at
     | NumericType, NumericType, op -> [+op]
+    ,match et with | Some t -> t | _ -> at
 
 let evalExprOp2 (opS: Option<string->string->string>) (opI: Option<int->int->int>) (r1, r2) =
     match       r1,     opS,     opI with
@@ -998,29 +1000,52 @@ let evalExprOp1 (opS: Option<string->string>) (opI: Option<int->int>) r1 =
     | _ -> CERUnknown
 
 let rec exprToIl (ctx: Ctx) exprEl expectedType =
-    let rec exprToMetaExpr el et =
+    let rec exprToMetaExpr (el: ExprEl) et =
+        let constConvertTo op (aExpr: ExprEl, aVal, aTyp) (bExpr: ExprEl, bVal, bTyp) =
+            let ctos (expr: ExprEl) aVal aTyp bTyp =
+                match aTyp, bTyp with
+                | ChrType, CharacterType ctx (t) ->
+                    exprToMetaExpr expr (Some t)
+                    |> (function | ValueKind t -> t)
+                | _ -> aVal, aTyp
+            op,
+            match op with
+            | BoolOp -> (aVal, aTyp), (bVal, bTyp)
+            | _ ->
+                ctos aExpr aVal aTyp bTyp,
+                ctos bExpr bVal bTyp aTyp
+
+        let typeConvertTo op ((aVal, aTyp), (bVal, bTyp)) =
+            let convertChrToStr c t =
+                let _,v = ctx.EnsureVariable t
+                [
+                    +Ldloca v
+                    yield! c
+                    +Stind Ind_U1
+                    +Ldloc v
+                ]
+            let strt = ctx.details.sysTypes.string
+            op,
+            match op, aTyp, bTyp with
+            | BoolOp, _, _ -> [yield! aVal; yield! bVal],aTyp,bTyp
+            | _, ChrType, (StrType as t) -> [yield! convertChrToStr aVal t; yield! bVal],t,t
+            | _, (StrType as t), ChrType -> [yield! aVal; yield! convertChrToStr bVal t],t,t
+            | _, ChrType, ChrType -> [yield! aVal; yield! convertChrToStr bVal strt],strt,strt
+            | _ when sameTypeKind(aTyp, bTyp) -> [yield! aVal; yield! bVal],aTyp,bTyp
+            | _ -> [yield! aVal; yield! bVal; typeRefToConv aTyp.raw],aTyp,bTyp
+
         let add2OpIlTyped aExpr bExpr i et =
             match exprToMetaExpr aExpr et with
             | ValueKind(a, at) ->
                 match exprToMetaExpr bExpr (Some at) with
                 | ValueKind(b, bt) ->
-                    // TODO handle bool operators and other scenarios
-                    let useStrWhenNeeded x (defX, t) =
-                        if isChrType t && isOptCharacterType et then
-                                 match exprToMetaExpr x (Some ctx.details.sysTypes.string) with
-                                 | ValueKind(newA, newAt) ->
-                                     if isStrType newAt then
-                                         failwith "IE"
-                                     else
-                                         (newA, newAt)
-                        else (defX, t)
-                    // TODO char variable to string?
-                    let aa, aat = useStrWhenNeeded aExpr (a, at)
-                    let bb, bbt = useStrWhenNeeded bExpr (b, bt)
-                    let typ = match et with | Some t -> t | _ -> aat
+                    let ils, opIls, typ =
+                        constConvertTo i (aExpr, a, at) (bExpr, b, bt)
+                        ||> typeConvertTo
+                        |> handleOperator ctx et
                     ([
-                        yield! typeConvertTo (bb, bbt) (aa, aat)
-                        yield! handleOperator ctx (aat, bbt, i)
+                        yield! ils
+                        yield! opIls
                         // need to cast to proper type (for simple types)
                         match et with
                         | Some NumericType -> yield typeRefToConv et.Value.raw
@@ -1058,21 +1083,7 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
         | GreaterThanOrEqual(a, b) ->
             match add2OpIlBool a b Clt with
             | o, ot -> [ yield! o; +Ldc_I4 0; +Ceq ], ctx.details.sysTypes.boolean
-        | In(a, b) ->
-            [
-                match exprToMetaExpr a None with
-                | ValueKind(a, at) ->
-                    match at with | {kind=TkOrd _} -> () | _ -> failwith "IE"
-                    yield! a
-                match b with
-                | Value(VIdent i) ->
-                    let ils, t = findSymbolAndGetPtr ctx i
-                    match t with | {kind=TkSet _} -> () | _ -> failwith "IE"
-                    yield! ils
-
-                yield +Call(findMethodReference ctx "INSET")
-            ], ctx.details.sysTypes.boolean
-
+        | In(a, b) -> add2OpIlBool a b InInst
         | Addr(a) ->
             ([
                 match a with
