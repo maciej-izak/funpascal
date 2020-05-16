@@ -384,7 +384,6 @@ type Symbol =
     | ConstSym of ConstSym
     | UnknownSym
 
-
 type VariableLoadKind =
     | LoadParam of VariableParam
     | LoadVar of (VariableKind * PasType)
@@ -857,15 +856,15 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
     
     let rec resolveTail acc vt  = function
         | [] -> (List.rev acc, vt)
-        | h::t ->
+        | h::t as ht->
             match h with
             | Deref ->
                 // TODO check dereferencable
                 let tref = match vt.kind with | TkPointer t -> t | _ -> failwithf "IE cannot do deref of %A" vt.kind
                 resolveTail (DerefLoad::acc) tref t
             | Ident _ -> 
-                let sl, restOfTail = findSym vt [] (h::t)
-                let vt = List.last sl
+                let sl, restOfTail = findSym vt [] ht
+                let vt = sl.Head
                 resolveTail (StructLoad(sl)::acc) (snd vt) restOfTail
             | Designator.Array exprs ->
                 let tref = match vt.kind with | TkArray a -> a | _ -> failwithf "IE array expected %A" vt.kind
@@ -905,6 +904,18 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
         | _ -> failwith "IE"
     | TypeSym t -> ChainLoad([TypeCastLoad t], Some t)
     | _ -> SymbolLoadError
+
+let (|VariablePasType|_|) ctx id =
+    match findSymbol ctx id |> chainToSLList with
+    | _, Some(t) -> Some(VariablePasType t)
+    | _ -> None
+
+let (|TypePasType|_|) (ctx: Ctx) = function
+    | DIdent[PIName(id)] ->
+        match ctx.FindSym(StringName id) with
+        | Some (TypeSym t) -> Some(TypePasType t)
+        | _ -> None
+    | _ -> None
 
 let findMethodReference ctx =
     stdIdent >> findSymbol ctx >> chainToSLList >>
@@ -985,6 +996,7 @@ let handleOperator (ctx: Ctx) et (op, (ils, at, bt)) =
     | (SetType at), (SetType bt), AddInst when at = bt -> useHelperOp ctx "SetUnion" at
     | (SetType at), (SetType bt), MinusInst when at = bt -> useHelperOp ctx "SetDifference" at
     | NumericType, NumericType, op -> [+op]
+    | _ -> failwith "IE"
     ,match et with | Some t -> t | _ -> at
 
 let evalExprOp2 (opS: Option<string->string->string>) (opI: Option<int->int->int>) (r1, r2) =
@@ -1358,16 +1370,11 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                     yield! callInstr
                     if popResult then yield +Pop // TODO or not generate call ?
                  ], Some ctx.details.sysTypes.int32)
-            | SizeOfFunc, [ParamIdent(DIdent([PIName(id)]))] ->
-                let sym = match ctx.FindSym(StringName id) with
-                          | Some sym -> sym
-                          | _ -> failwith "IE cannot find sym"
-
-                let t = match sym with
-                        | VariableParamSym (_,t,_) -> t
-                        | VariableSym(vs, t) -> t
-                        | TypeSym t -> t
-                        | _ -> failwithf "IE cannot get size of %A" sym
+            | SizeOfFunc, [ParamIdent id] ->
+                let t = match id with
+                        | VariablePasType ctx t -> t
+                        | TypePasType ctx t -> t
+                        | _ -> failwithf "IE cannot get size of %A" id
                 ([
                     +Ldc_I4 t.SizeOf
                     if popResult then +Pop // TODO or not generate call ?
