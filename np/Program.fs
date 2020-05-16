@@ -13,6 +13,7 @@ let main argv =
       """
 {$I system.inc}
 {$I Common.inc}
+{.$I Scanner.inc}
 
 type
   TTest = (a1, a2, a3);

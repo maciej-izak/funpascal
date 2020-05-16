@@ -836,6 +836,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
     
     let rec findSym ref acc = function
     | (Designator.Array a)::t -> acc, Designator.Array(a)::t // TODO ?
+    | (Designator.Deref)::t -> acc, Designator.Deref::t // TODO ?
     | PIName(h)::t ->
         // TODO ? here is solved auto records dereference (x.y instead of x^.y) and dereference for array elements
         let ref = match ref.kind with | TkPointer r -> r | _ -> ref
@@ -957,6 +958,12 @@ let typeRefToConv (r: TypeReference) =
     | MetadataType.UInt64  -> +Conv Conv_U8
     | _ -> failwith "IE"
 
+let typeConvertTo (fromV, fromT) (toV, toT) =
+    match fromT, toT with
+    | ChrType, StrType -> []
+    | _ when sameTypeKind(toT, fromT) -> [yield! toV; yield! fromV]
+    | _ -> [yield! toV; yield! fromV; typeRefToConv toT.raw]
+
 let evalExprOp2 (opS: Option<string->string->string>) (opI: Option<int->int->int>) (r1, r2) =
     match       r1,     opS,     opI with
     | CERString s1, Some so,       _ -> match r2 with CERString s2 -> CERString(so s1 s2) | _ -> assert(false); CERUnknown
@@ -986,15 +993,14 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
                                      else
                                          (newA, newAt)
                         else (defX, t)
-                    let a, at = useStrWhenNeeded aExpr (a, at)
-                    let b, bt = useStrWhenNeeded bExpr (b, bt)
-                    let typ = match et with | Some t -> t | _ -> at
+                    // TODO char variable to string?
+                    let aa, aat = useStrWhenNeeded aExpr (a, at)
+                    let bb, bbt = useStrWhenNeeded bExpr (b, bt)
+                    let typ = match et with | Some t -> t | _ -> aat
                     ([
-                        yield! a
-                        yield! b
-                        if sameTypeKind(at, bt) = false then yield typeRefToConv at.raw
+                        yield! typeConvertTo (bb, bbt) (aa, aat)
                         match i with
-                        | AddInst when isStrType at && at = bt->
+                        | AddInst when isStrType aat && aat = bbt->
                             let _,v = ctx.EnsureVariable(ctx.details.sysTypes.string)
                             yield +Ldloca v
                             yield +Call(findMethodReference ctx "ConcatStr")

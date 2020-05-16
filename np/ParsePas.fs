@@ -27,6 +27,7 @@ let ``for `` = str_wsc "for"
 let ``nil `` = str_wsc "nil"
 let ``set `` = str_wsc "set"
 let ``var `` = str_wsc "var"
+let ``var|`` = wrd_wsc "var"
 let ``case `` = str_wsc "case"
 let ``else `` = str_wsc "else"
 let ``file `` = str_wsc "file"
@@ -37,6 +38,7 @@ let ``with `` = str_wsc "with"
 let ``array `` = str_wsc "array"
 let ``begin `` = str_wsc "begin"
 let ``const `` = str_wsc "const"
+let ``const|`` = wrd_wsc "const"
 let ``label `` = str_wsc "label"
 let ``until `` = str_wsc "until"
 let ``while `` = str_wsc "while"
@@ -250,8 +252,8 @@ let paramList1 =
 let formalParam  = 
         choice
             [
-                attempt(wrd_wsc "const" >>% Some ParamKind.Const)
-                attempt(wrd_wsc "var" >>% Some Var)
+                attempt(``const|`` >>% Some ParamKind.Const)
+                attempt(``var|`` >>% Some Var)
                 preturn None
             ]
         .>>. paramList1

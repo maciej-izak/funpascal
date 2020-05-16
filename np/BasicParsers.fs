@@ -154,4 +154,4 @@ let pass1Parser =
 let str_wsc s =
     pstringCI s .>> wsc
 let wrd_wsc s =
-    pstringCI s .>> (notFollowedBy (letter <|> digit) .>> wsc)
+    pstringCI s .>> (notFollowedBy (choice[letter; digit; pchar '_']) .>> wsc)
