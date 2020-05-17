@@ -14,7 +14,7 @@ let main argv =
     // !!! CompileDirective
 
     PasStreams.testAll
-      """
+      (*"""
       {.$I system.inc}
   type
   LongInt = Integer;
@@ -43,8 +43,8 @@ var
 begin
   WriteLine(IMGBASE + h.CodeSectionHeader.VirtualAddress);
 end.
-     """
-(*      """
+     """*)
+      """
 {$I system.inc}
 {$I Common.inc}
 {$I Scanner.inc}
@@ -80,69 +80,70 @@ var
 begin
   InitSystem;
 
-WriteLn;
-WriteLn('XD Pascal for Windows ', VERSIONMAJOR, '.', VERSIONMINOR);
-WriteLn('Copyright (c) 2009-2010, 2019, Vasiliy Tereshkov');
 
-if ParamCount < 2 then
+  WriteLn;
+  WriteLn('XD Pascal for Windows ', VERSIONMAJOR, '.', VERSIONMINOR);
+  WriteLn('Copyright (c) 2009-2010, 2019, Vasiliy Tereshkov');
+
+  if ParamCount < 3 then
   begin
-  WriteLn('Usage: xdpw <file.pas>');
-  Halt(1);
+    WriteLn('Usage: xdpw <file.pas>');
+    Halt(1);
   end;
 
-ProgramName := ParamStr(2);
+  ProgramName := ParamStr(3);
 
 
-// Compile
-WriteLn('Compiling ', ProgramName);
+  // Compile
+  WriteLn('Compiling ', ProgramName);
 
-FillOperatorSets;
-FillTypeSets;
+  FillOperatorSets;
+  FillTypeSets;
 
-IsConsoleProgram := 1;  // Console program by default
+  IsConsoleProgram := 1;  // Console program by default
 
-ZeroAll;
-FillChar(ImportSection, SizeOf(ImportSection), #0);
+  ZeroAll;
+  FillChar(ImportSection, SizeOf(ImportSection), #0);
 
-InitializeScanner(ProgramName);
-CompileProgram;
-FinalizeScanner;
+  InitializeScanner(ProgramName);
+  CompileProgram;
+  FinalizeScanner;
 
-FillHeaders(CodeSize, InitializedGlobalDataSize, UninitializedGlobalDataSize);
+  FillHeaders(CodeSize, InitializedGlobalDataSize, UninitializedGlobalDataSize);
 
-Relocate(IMGBASE + Headers.CodeSectionHeader.VirtualAddress,
-         IMGBASE + Headers.DataSectionHeader.VirtualAddress,
-         IMGBASE + Headers.DataSectionHeader.VirtualAddress + InitializedGlobalDataSize);
-
-
-// Write output file
-ChangeExt(ProgramName, 'exe', ExeName);
-Assign(OutFile, ExeName);
-Rewrite(OutFile, 1);
-
-if IOResult <> 0 then
-  Error('Unable to open output file ' + ExeName);
-
-BlockWrite(OutFile, Headers, SizeOf(Headers));
-Pad(OutFile, SizeOf(Headers), FILEALIGN);
-
-BlockWrite(OutFile, ImportSection, SizeOf(ImportSection));
-Pad(OutFile, SizeOf(ImportSection), FILEALIGN);
-
-BlockWrite(OutFile, InitializedGlobalData, InitializedGlobalDataSize);
-Pad(OutFile, InitializedGlobalDataSize, FILEALIGN);
-
-BlockWrite(OutFile, Code, CodeSize);
-Pad(OutFile, CodeSize, FILEALIGN);
-
-Close(OutFile);
+  Relocate(IMGBASE + Headers.CodeSectionHeader.VirtualAddress,
+           IMGBASE + Headers.DataSectionHeader.VirtualAddress,
+           IMGBASE + Headers.DataSectionHeader.VirtualAddress + InitializedGlobalDataSize);
 
 
-WriteLn('Compilation complete. Code size: ', CodeSize, ' bytes. Data size: ', InitializedGlobalDataSize + UninitializedGlobalDataSize, ' bytes.');
+  // Write output file
+  ChangeExt(ProgramName, 'exe', ExeName);
+  Assign(OutFile, ExeName);
+  Rewrite(OutFile, 1);
+
+  if IOResult <> 0 then
+    Error('Unable to open output file ' + ExeName);
+
+  BlockWrite(OutFile, Headers, SizeOf(Headers));
+  Pad(OutFile, SizeOf(Headers), FILEALIGN);
+
+  BlockWrite(OutFile, ImportSection, SizeOf(ImportSection));
+  Pad(OutFile, SizeOf(ImportSection), FILEALIGN);
+
+  BlockWrite(OutFile, InitializedGlobalData, InitializedGlobalDataSize);
+  Pad(OutFile, InitializedGlobalDataSize, FILEALIGN);
+
+  BlockWrite(OutFile, Code, CodeSize);
+  Pad(OutFile, CodeSize, FILEALIGN);
+
+  Close(OutFile);
+
+
+  WriteLn('Compilation complete. Code size: ', CodeSize, ' bytes. Data size: ', InitializedGlobalDataSize + UninitializedGlobalDataSize, ' bytes.');
 
 end.
       """
-*)
+
     |> function
        | Success _ -> printfn "Compilation success!"
        | Failure(s,_,_) -> printfn "%s" s

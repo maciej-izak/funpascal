@@ -558,7 +558,7 @@ type Ctx = {
         let fileType = (details.NewSizedType (256 + ptrSize)) :> TypeReference
         let fileType = addMetaType symbols (TypedName TIdFile) {name=TypedName TIdFile;kind=TkUnknown(256 + ptrSize);raw=fileType}
         {
-            int32 = addOrdType "Integer" mb.TypeSystem.Int32 OkInteger (OtSWord(int Int32.MinValue, int Int32.MaxValue))
+            int32 = addOrdType "Integer" mb.TypeSystem.Int32 OkInteger (OtSLong(int Int32.MinValue, int Int32.MaxValue))
             single = addFloatType "Real" mb.TypeSystem.Single
             string = addArrayType (TypedName TIdString) strType (TkArray(AkSString 255uy, [strDim], charType))
             setStorage = {name=AnonName;raw=details.NewSizedType 256;kind=TkUnknown 0}
@@ -1124,8 +1124,8 @@ let handleOperator (ctx: Ctx) et (op, (ils, at, bt)) =
     | _, _, InInst -> [+Call(findMethodReference ctx "INSET")]
     | (StrType as t), StrType, AddInst -> useHelperOp ctx "ConcatStr" t
     | (StrType as t), StrType, (BoolOp as op) -> [yield! useHelperOp ctx "CompareStr" t; yield +op]
-    | (SetType at), (SetType bt), AddInst when at = bt -> useHelperOp ctx "SetUnion" at
-    | (SetType at), (SetType bt), MinusInst when at = bt -> useHelperOp ctx "SetDifference" at
+    | (SetType at), ((SetType bt) as t), AddInst when at = bt -> useHelperOp ctx "SetUnion" t
+    | (SetType at), ((SetType bt) as t), MinusInst when at = bt -> useHelperOp ctx "SetDifference" t
     | NumericType, NumericType, op -> [+op]
     | _ -> failwith "IE"
     ,match et with | Some t -> t | _ -> at
