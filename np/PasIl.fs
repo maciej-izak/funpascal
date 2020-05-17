@@ -995,8 +995,8 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
                 resolveTail (DerefLoad::acc) tref t
             | Ident _ -> 
                 let sl, restOfTail = findSym vt [] ht
-                let vt = sl.Head
-                resolveTail (StructLoad(sl)::acc) (snd vt) restOfTail
+                let typ = snd sl.Head
+                resolveTail (StructLoad(List.rev sl)::acc) typ restOfTail
             | Designator.Array exprs ->
                 let tref = match vt.kind with | TkArray a -> a | _ -> failwithf "IE array expected %A" vt.kind
                 let _, dims, elemTyp = tref
@@ -1676,7 +1676,7 @@ and chainLoadToIl ctx lastType factory symload =
     | StructLoad fds ->
         let instr, last, count = List.fold (fun (acc, _, c) f -> +Ldflda (fst f)::acc, f, c+1) ([],Unchecked.defaultof<_>,0) fds
         lastType := LTPStruct last
-        res @ (List.take (count-1) instr)
+        res @ (List.take (count-1) (instr |> List.rev))
     | ValueLoad evs ->
         lastType := LTPNone
         res @

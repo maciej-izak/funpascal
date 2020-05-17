@@ -15,6 +15,36 @@ let main argv =
 
     PasStreams.testAll
       """
+      {.$I system.inc}
+  type
+  LongInt = Integer;
+  TPESectionHeader = packed record
+    Name: array [0..7] of Char;
+    VirtualSize: LongInt;
+    VirtualAddress: LongInt;
+    SizeOfRawData: LongInt;
+    PointerToRawData: LongInt;
+    PointerToRelocations: LongInt;
+    PointerToLinenumbers: LongInt;
+    NumberOfRelocations: Word;
+    NumberOfLinenumbers: Word;
+    Characteristics: LongInt;
+  end;
+
+  THeaders = packed record
+    CodeSectionHeader: TPESectionHeader;
+  end;
+
+const
+  IMGBASE = 12;
+
+var
+  h: THeaders;
+begin
+  WriteLine(IMGBASE + h.CodeSectionHeader.VirtualAddress);
+end.
+     """
+(*      """
 {$I system.inc}
 {$I Common.inc}
 {$I Scanner.inc}
@@ -54,13 +84,13 @@ WriteLn;
 WriteLn('XD Pascal for Windows ', VERSIONMAJOR, '.', VERSIONMINOR);
 WriteLn('Copyright (c) 2009-2010, 2019, Vasiliy Tereshkov');
 
-if ParamCount < 1 then
+if ParamCount < 2 then
   begin
   WriteLn('Usage: xdpw <file.pas>');
   Halt(1);
   end;
 
-ProgramName := ParamStr(1);
+ProgramName := ParamStr(2);
 
 
 // Compile
@@ -112,6 +142,7 @@ WriteLn('Compilation complete. Code size: ', CodeSize, ' bytes. Data size: ', In
 
 end.
       """
+*)
     |> function
        | Success _ -> printfn "Compilation success!"
        | Failure(s,_,_) -> printfn "%s" s
