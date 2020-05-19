@@ -6,6 +6,7 @@ open System.Collections.Generic
 open System.Linq.Expressions
 open System.Linq
 open System.Reflection.Metadata
+open System.Runtime.CompilerServices
 open System.Text
 open Mono.Cecil
 open Mono.Cecil.Cil
@@ -462,6 +463,7 @@ type ModuleDetails = {
         ns: string
         tb: TypeDefinition
         vt: TypeReference
+        uvt: MethodReference
         anonSizeTypes: Dictionary<int, TypeDefinition>
     } with
     static member Create moduleBuilder ns tb =
@@ -471,6 +473,7 @@ type ModuleDetails = {
             ns = ns
             tb = tb
             vt = moduleBuilder.ImportReference(typeof<ValueType>)
+            uvt = moduleBuilder.ImportReference(typeof<UnsafeValueTypeAttribute>.GetConstructor(Type.EmptyTypes))
             anonSizeTypes = Dictionary<_, _>()
         }
 
@@ -482,6 +485,7 @@ type ModuleDetails = {
             let attributes = TypeAttributes.SequentialLayout ||| TypeAttributes.AnsiClass ||| TypeAttributes.Sealed ||| TypeAttributes.Public
             let at = TypeDefinition(self.ns, self.UniqueTypeName(), attributes)
 
+            at.CustomAttributes.Add(CustomAttribute self.uvt)
             at.ClassSize <- size
             at.PackingSize <- 1s;
             at.BaseType <- self.vt
@@ -1110,23 +1114,22 @@ let typeRefToConv (r: TypeReference) =
     | MetadataType.UInt64  -> +Conv Conv_U8
     | _ -> failwith "IE"
 
-let useHelperOp ctx helperName valueType =
+let useHelperOp ctx helperName valueType byRef =
     let _,v = (ctx: Ctx).EnsureVariable(valueType)
     [
         +Ldloca v
         +Call(findMethodReference ctx helperName)
-        +Ldloc v
+        +(if byRef then Ldloca else Ldloc) v
     ]
 
-let handleOperator (ctx: Ctx) et (op, (ils, at, bt)) =
-    ils,
+let handleOperator (ctx: Ctx) et byRef (op, (ils, at, bt)) =
     match at, bt, op with
-    | _, _, InInst -> [+Call(findMethodReference ctx "INSET")]
-    | (StrType as t), StrType, AddInst -> useHelperOp ctx "ConcatStr" t
-    | (StrType as t), StrType, (BoolOp as op) -> [yield! useHelperOp ctx "CompareStr" t; yield +op]
-    | (SetType at), ((SetType bt) as t), AddInst when at = bt -> useHelperOp ctx "SetUnion" t
-    | (SetType at), ((SetType bt) as t), MinusInst when at = bt -> useHelperOp ctx "SetDifference" t
-    | NumericType, NumericType, op -> [+op]
+    | _, _, InInst -> [yield! ils; +Call(findMethodReference ctx "INSET")]
+    | (StrType as t), StrType, AddInst -> ils @ useHelperOp ctx "ConcatStr" t byRef
+    | (StrType as t), StrType, (BoolOp as op) -> [+Ldc_I4 0; yield! ils; +Call(findMethodReference ctx "CompareStr"); +op]
+    | (SetType at), ((SetType bt) as t), AddInst when at = bt -> ils @ useHelperOp ctx "SetUnion" t byRef
+    | (SetType at), ((SetType bt) as t), MinusInst when at = bt -> ils @ useHelperOp ctx "SetDifference" t byRef
+    | NumericType, NumericType, op -> [yield! ils; +op]
     | _ -> failwith "IE"
     ,match et with | Some t -> t | _ -> at
 
@@ -1142,17 +1145,19 @@ let evalExprOp1 (opS: Option<string->string>) (opI: Option<int->int>) r1 =
     | CERInt i1, _, Some io -> CERInt(io i1)
     | _ -> CERUnknown
 
-let rec exprToIl (ctx: Ctx) exprEl expectedType =
-    let rec exprToMetaExpr (el: ExprEl) et =
+let rec exprToIlGen refRes (ctx: Ctx) exprEl expectedType =
+    let rec exprToMetaExpr (el: ExprEl) et refRes =
         let constConvertTo op (aExpr: ExprEl, aVal, aTyp) (bExpr: ExprEl, bVal, bTyp) =
             let ctos (expr: ExprEl) aVal aTyp bTyp =
                 match aTyp, bTyp with
                 | ChrType, CharacterType ctx (t) ->
-                    exprToMetaExpr expr (Some t)
+                    exprToMetaExpr expr (Some t) false
                     |> (function | ValueKind t -> t)
                 | _ -> aVal, aTyp
             op,
             match op with
+            | InInst ->
+                (aVal, aTyp), (exprToMetaExpr bExpr (Some bTyp) true |> (function | ValueKind t -> t))
             | BoolOp -> (aVal, aTyp), (bVal, bTyp)
             | _ ->
                 ctos aExpr aVal aTyp bTyp,
@@ -1178,16 +1183,15 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
             | _ -> [yield! aVal; yield! bVal; typeRefToConv aTyp.raw],aTyp,bTyp
 
         let add2OpIlTyped aExpr bExpr i et =
-            match exprToMetaExpr aExpr et with
+            match exprToMetaExpr aExpr et false with
             | ValueKind(a, at) ->
-                match exprToMetaExpr bExpr (Some at) with
+                match exprToMetaExpr bExpr (Some at) false with
                 | ValueKind(b, bt) ->
-                    let ils, opIls, typ =
+                    let opIls, typ =
                         constConvertTo i (aExpr, a, at) (bExpr, b, bt)
                         ||> typeConvertTo
-                        |> handleOperator ctx et
+                        |> handleOperator ctx et refRes
                     ([
-                        yield! ils
                         yield! opIls
                         // need to cast to proper type (for simple types)
                         match et with
@@ -1197,10 +1201,10 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
         let add2OpIl a b i = add2OpIlTyped a b i et
         let add2OpIlBool a b i = add2OpIlTyped a b i (Some ctx.sysTypes.boolean)
         let inline add1OpIl a i =
-            match exprToMetaExpr a et with
+            match exprToMetaExpr a et false with
             | ValueKind(a, at) -> [ yield! a; yield +i; yield typeRefToConv at.raw], at
         match el with
-        | Value v -> valueToValueKind ctx v et
+        | Value v -> valueToValueKind ctx v et refRes
         | Add(a, b) -> add2OpIl a b AddInst
         | Multiply(a, b) -> add2OpIl a b MultiplyInst
         | Minus(a, b) -> add2OpIl a b MinusInst
@@ -1230,13 +1234,13 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
         | Addr(a) ->
             ([
                 match a with
-                | Value(VIdent i) -> yield! (findSymbolAndGetPtr ctx i |> fst)
+                | Value((VIdent _) as v) -> yield! (valueToValueKind ctx v et true |> fst)
                 | _ -> failwith "IE"
             ], ctx.sysTypes.pointer)
         | _ -> failwith "IE"
         |> ValueKind
 
-    match exprToMetaExpr exprEl expectedType with
+    match exprToMetaExpr exprEl expectedType refRes with
     | ValueKind (a, at) ->
         [
          yield! a
@@ -1244,6 +1248,8 @@ let rec exprToIl (ctx: Ctx) exprEl expectedType =
             let typ = expectedType.Value
             match typ.kind with | TkOrd _ | TkFloat _ -> yield typeRefToConv typ.raw | _ -> ()
         ], at
+
+and exprToIl = exprToIlGen false
 
 and callParamToIl ctx cp (idxmr: Option<int * MethodInfo>) =
     let param, byRef =
@@ -1253,13 +1259,11 @@ and callParamToIl ctx cp (idxmr: Option<int * MethodInfo>) =
             Some p.typ, p.ref
         | _ -> None, false
     match cp with
-    | ParamExpr expr -> exprToIl ctx expr param
+    | ParamExpr expr -> exprToIl ctx (if byRef then Addr expr else expr) param
     | ParamIdent id ->
-        match param with
-        | Some param when byRef -> findSymbolAndGetPtr ctx id
-        | Some param when param = ctx.sysTypes.constParam -> findSymbolAndGetPtr ctx id
-        | Some param when param = ctx.sysTypes.varParam -> findSymbolAndGetPtr ctx id
-        | _ -> findSymbolAndLoad ctx id
+        let useRef = byRef || (param.IsSome && (param.Value = ctx.sysTypes.constParam || param.Value = ctx.sysTypes.varParam))
+        if useRef then findSymbolAndGetPtr ctx id
+        else findSymbolAndLoad ctx id
 
 and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
     match findFunction ctx ident with
@@ -1540,11 +1544,16 @@ and SetValueToCER ctx typ al =
     | Some t -> CEROrdSet(finalSet, t)
     | _ -> failwith "IE"
 
-and valueToValueKind ctx v (expectedType: PasType option) =
+and valueToValueKind ctx v (expectedType: PasType option) byRef =
+    match v, byRef with
+    | VIdent _, true | VSet _, true -> ()
+    | _, false -> ()
+    | _ -> failwith "IE"
+
     match v with
     | VInteger i -> [+Ldc_I4 i], ctx.sysTypes.int32
     | VFloat f -> [+Ldc_R4 (single f)], ctx.sysTypes.single
-    | VIdent i -> findSymbolAndLoad ctx i
+    | VIdent i -> if byRef then findSymbolAndGetPtr ctx i else findSymbolAndLoad ctx i
     | VString s ->
         let doChr() =
             let cv = int(s.Chars 0)
@@ -1584,7 +1593,7 @@ and valueToValueKind ctx v (expectedType: PasType option) =
         let expType = match expectedType with | Some t -> t | _ -> failwith "IE"
         let fd = match SetValueToCER ctx expectedType al with | CEROrdSet(b,_) -> b | _ -> failwith "IE"
                  |> ctx.details.AddBytesConst
-        [+Ldsfld fd], expType
+        [+(if byRef then Ldsflda fd else Ldsfld fd)], expType
 
 and chainReaderFactory (ctx: Ctx) asValue addr ltp =
     let valOrPtr v p (t: TypeReference) = (if asValue || (t :? PointerType && addr = false) then v else p) |> List.singleton
@@ -1605,12 +1614,13 @@ and chainReaderFactory (ctx: Ctx) asValue addr ltp =
                              [+Ldarg i]
     | LTPStruct (fld, _) -> valOrPtr +(Ldfld fld) +(Ldflda fld) fld.FieldType
     | LTPDeref (dt, force) ->
-        if dt.raw.MetadataType = MetadataType.ValueType then
-            if addr = false && force then [+Ldobj dt.raw]
-            else []
-        elif addr && force = false then []
-        else
-            dt.IndKind |> Ldind |> (~+) |> List.singleton
+        match dt, addr, force, asValue with
+        | _, true, _, _ -> []
+        | NumericType, _, _, _ | ChrType, _, _, _ -> dt.IndKind |> Ldind |> (~+) |> List.singleton
+        | _, _, true, _ | _, _, _, true ->
+            if dt.raw.MetadataType <> MetadataType.ValueType then failwith "IE"
+            [+Ldobj dt.raw]
+        | _ -> []
     | LTPNone -> []
 
 and chainWriterFactory (ctx: Ctx) = function

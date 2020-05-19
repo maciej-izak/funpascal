@@ -78,6 +78,7 @@ var
   OutFile: TOutFile;
 
 begin
+  //WriteLn();
   InitSystem;
 
 
