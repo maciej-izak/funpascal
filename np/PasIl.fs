@@ -1123,10 +1123,11 @@ let useHelperOp ctx helperName valueType byRef =
     ]
 
 let handleOperator (ctx: Ctx) et byRef (op, (ils, at, bt)) =
+    let convCmpOp = function | Cgt -> Clt | Clt -> Cgt | o -> o
     match at, bt, op with
     | _, _, InInst -> [yield! ils; +Call(findMethodReference ctx "INSET")]
     | (StrType as t), StrType, AddInst -> ils @ useHelperOp ctx "ConcatStr" t byRef
-    | (StrType as t), StrType, (BoolOp as op) -> [+Ldc_I4 0; yield! ils; +Call(findMethodReference ctx "CompareStr"); +op]
+    | StrType, StrType, BoolOp -> [+Ldc_I4 0; yield! ils; +Call(findMethodReference ctx "CompareStr"); +convCmpOp op]
     | (SetType at), ((SetType bt) as t), AddInst when at = bt -> ils @ useHelperOp ctx "SetUnion" t byRef
     | (SetType at), ((SetType bt) as t), MinusInst when at = bt -> ils @ useHelperOp ctx "SetDifference" t byRef
     | NumericType, NumericType, op -> [yield! ils; +op]
