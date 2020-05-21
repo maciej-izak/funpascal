@@ -347,15 +347,6 @@ type MethodInfo = {
     raw: MethodReference
 }
 
-type MethodSym =
-    | Referenced of MethodInfo
-    | Intrinsic of Intrinsic
-with
-    member self.ReturnType =
-        match self with
-        | Referenced {result = result} -> result
-        | Intrinsic _ -> None
-
 type ConstSym =
     | ConstString of string
     | ConstInt of int
@@ -375,7 +366,18 @@ with
         | GlobalVariable v -> v.FieldType
         | ParamVariable (_, v) -> v.ParameterType
 
-type Symbol =
+type ReferencedDef = MethodInfo * (Symbol * Symbol) list ref
+
+and MethodSym =
+    | Referenced of ReferencedDef
+    | Intrinsic of Intrinsic
+with
+    member self.ReturnType =
+        match self with
+        | Referenced({result = result},_) -> result
+        | Intrinsic _ -> None
+
+and Symbol =
     | VariableSym of (VariableKind * PasType)
     | MethodSym of MethodSym
     | TypeSym of PasType
@@ -383,6 +385,15 @@ type Symbol =
     | WithSym of (VariableKind * PasType)
     | ConstSym of ConstSym
     | UnknownSym
+
+let (|NestedRoutineId|) = function
+    | VariableSym(LocalVariable vd, _), _ -> vd :> obj
+    | VariableSym(ParamVariable (_, pd), _), _ -> pd :> obj
+
+let (|NestedRoutineSym|_|) = function
+    | VariableSym(LocalVariable _, t) | VariableSym(ParamVariable _, t) as vs -> Some(NestedRoutineSym(vs, t))
+    | _ -> None
+
 
 type ValueLoad =
     | ValueInt of int
@@ -396,6 +407,8 @@ type SymbolLoad =
     | ValueLoad of ValueLoad
     | CallableLoad of MethodSym
     | TypeCastLoad of PasType
+
+let (|VariableSymLoad|) = function | VariableSym((_,t) as vs), _ -> [VariableLoad vs], Some t
 
 type ChainLoad =
     | ChainLoad of (SymbolLoad list * PasType option)
@@ -511,14 +524,14 @@ let addMetaType (symbols: Dictionary<_,_>) (name: TypeName) typ =
 
 type SymOwner =
     | GlobalSpace
-    | StandaloneMethod of MethodDefinition
+    | StandaloneMethod of ReferencedDef
     | WithSpace
 
 type Ctx = {
         variables: List<VariableKind> list
         labels: Dictionary<string, BranchLabel ref> list
         symbols: (SymOwner * Dictionary<TypeName, Symbol>) list
-        forward: Dictionary<string, MethodDefinition * Dictionary<TypeName,Symbol> * VariableKind option>
+        forward: Dictionary<string, ReferencedDef * Dictionary<TypeName,Symbol> * VariableKind option>
         localVariables: int ref
         lang: LangCtx
         res: List<MetaInstruction>
@@ -626,11 +639,11 @@ type Ctx = {
         //newSymbols.Add("GetMem", Referenced allocMem |> MethodSym)
         //newSymbols.Add("FreeMem", Referenced freeMem |> MethodSym)
         let singleScalar raw =
-           Referenced {
+           Referenced({
                paramList = [|{typ=tsingle;ref=false}|]
                result = Some tsingle
                raw = raw
-           } |> MethodSym
+           }, ref[]) |> MethodSym
         symbols.Add(StringName "Inc", Intrinsic IncProc |> MethodSym)
         symbols.Add(StringName "Dec", Intrinsic DecProc |> MethodSym)
         symbols.Add(StringName "Read", Intrinsic ReadProc |> MethodSym)
@@ -674,12 +687,25 @@ type Ctx = {
 
     member self.FindSym sym =
         match self.PickSym sym with
-        | Some(StandaloneMethod md, sym) ->
+        | Some(StandaloneMethod(md,_), NestedRoutineSym (sym, t)) -> // add nested routine to nested methods if needed
             match self.symbols with
-            | (StandaloneMethod originMd,_)::_ ->
-                if originMd <> md then
-                    printfn ":D"
-                Some sym
+            | (StandaloneMethod(originMd,nestedParams),_)::_ ->
+                if originMd.raw <> md.raw then
+                    let symId = (|NestedRoutineId|) (sym, sym) // second param has no meaning
+                    let np = !nestedParams
+                    match List.tryFind (fun (NestedRoutineId id) -> symId.Equals(id)) np with
+                    | None ->
+                        let symbols = snd self.symbols.Head
+                        let paramName = sprintf "@nested$%d" symbols.Count
+                        let pd = ParameterDefinition(paramName, ParameterAttributes.None, ByReferenceType(t.raw))
+                        let newSym = VariableSym(ParamVariable(RefVar, pd), t)
+                        symbols.Add(StringName paramName, newSym)
+                        originMd.raw.Parameters.Add pd
+                        nestedParams := (sym, newSym)::!nestedParams
+                        Some newSym
+                    | Some(_, newSym) -> Some newSym
+                else
+                    Some sym
             | _ -> Some sym
         | Some(_, sym) -> Some sym
         | _ -> None
@@ -1061,7 +1087,7 @@ let (|TypePasType|_|) (ctx: Ctx) = function
 
 let findMethodReference ctx =
     stdIdent >> findSymbol ctx >> chainToSLList >>
-    function | [CallableLoad(Referenced({raw=mr}))], _ -> mr | _ -> failwith "IE"
+    function | [CallableLoad(Referenced({raw=mr}, _))], _ -> mr | _ -> failwith "IE"
 
 let findConstSym ctx =
     findSymbol ctx >> chainToSLList >>
@@ -1090,7 +1116,7 @@ let findFunction (ctx: Ctx) ident =
         match callChain with
         | ChainLoad([CallableLoad cl], _) ->
            match cl with
-           | Referenced {raw=mr} -> RealFunction(cl, +Call(mr) |> Some)
+           | Referenced ({raw=mr}, _) -> RealFunction(cl, +Call(mr) |> Some)
            | Intrinsic _ -> RealFunction(cl, None)
         | ChainLoad([TypeCastLoad t], _) -> TypeCast t
         | _ -> failwith "Not supported"
@@ -1283,10 +1309,14 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
         ], Some t)
     | RealFunction rf ->
         match rf with
-        | Referenced mr, Some f ->
+        | Referenced(mr,np), Some f ->
             ([
                 yield! cp
                 |> List.mapi (fun i p -> fst <| callParamToIl ctx p (Some(i, mr)))
+                |> List.concat
+                // TODO recursive call nested! For now before nested routine is added call can be generated
+                yield! !np
+                |> List.map (fun (VariableSymLoad vlt) -> loadSymList ctx false true vlt |> fst)
                 |> List.concat
                 yield f
                 if popResult && mr.result.IsSome then
@@ -1653,14 +1683,17 @@ and derefLastTypePoint = function
     | LTPStruct(_, t) -> derefType t
     | _ -> failwith "cannot deref"
 
-and findSymbolInternal value addr (ctx: Ctx) ident =
+and loadSymList (ctx: Ctx) value addr (sl, t) =
     let lastPoint = ref LTPNone
-    let sl, t = findSymbol ctx ident
-                |> chainToSLList
     sl
     |> List.collect (chainLoadToIl ctx lastPoint (chainReaderFactory ctx false false))
     |> fun l -> l @ (chainReaderFactory ctx value addr !lastPoint)
     ,match t with | Some t -> t | _ -> failwith "IE"
+
+and findSymbolInternal value addr (ctx: Ctx) ident =
+    findSymbol ctx ident
+    |> chainToSLList
+    |> loadSymList ctx value addr
 
 and findSymbolAndLoad = findSymbolInternal true false
 
@@ -1700,7 +1733,7 @@ and chainLoadToIl ctx lastType factory symload =
             | ValueInt i -> +Ldc_I4 i
             | ValueFloat f -> +Ldc_R4 f
         ]
-    | CallableLoad (Referenced mr) ->
+    | CallableLoad (Referenced(mr,_)) ->
         if mr.result.IsNone then failwith "IE"
         [+Call mr.raw]
 
@@ -2371,7 +2404,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                    let name = match name with
                               | Some n -> n
                               | _ -> failwith "name expected"
-                   let methodBuilder, newMethodSymbols, rVar =
+                   let methodName = StringName name
+                   let methodSym, newMethodSymbols, rVar =
                        match ctx.forward.TryGetValue name with
                        | true, md ->
                            // TODO check signature - must be identical
@@ -2413,11 +2447,13 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                result = if rVar.IsSome then Some mRes else None
                                raw = md
                            }
-                           newSymbols.Add(StringName name, Referenced methodInfo |> MethodSym)
-                           md, newMethodSymbols, rVar
+                           let ms = methodInfo, ref []
+                           newSymbols.Add(methodName, ms |> Referenced |> MethodSym)
+                           ms, newMethodSymbols, rVar
+                   let methodBuilder = (fst methodSym).raw :?> MethodDefinition
                    match d with
                    | BodyDeclr (decls, stmts) ->
-                       let scope = LocalScope(ctx.Inner (StandaloneMethod methodBuilder, newMethodSymbols))
+                       let scope = LocalScope(ctx.Inner (StandaloneMethod methodSym, newMethodSymbols))
                        let mainBlock = self.BuildIl(Block.Create(decls, stmts),scope,("result",rVar))
                                        |> compileBlock methodBuilder ctx.details.tb
                        mainBlock.Body.InitLocals <- true
@@ -2437,7 +2473,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                     PInvokeInfo(flags, procName, libRef)
                        ctx.details.tb.Methods.Add(methodBuilder)
                    | ForwardDeclr ->
-                       ctx.forward.Add(name, (methodBuilder, newMethodSymbols, rVar))
+                       ctx.forward.Add(name, (methodSym, newMethodSymbols, rVar))
                    | _ -> failwith "no body def"
                | _ -> ())
 
