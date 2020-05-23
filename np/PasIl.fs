@@ -306,6 +306,10 @@ let (|SetType|_|) = function
     | {kind=TkSet(pt)} -> Some pt
     | _ -> None
 
+let (|EnumType|_|) = function
+    | {kind=TkOrd(OkEnumeration,_)} -> Some EnumType
+    | _ -> None
+
 let (|OrdType|_|) = function
     | {kind=TkOrd _} -> Some OrdType
     | _ -> None
@@ -330,7 +334,7 @@ let rec sameTypeKind = function
 
 type ConstEvalResult =
     | CERString of string
-    | CERInt of int
+    | CERInt of int * PasType
     | CERFloat of single
     | CERBool of byte
     | CEROrdSet of byte[] * PasType
@@ -381,7 +385,7 @@ and Symbol =
     | VariableSym of (VariableKind * PasType)
     | MethodSym of MethodSym
     | TypeSym of PasType
-    | EnumValueSym of int
+    | EnumValueSym of int * PasType
     | WithSym of (VariableKind * PasType)
     | ConstSym of ConstSym
     | UnknownSym
@@ -519,7 +523,9 @@ let stdIdent = PINameCreate >> List.singleton >> DIdent
 let stdType  = stdIdent >> TIdIdent
 
 let addMetaType (symbols: Dictionary<_,_>) (name: TypeName) typ =
-    symbols.Add(name, TypeSym typ)
+    match name with
+    | AnonName -> () // ie for char sets
+    | _ -> symbols.Add(name, TypeSym typ)
     typ
 
 type SymOwner =
@@ -537,6 +543,7 @@ type Ctx = {
         res: List<MetaInstruction>
         details: ModuleDetails
         loop: Stack<BranchLabel ref * BranchLabel ref>
+        enumSet: Dictionary<PasType, PasType>
         sysTypes: SystemTypes
         sysProc: SystemProc
     } with
@@ -622,6 +629,7 @@ type Ctx = {
             res = List<MetaInstruction>()
             details = details
             loop = Stack<_>()
+            enumSet = Dictionary<_, _>()
             sysTypes = Ctx.CreateStdTypes(details,symbols)
             sysProc = {
                             GetMem = allocMem
@@ -745,6 +753,22 @@ type Ctx = {
             rex := labels |> List.fold (fun s l -> let ll = LazyLabel(h, nullRef()) in (l := ll; ll::s)) !rex
         | Some h -> for l in labels do l := LazyLabel(h, nullRef())
         | _ -> ()
+
+let addTypeSetForEnum (ctx: Ctx) pasType name =
+    let setType = addMetaType (snd ctx.symbols.Head) name {name=name;kind=TkSet(pasType);raw=ctx.sysTypes.setStorage.raw}
+    ctx.enumSet.TryAdd(pasType, setType) |> ignore
+    setType
+
+let addTypeSet (ctx: Ctx) typeName name =
+    let t =
+        match ctx.FindType typeName with
+        | Some(EnumType as t) ->
+            // TODO check ord size (for int max / min values)
+            t
+        | Some(ChrType as t) -> t
+        | Some _ -> failwith "IE illegal type for set construction"
+        | _ -> failwith "IE unknown type"
+    addTypeSetForEnum ctx t name
 
 let (|CharacterType|_|) (ctx: Ctx) = function
     | StrType as t -> Some(CharacterType t)
@@ -1059,7 +1083,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
     match mainSym with
     | VariableSym (v, t as vt) -> vt |> varLoadChain t ident.Tail
     | WithSym (v, t as vt) -> vt |> varLoadChain t ident
-    | EnumValueSym(i) when ident.Tail = [] -> ChainLoad([ValueLoad(ValueInt(i))], Some ctx.sysTypes.int32)
+    | EnumValueSym(i, t) when ident.Tail = [] -> ChainLoad([ValueLoad(ValueInt(i))], Some t)
     | MethodSym m ->  ChainLoad([CallableLoad m], m.ReturnType)
     | ConstSym v ->
         match v with
@@ -1091,7 +1115,7 @@ let findMethodReference ctx =
 
 let findConstSym ctx =
     findSymbol ctx >> chainToSLList >>
-    function | [ValueLoad(v)], _ -> v | _ -> failwith "IE"
+    function | [ValueLoad(v)], Some(t) -> v, t | _ -> failwith "IE"
 
 type LastTypePoint =
     | LTPVar of VariableKind * PasType
@@ -1166,15 +1190,15 @@ let handleOperator (ctx: Ctx) et byRef (op, (ils, at, bt)) =
     ,match et with | Some t -> t | _ -> at
 
 let evalExprOp2 (opS: Option<string->string->string>) (opI: Option<int->int->int>) (r1, r2) =
-    match       r1,     opS,     opI with
-    | CERString s1, Some so,       _ -> match r2 with CERString s2 -> CERString(so s1 s2) | _ -> assert(false); CERUnknown
-    | CERInt    i1,       _, Some io -> match r2 with CERInt    i2 -> CERInt   (io i1 i2) | _ -> assert(false); CERUnknown
+    match r1, opS, opI with
+    | CERString s1, Some so, _ -> match r2 with CERString s2 -> CERString(so s1 s2) | _ -> assert(false); CERUnknown
+    | CERInt(i1, t1), _, Some io -> match r2 with CERInt(i2, t2) -> CERInt(io i1 i2, t1) | _ -> assert(false); CERUnknown
     | _ -> CERUnknown
 
 let evalExprOp1 (opS: Option<string->string>) (opI: Option<int->int>) r1 =
     match r1, opS, opI with
     | CERString s1, Some so, _ -> CERString(so s1)
-    | CERInt i1, _, Some io -> CERInt(io i1)
+    | CERInt(i1, t1), _, Some io -> CERInt(io i1, t1)
     | _ -> CERUnknown
 
 let rec exprToIlGen refRes (ctx: Ctx) exprEl expectedType =
@@ -1212,12 +1236,13 @@ let rec exprToIlGen refRes (ctx: Ctx) exprEl expectedType =
             | _, (StrType as t), ChrType -> [yield! aVal; yield! convertChrToStr bVal t],t,t
             | _, ChrType, ChrType -> [yield! aVal; yield! convertChrToStr bVal strt],strt,strt
             | _ when sameTypeKind(aTyp, bTyp) -> [yield! aVal; yield! bVal],aTyp,bTyp
+            | InInst, _, _ -> [yield! aVal; yield! bVal],aTyp,bTyp
             | _ -> [yield! aVal; yield! bVal; typeRefToConv aTyp.raw],aTyp,bTyp
 
         let add2OpIlTyped aExpr bExpr i et =
             match exprToMetaExpr aExpr et false with
             | ValueKind(a, at) ->
-                match exprToMetaExpr bExpr (Some at) false with
+                match exprToMetaExpr bExpr (if i = InInst then None else Some at) false with
                 | ValueKind(b, bt) ->
                     let opIls, typ =
                         constConvertTo i (aExpr, a, at) (bExpr, b, bt)
@@ -1523,9 +1548,9 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                                | [cp] -> fst <| callParamToIl ctx cp None // TODO typecheck ?
                                | _ -> failwith "IE only one param allowed"
                 ([
-
                      yield! exitCode
-                     +Call ctx.sysProc.Exit
+                     +Call(findMethodReference ctx "EXITPROCESS")
+                     // +Call ctx.sysProc.Exit
                 ], None)
             | ChrFunc, _ ->
                 let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
@@ -1560,24 +1585,35 @@ and SetValueToCER ctx typ al =
     let inline eval1 e1 = eval1 ctx typ e1
 
     let exprToByteValue = function
-        | CERString s when s.Length = 1 -> byte(s.Chars 0)
-        | CERInt i when i >= 0 && i <= 255 -> byte(i)
+        | CERString s when s.Length = 1 -> byte(s.Chars 0), ctx.sysTypes.char
+        | CERInt(i,t) when i >= 0 && i <= 255 -> byte(i), t
         | _ -> failwith "IE"
 
     let exprToSetItem = function
-        | SValue e -> eval1 e |> exprToByteValue |> List.singleton
+        | SValue e -> let r, t = eval1 e |> exprToByteValue in [r], t
         | SRange(e1, e2) ->
-            let r1 = eval1 e1 |> exprToByteValue
-            let r2 = eval1 e2 |> exprToByteValue
+            // TODO types check
+            let r1, t1 = eval1 e1 |> exprToByteValue
+            let r2, t2 = eval1 e2 |> exprToByteValue
             if r2 < r1 then failwith "IE"
-            [r1..r2]
+            [r1..r2], t1
 
     let finalSet: byte[] = Array.zeroCreate 256
-    List.collect exprToSetItem al
+    let items, enumTyp =
+        List.map exprToSetItem al
+        |> List.unzip
+        |> (fun (i, t) -> i, t.Head)
+    List.concat items
     |> List.fold (fun s i -> if Set.contains i s then failwith "IE" else Set.add i s) Set.empty // TODO contains better error
     |> Set.iter (fun i -> finalSet.[int i] <- 0xFFuy)
-    match typ with
-    | Some t -> CEROrdSet(finalSet, t)
+    match typ, enumTyp with
+    | Some t, _ -> CEROrdSet(finalSet, t)
+    | None, EnumType | None, ChrType ->
+        let typeSet =
+            match ctx.enumSet.TryGetValue enumTyp with
+            | true, t -> t
+            | _ -> addTypeSetForEnum ctx enumTyp AnonName
+        CEROrdSet(finalSet, typeSet)
     | _ -> failwith "IE"
 
 and valueToValueKind ctx v (expectedType: PasType option) byRef =
@@ -1625,11 +1661,12 @@ and valueToValueKind ctx v (expectedType: PasType option) byRef =
         | ils, Some t -> ils, t
         | _ -> failwith "IE"
     | VNil -> [+Ldnull], ctx.sysTypes.pointer
-    | VSet al ->
-        let expType = match expectedType with | Some t -> t | _ -> failwith "IE"
-        let fd = match SetValueToCER ctx expectedType al with | CEROrdSet(b,_) -> b | _ -> failwith "IE"
-                 |> ctx.details.AddBytesConst
-        [+(if byRef then Ldsflda fd else Ldsfld fd)], expType
+    | (VSet al) as t ->
+        let bytes, ft = match SetValueToCER ctx expectedType al with
+                        | CEROrdSet(b,t) -> b, t
+                        | _ -> failwith "IE"
+        let fd = ctx.details.AddBytesConst bytes
+        [+(if byRef then Ldsflda fd else Ldsfld fd)], ft
 
 and chainReaderFactory (ctx: Ctx) asValue addr ltp =
     let valOrPtr v p (t: TypeReference) = (if asValue || (t :? PointerType && addr = false) then v else p) |> List.singleton
@@ -1709,7 +1746,7 @@ and chainLoadToIl ctx lastType factory symload =
         let dt = derefLastTypePoint !lastType
         match dt.kind with
         // TODO what with arrays ?
-        | TkRecord _ -> lastType := LTPDeref(dt, false) // special case like someRec^.Field
+        | TkRecord _ | TkArray _ -> lastType := LTPDeref(dt, false) // special case like someRec^.Field or str^[4]
         | _ -> lastType := LTPDeref(dt, true)
         res
     | ElemLoad (exprs, rt) ->
@@ -1746,11 +1783,15 @@ and evalConstExpr (ctx: Ctx) typ expr =
     | Value v ->
         match v with
         | VFloat f -> CERFloat <| single f
-        | VInteger i -> CERInt i
+        | VInteger i -> CERInt(i, ctx.sysTypes.int32)
         | VString s -> CERString s
         | VIdent id ->
             match findConstSym ctx id with
-            | ValueInt i -> CERInt i
+            | ValueInt i, t ->
+                // TODO Type check with typ
+                match t with
+                | EnumType -> CERInt(i, t)
+                | _ -> CERInt(i, ctx.sysTypes.int32)
             | _ -> failwith "IE"
         | VCallResult _ -> CERUnknown
         | VNil -> CERUnknown
@@ -1826,7 +1867,7 @@ let evalConstExprToStr (ctx: Ctx) = function
     | ConstExpr expr ->
         match evalConstExpr ctx (Some ctx.sysTypes.string) expr with
         | CERString s -> s
-        | CERInt i -> string i
+        | CERInt(i,_) -> string i
         | CERUnknown -> ""
         | _ -> failwith "IE"
     | _ -> failwith "IE"
@@ -2207,16 +2248,6 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
             let mutable pt = PointerType(t.raw)
             for i = 2 to count do pt <- PointerType(pt)
             addType name {name=name;kind=TkPointer(t);raw=pt:>TypeReference}
-        let addTypeSet typeName name =
-            let t =
-                match ctx.FindType typeName with
-                | Some t ->
-                    // TODO check ord size (for int max / min values)
-                    match t.kind with | TkOrd _ -> () | _ -> failwith "IE"
-                    t
-                | _ -> failwith "IE unknown type"
-            addType name {name=name;kind=TkSet(t);raw=ctx.sysTypes.setStorage.raw}
-
 
         let rec getInternalType t =
             let name = TypeName.FromTypeId t
@@ -2226,7 +2257,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 match t with
                 | TIdPointer(count, typeId) -> addTypePointer count (TypeName.FromTypeId typeId) (TypedName t)
                 | TIdArray(ArrayDef(_, dimensions, tname)) -> addTypeArray dimensions tname (TypedName t)
-                | TIdSet(_, typeId) -> addTypeSet (TypeName.FromTypeId typeId) (TypedName t)
+                | TIdSet(_, typeId) -> addTypeSet ctx (TypeName.FromTypeId typeId) (TypedName t)
                 | _ -> failwith "IE"
 
         and addTypeArray dimensions tname name =
@@ -2250,8 +2281,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 let newArrayDim ad ((dims, totalSize), elemType, i, newTyp) =
                     match ad with
                     | DimensionExpr(ConstExpr(l),ConstExpr(h)) ->
-                        let l = match evalConstExpr ctx (Some pint32) l with | CERInt i -> i | _ -> failwith "IE"
-                        let h = match evalConstExpr ctx (Some pint32) h with | CERInt i -> i | _ -> failwith "IE"
+                        let l = match evalConstExpr ctx (Some pint32) l with | CERInt(i,_) -> i | _ -> failwith "IE"
+                        let h = match evalConstExpr ctx (Some pint32) h with | CERInt(i,_) -> i | _ -> failwith "IE"
                         if l > h then failwith "IE"
                         let size = (h - l) + 1
                         let newDim = {
@@ -2282,7 +2313,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                 match pt, ce with
                 | None, ConstExpr expr ->
                     match evalConstExpr ctx None expr with
-                    | CERInt i -> ConstInt i
+                    | CERInt(i, _) -> ConstInt i
                     | CERFloat f -> ConstFloat f
                     | _ -> failwith "IE"
                 | Some t, ConstExpr expr ->
@@ -2293,7 +2324,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         | _ -> failwith "IE"
                     | OrdType ->
                         match evalConstExpr ctx pt expr with
-                        | CERInt i -> ConstInt i
+                        | CERInt(i,_) -> ConstInt i
                         | _ -> failwith "IE"
                     | StrType ->
                         match evalConstExpr ctx pt expr with
@@ -2346,12 +2377,14 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                                addTypePointer count typ.name (StringName name)
                            | TypeSet (_, typeId) ->
                                let typ = match ctx.FindTypeId typeId with | Some t -> t | _ -> failwith "IE not found"
-                               addTypeSet typ.name (StringName name)
+                               addTypeSet ctx typ.name (StringName name)
                            | TypeEnum enumValues ->
-                               let max = enumValues |> List.fold (fun i v -> newSymbols.Add (StringName v, EnumValueSym(i)); i+1) 0
                                let name = StringName name
-                               addType name {name=name;kind=TkOrd(OkEnumeration, OtULong(0, max));raw=pint32.raw}
-                           | Record (packed, fields) -> 
+                               let max = enumValues.Length // TODO get explicit max value
+                               let enumType = addType name {name=name;kind=TkOrd(OkEnumeration, OtULong(0, max));raw=pint32.raw}
+                               enumValues |> List.iteri (fun i v -> newSymbols.Add (StringName v, EnumValueSym(i, enumType)))
+                               enumType
+                           | Record (packed, fields) ->
                                 let mutable size = 0;
                                 let td = TypeDefinition(ctx.details.ns, ctx.details.UniqueTypeName(), TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout)
                                 td.ClassSize <- 0
