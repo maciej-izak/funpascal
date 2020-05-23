@@ -88,7 +88,7 @@ and Designator =
 and CallParam =
     | ParamExpr of ExprEl
     | ParamIdent of DIdent
-    
+
 type ConstExpr = 
     | ConstExpr of ExprEl
     | ConstConstr of ConstExpr list
@@ -179,6 +179,10 @@ type ProgramAst = ProgramAst of name: string option * block: Block
 let (|PIName|) = function
     | Ident(PIdent(name=n)) -> n
     | _ -> ""
+
+let (|UnitOp|_|) = function
+    | TupleExpr[] -> Some UnitOp
+    | _ -> None
 
 let PIPosNameCreate = PIdent >> Ident
 let PINameCreate name = PIPosNameCreate(null, name)

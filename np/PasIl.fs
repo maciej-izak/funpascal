@@ -453,6 +453,7 @@ type SystemTypes = {
         file: PasType
         value: PasType
         pointer: PasType
+        unit: PasType
         constParam: PasType
         varParam: PasType
         boolean: PasType
@@ -590,6 +591,7 @@ type Ctx = {
             file = fileType
             value = {name=AnonName;raw=vt;kind=TkUnknown 0}
             pointer = addAnyType (StringName "Pointer") (PointerType mb.TypeSystem.Void) (TkPointer({name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}))
+            unit = {name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}
             constParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown 0}
             varParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown 0}
             boolean = addOrdType "Boolean" mb.TypeSystem.Byte OkBool (OtUByte(0, 1))
@@ -1294,6 +1296,7 @@ let rec exprToIlGen refRes (ctx: Ctx) exprEl expectedType =
                 | Value((VIdent _) as v) -> yield! (valueToValueKind ctx v et true |> fst)
                 | _ -> failwith "IE"
             ], ctx.sysTypes.pointer)
+        | UnitOp -> ([], ctx.sysTypes.unit) // call `WriteLn();`
         | _ -> failwith "IE"
         |> ValueKind
 
@@ -1372,22 +1375,25 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
                                 | _ -> cp,[+Ldc_I4 0],[+Ldc_I4 0]
                     let valParam, typ = callParamToIl ctx e None
 
-                    let subWrite = match typ.kind with
-                                   | TkOrd(OkInteger,_) -> "WRITEINTF"
-                                   | TkOrd(OkBool,_) -> "WRITEBOOLEANF"
-                                   | TkOrd(OkChar,_) -> "WRITECHARF"
-                                   | TkFloat _ -> "WRITEREALF"
-                                   | TkPointer _ -> "WRITEPOINTERF"
-                                   | TkArray(AkSString _,_,_) -> "WRITESTRINGF"
-                                   |> findMethodReference ctx
-                    [
-                        yield! file()
-                        +Ldnull
-                        yield! valParam
-                        yield! w
-                        yield! p
-                        +Call subWrite
-                    ]
+                    if typ = ctx.sysTypes.unit then
+                        []
+                    else
+                        let subWrite = match typ.kind with
+                                       | TkOrd(OkInteger,_) -> "WRITEINTF"
+                                       | TkOrd(OkBool,_) -> "WRITEBOOLEANF"
+                                       | TkOrd(OkChar,_) -> "WRITECHARF"
+                                       | TkFloat _ -> "WRITEREALF"
+                                       | TkPointer _ -> "WRITEPOINTERF"
+                                       | TkArray(AkSString _,_,_) -> "WRITESTRINGF"
+                                       |> findMethodReference ctx
+                        [
+                            yield! file()
+                            +Ldnull
+                            yield! valParam
+                            yield! w
+                            yield! p
+                            +Call subWrite
+                        ]
                 file, cp |> List.collect doParam
 
             let doRead() =

@@ -78,12 +78,9 @@ var
   OutFile: TOutFile;
 
 begin
-  //WriteLn();
   InitSystem;
-
-
-  WriteLn;
-  WriteLn('XD Pascal for Windows ', VERSIONMAJOR, '.', VERSIONMINOR);
+  WriteLn();
+  WriteLn('XD Pascalx for Windows ', VERSIONMAJOR, '.', VERSIONMINOR);
   WriteLn('Copyright (c) 2009-2010, 2019, Vasiliy Tereshkov');
 
   if ParamCount < 3 then
