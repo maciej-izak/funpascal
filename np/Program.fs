@@ -9,21 +9,22 @@ open NP
 
 [<EntryPoint>]
 let main argv =
+    // command line arguments
+    let results =
+        let errorHandler = ProcessExiter(colorizer = function ErrorCode.HelpText -> None | _ -> Some ConsoleColor.Red)
+        ArgumentParser
+            .Create<CLIArguments>(programName="NewPascal", errorHandler=errorHandler)
+            .ParseCommandLine(inputs = argv, raiseOnUsage = true)
 
-    // !!! GetIdentUnsafe
-    // !!! CompileDirective
+    let pasFiles = results.GetResult(Files)
+    let mainFile =
+        match pasFiles with
+        | [f] -> f
+        | _ -> failwith "Multiply files not supported"
 
-    PasStreams.testAll
-        ""
+    System.IO.File.ReadAllText(mainFile)
+    |> PasStreams.testAll
     |> function
        | Success _ -> printfn "Compilation success!"
        | Failure(s,_,_) -> printfn "%s" s
     0
-    (*let errorHandler = ProcessExiter(colorizer = function ErrorCode.HelpText -> None | _ -> Some ConsoleColor.Red)
-    let parser = ArgumentParser.Create<NpArguments>(programName = "ls", errorHandler = errorHandler)
-    let results = parser.ParseCommandLine argv
-    let files = results.GetResult(Files, [])
-    for f in files do
-        printfn "%A" f
-    //run commentLine "// foo"
-    0 // return an integer exit code*)

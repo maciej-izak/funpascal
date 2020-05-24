@@ -2,7 +2,7 @@ module NP.CommandLineHandle
 
 open Argu
 
-type NpArguments =
+type CLIArguments =
     | [<MainCommand;Mandatory>] Files of FILES:string list
 with
     interface IArgParserTemplate with
