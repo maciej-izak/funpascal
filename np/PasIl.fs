@@ -1,5 +1,11 @@
 module NP.PasIl
 
+// IMPORTANT LNKS :
+// about align !
+//     - https://stackoverflow.com/questions/24122973/what-should-i-pin-when-working-on-arrays/24127524
+// Equality dsyme
+//     - https://docs.microsoft.com/pl-pl/archive/blogs/dsyme/equality-and-comparison-constraints-in-f
+
 open System
 open System.Collections
 open System.Collections.Generic
@@ -276,7 +282,7 @@ with
 
     member this.ResolveArraySelfType() =
         match this.kind with
-        | TkArray(_,d,_) -> d.Head.selfType := this
+        | TkArray(_,h::_,_) -> h.selfType := this
         | _ -> failwith "IE"
         this
 
@@ -295,7 +301,14 @@ with
         | MetadataType.UInt64  -> Ind_U8
         | _ -> failwith "IE"
 
-and ArrayDim = { low: int; high: int; size: int; elemSize: int; elemType: PasType; selfType: PasType ref }
+and [<CustomEquality; NoComparison>]
+    ArrayDim = { low: int; high: int; size: int; elemSize: int; elemType: PasType; selfType: PasType ref }
+with
+    override self.Equals a =
+        match a with
+        | :? ArrayDim as a -> self.low = a.low && self.high = a.high && self.size = a.size && self.elemType = a.elemType
+        | _ -> false
+    override self.GetHashCode() = HashCode.Combine(hash self.low, hash self.high, hash self.size, hash self.elemType)
 
 let (|StrType|ChrType|OtherType|) = function
     | {kind=TkArray(AkSString _,_,_)} -> StrType
@@ -316,6 +329,10 @@ let (|OrdType|_|) = function
 
 let (|NumericType|_|) = function
     | {kind=TkOrd _} | {kind=TkFloat _} | {kind=TkPointer _} -> Some NumericType
+    | _ -> None
+
+let (|FloatType|_|) = function
+    | {kind=TkFloat _} -> Some FloatType
     | _ -> None
 
 let (|BoolOp|_|) = function | Clt | Cgt | Ceq | InInst -> Some BoolOp | _ -> None
@@ -1094,7 +1111,7 @@ let findSymbol (ctx: Ctx) (DIdent ident) =
         | ConstValue(fd, pt) -> (GlobalVariable fd, pt) |> varLoadChain pt ident.Tail
         | ConstBool b ->
             let i = int b
-            ChainLoad([ValueLoad(ValueInt i)], Some ctx.sysTypes.int32)
+            ChainLoad([ValueLoad(ValueInt i)], Some ctx.sysTypes.boolean)
         | _ -> failwith "IE"
     | TypeSym t -> ChainLoad([TypeCastLoad t], Some t)
     | _ -> SymbolLoadError
@@ -1206,7 +1223,7 @@ let evalExprOp1 (opS: Option<string->string>) (opI: Option<int->int>) r1 =
 let rec exprToIlGen refRes (ctx: Ctx) exprEl expectedType =
     let rec exprToMetaExpr (el: ExprEl) et refRes =
         let constConvertTo op (aExpr: ExprEl, aVal, aTyp) (bExpr: ExprEl, bVal, bTyp) =
-            let ctos (expr: ExprEl) aVal aTyp bTyp =
+            let typesConverter (expr: ExprEl) aVal aTyp bTyp =
                 match aTyp, bTyp with
                 | ChrType, CharacterType ctx (t) ->
                     exprToMetaExpr expr (Some t) false
@@ -1218,8 +1235,8 @@ let rec exprToIlGen refRes (ctx: Ctx) exprEl expectedType =
                 (aVal, aTyp), (exprToMetaExpr bExpr (Some bTyp) true |> (function | ValueKind t -> t))
             | BoolOp -> (aVal, aTyp), (bVal, bTyp)
             | _ ->
-                ctos aExpr aVal aTyp bTyp,
-                ctos bExpr bVal bTyp aTyp
+                typesConverter aExpr aVal aTyp bTyp,
+                typesConverter bExpr bVal bTyp aTyp
 
         let typeConvertTo op ((aVal, aTyp), (bVal, bTyp)) =
             let convertChrToStr c t =
@@ -1324,6 +1341,15 @@ and callParamToIl ctx cp (idxmr: Option<int * MethodInfo>) =
         let useRef = byRef || (param.IsSome && (param.Value = ctx.sysTypes.constParam || param.Value = ctx.sysTypes.varParam))
         if useRef then findSymbolAndGetPtr ctx id
         else findSymbolAndLoad ctx id
+    |> fun(il, t) ->
+        if param.IsSome then
+            let pt = param.Value
+            if not (pt = ctx.sysTypes.constParam || pt = ctx.sysTypes.varParam || t.kind = pt.kind) then
+                match t.kind, pt.kind with
+                | TkOrd(OkInteger,_), TkOrd(OkInteger,_) -> ()
+                | TkPointer _, TkPointer _ -> () // Todo better pointer types check
+                | _ -> failwith "IE"
+        (il, t)
 
 and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
     match findFunction ctx ident with
@@ -1628,11 +1654,12 @@ and valueToValueKind ctx v (expectedType: PasType option) byRef =
     | _, false -> ()
     | _ -> failwith "IE"
 
-    match v with
-    | VInteger i -> [+Ldc_I4 i], ctx.sysTypes.int32
-    | VFloat f -> [+Ldc_R4 (single f)], ctx.sysTypes.single
-    | VIdent i -> if byRef then findSymbolAndGetPtr ctx i else findSymbolAndLoad ctx i
-    | VString s ->
+    match v, expectedType with
+    | VInteger i, Some FloatType -> [+Ldc_R4(single i)], ctx.sysTypes.single
+    | VInteger i, _ -> [+Ldc_I4 i], ctx.sysTypes.int32
+    | VFloat f, _ -> [+Ldc_R4 (single f)], ctx.sysTypes.single
+    | VIdent i, _ -> if byRef then findSymbolAndGetPtr ctx i else findSymbolAndLoad ctx i
+    | VString s, _ ->
         let doChr() =
             let cv = int(s.Chars 0)
             [+Ldc_I4 cv], ctx.sysTypes.char
@@ -1648,26 +1675,12 @@ and valueToValueKind ctx v (expectedType: PasType option) byRef =
                 |> ctx.details.AddBytesConst
                 |> Ldsfld |> (~+)
             ], ctx.sysTypes.string)
-
-// let _,v = ctx.EnsureVariable(ctx.sysTypes.string)
-// TODO Ref count strin -> below some simple dynamic allocation for further rework
-//            Ldc_I4 strBytes.Length
-//            Call ctx.details.GetMem
-//            Dup
-//            Stloc v
-//            strBytes
-//            |> ctx.details.AddBytesConst
-//            |> Ldsflda
-//            Ldc_I4 strBytes.Length
-//            // Unaligned 1uy // ??? https://stackoverflow.com/questions/24122973/what-should-i-pin-when-working-on-arrays/24127524
-//            Cpblk
-//            Ldloc v
-    | VCallResult(ce) ->
+    | VCallResult(ce), _ ->
         match doCall ctx ce false with
         | ils, Some t -> ils, t
         | _ -> failwith "IE"
-    | VNil -> [+Ldnull], ctx.sysTypes.pointer
-    | (VSet al) as t ->
+    | VNil, _ -> [+Ldnull], ctx.sysTypes.pointer
+    | VSet al, _ ->
         let bytes, ft = match SetValueToCER ctx expectedType al with
                         | CEROrdSet(b,t) -> b, t
                         | _ -> failwith "IE"
