@@ -53,14 +53,13 @@ begin
 WriteLn;
 WriteLn('XD Pascal for Windows ', VERSIONMAJOR, '.', VERSIONMINOR);
 WriteLn('Copyright (c) 2009-2010, 2019, Vasiliy Tereshkov');
-
-if ParamCount < 1 then
+if ParamCount < 3 then
   begin
   WriteLn('Usage: xdpw <file.pas>');
   Halt(1);
   end;  
-  
-ProgramName := ParamStr(1);
+
+ProgramName := ParamStr(3);
 
 
 // Compile

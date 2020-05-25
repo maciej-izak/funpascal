@@ -58,6 +58,7 @@ let ``. `` = str_wsc "."
 let ``, `` = str_wsc ","
 let ``: `` = str_wsc ":"
 let ``; `` = str_wsc ";"
+let ``;!`` = str_wsc_special ";"
 let ``= `` = str_wsc "="
 let ``.. `` = str_wsc ".."
 let ``:= `` = str_wsc ":="
@@ -542,7 +543,7 @@ procFuncDeclarationsRef :=
     |>> ProcAndFunc
 
 let program =
-    (opt(``program `` >>. identifier .>> ``; ``))
+    (opt(``program `` >>. identifier .>> ``;!``))
     .>>.
     (block .>> pstring ".")        
 

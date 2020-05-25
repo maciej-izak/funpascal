@@ -2194,6 +2194,9 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                      | _ -> []
                 )
             |> List.ofSeq
+        match ctx.symbols.Head with
+        | GlobalSpace, _ -> ctx.res.Add(InstructionList([+Call(findMethodReference ctx "InitSystem")]))
+        | _ -> ()
         let (instructions, labels) = stmtListToIlList ctx sl
         let returnBlock = [
             if res <> null then +Ldloc res

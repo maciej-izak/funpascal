@@ -35,6 +35,7 @@ let testPas p s i =
     use stream1 = new CharStream<PasState>(us.stream, Encoding.Unicode)
     stream1.UserState <- us
     stream1.Name <- "test"
+    us.stream.AddInc "system.inc" "C:\_projects\\newpascal\xdpw"
     let result = applyParser pass1Parser stream1
 //    match result with
 //    | Success (_,s,_) -> s.stream.SaveToFile()
