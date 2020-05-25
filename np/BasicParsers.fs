@@ -153,7 +153,6 @@ let pass1Parser =
 
 let str_wsc s =
     pstringCI s .>> wsc
-let str_wsc_special s =
-    pstringCI s .>> (fun stream -> !stream.UserState.handleInclude "system.inc" stream) .>> wsc
+let include_system_inc = (fun stream -> !stream.UserState.handleInclude "system.inc" stream) >>. wsc
 let wrd_wsc s =
     pstringCI s .>> (notFollowedBy (choice[letter; digit; pchar '_']) .>> wsc)

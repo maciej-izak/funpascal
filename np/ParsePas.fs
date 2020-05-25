@@ -58,7 +58,6 @@ let ``. `` = str_wsc "."
 let ``, `` = str_wsc ","
 let ``: `` = str_wsc ":"
 let ``; `` = str_wsc ";"
-let ``;!`` = str_wsc_special ";"
 let ``= `` = str_wsc "="
 let ``.. `` = str_wsc ".."
 let ``:= `` = str_wsc ":="
@@ -495,28 +494,26 @@ let beginEnd =
 
 statementListRef := (sepEndBy (statement <|> compoundStatement) (many1 ``; ``))
     
-let block = 
-    declarations .>>. beginEnd
+let block = declarations .>>. beginEnd
     (*fun(stream: CharStream<PasState>) ->
-        let reply = 
-            ((opt declarations |>> 
+        let reply =
+            ((opt declarations |>>
                 function
-                | Some s -> 
+                | Some s ->
                     let us = stream.UserState
                     for d in s do
                         match d with
                         | Types t -> ()
                         | Variables v -> ()
                         | Consts c -> ()
-                        | Labels l -> 
+                        | Labels l ->
                             for i in l do
                                 (i, Label{name=i; stmtPoint=false})
                                 |> us.moduled.block.symbols.Add
-                | _ -> () 
-            ) 
+                | _ -> ()
+            )
             .>>. beginEnd) stream
         reply*)
-        
 
 let stdCompoundStatement = beginEnd <|> statement
 
@@ -543,9 +540,9 @@ procFuncDeclarationsRef :=
     |>> ProcAndFunc
 
 let program =
-    (opt(``program `` >>. identifier .>> ``;!``))
+    (opt(``program `` >>. identifier .>> ``; ``))
     .>>.
-    (block .>> pstring ".")        
+    (include_system_inc >>. block .>> pstring ".")
 
 let pascalModule =
     wsc >>. program .>> (skipManyTill skipAnyChar eof)
