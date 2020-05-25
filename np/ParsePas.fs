@@ -377,7 +377,6 @@ let constDeclarations =
             )
     |>> Constants
 
-
 let labelDeclarations =
     ``label ``
     >>. sepBy1 identifier ``, `` .>> ``; ``
@@ -495,25 +494,6 @@ let beginEnd =
 statementListRef := (sepEndBy (statement <|> compoundStatement) (many1 ``; ``))
     
 let block = declarations .>>. beginEnd
-    (*fun(stream: CharStream<PasState>) ->
-        let reply =
-            ((opt declarations |>>
-                function
-                | Some s ->
-                    let us = stream.UserState
-                    for d in s do
-                        match d with
-                        | Types t -> ()
-                        | Variables v -> ()
-                        | Consts c -> ()
-                        | Labels l ->
-                            for i in l do
-                                (i, Label{name=i; stmtPoint=false})
-                                |> us.moduled.block.symbols.Add
-                | _ -> ()
-            )
-            .>>. beginEnd) stream
-        reply*)
 
 let stdCompoundStatement = beginEnd <|> statement
 
