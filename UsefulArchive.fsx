@@ -8,6 +8,13 @@
 //         - https://github.com/dotnet/runtime/blob/487c940876b1932920454c44d2463d996cc8407c/src/mono/mono/metadata/marshal.c
 //     check mono_type_to_unmanaged:
 //         - https://github.com/dotnet/runtime/blob/aa6d1ac74e6291b3aaaa9da60249d8c327593698/src/mono/mono/metadata/metadata.c
+// Ignore errors:
+//     - https://stackoverflow.com/questions/9248426/basic-error-recovery-with-fparsec/9249678
+// Compiler design :
+//     - http://www.itu.dk/people/sestoft/plc/
+// referenceequals
+// https://stackoverflow.com/questions/39217116/how-do-i-check-for-reference-equality-in-f
+
 
 // meta trick to get assembly methods reference:
 
