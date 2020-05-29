@@ -1,6 +1,7 @@
 ﻿// Learn more about F# at http://fsharp.org
 
 open System
+open System.IO
 open NP.CommandLineHandle
 open NP.ParsePas
 open Argu
@@ -23,7 +24,7 @@ let main argv =
         | _ -> failwith "Multiply files not supported"
 
     System.IO.File.ReadAllText(mainFile)
-    |> PasStreams.testAll
+    |> PasStreams.testAll (Path.GetFileName(mainFile))
     |> function
        | Success _ -> printfn "Compilation success!"
        | Failure(s,_,_) -> printfn "%s" s

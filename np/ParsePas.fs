@@ -186,14 +186,21 @@ let arrayIndex =
 let arrayIndexes =
     ``[ `` >>. (sepEndBy1 arrayIndex ``, ``) .>> ``] ``
 
-let designator = 
-    pipe2   (getPosition .>>. identifier |>> PIPosNameCreate) 
+let (~+) p =
+    tuple3 getPosition getUserState p |>>
+    fun (pos, us: PasState, pr) ->
+        us.posMap.TryAdd(box pr, pos) |> ignore
+        pr
+
+let designator =
+    let identifier_p = +identifier |>> PINameCreate
+    pipe2   identifier_p
             (manyTill
                 (choice[
                         ``^ `` >>% Deref; 
                         (``[ `` >>. (sepEndBy1 expr ``, ``) .>> ``] ``)
                         |>> Designator.Array;
-                        ``. `` >>. getPosition .>>. identifier |>> PIPosNameCreate
+                        ``. `` >>. identifier_p
                       ])
                 (lookAhead(followedBy (next2CharsSatisfy 
                               (fun c1 c2 ->
@@ -320,12 +327,13 @@ let exprNil =
 let exprSet =
     ``[ `` >>. (sepEndBy (attempt(expr .>>. (``.. `` >>. expr) |>> SRange) <|> (expr |>> SValue)) ``, ``) .>> ``] `` 
     |>> VSet
-    
+
 let callExpr =
     let actualParam =
-        (pexpr |>> function
-                   | Value(VIdent(i)) -> ParamIdent i
-                   | e -> ParamExpr e)
+        +pexpr
+          |>> function
+              | Value(VIdent(i)) -> ParamIdent i
+              | pe -> ParamExpr pe
     let actualParamsList =
         between ``( `` ``) `` (sepEndBy actualParam ``, ``)
     designator .>>.? actualParamsList 

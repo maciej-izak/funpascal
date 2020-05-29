@@ -35,6 +35,8 @@ type PasState = {
   incStack: (int64 * string * CharStreamState<PasState>) Stack
   handleInclude: IncludeHandle ref
   moduled: ModuleDef
+  posMap: Dictionary<obj, Position>
+  errors: (string * ParserError) list
 } 
 
 and IncludeHandle = string -> CharStream<PasState> -> Reply<unit>
@@ -153,6 +155,8 @@ type PasState with
             incStack = Stack()
             handleInclude = {contents = pass1IncludeHandler}
             moduled = ModuleDef()
+            posMap = Dictionary<_,_>()
+            errors = []
         }
 
 let opp = OperatorPrecedenceParser<ExprEl,unit,PasState>()
