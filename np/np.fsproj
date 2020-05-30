@@ -15,6 +15,10 @@
     <Compile Include="BasicParsers.fs" />
     <Compile Include="PasOperators.fs" />
     <Compile Include="ParsePas.fs" />
+    <Compile Include="PasInstructions.fs" />
+    <Compile Include="PasTypes.fs" />
+    <Compile Include="PasSymbols.fs" />
+    <Compile Include="PasLangCtx.fs" />
     <Compile Include="PasIl.fs" />
     <Compile Include="PasStreams.fs" />
     <Compile Include="Program.fs" />
