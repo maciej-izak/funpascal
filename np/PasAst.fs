@@ -16,33 +16,15 @@ let compareOn f x (yobj: obj) =
     | :? 'T as y -> compare (f x) (f y)
     | _ -> invalidArg "yobj" "cannot compare values of different types"
 
-[<CustomEquality; CustomComparison>]
-type PIdent =
-    | PIdent of string
-
-    member self.Name = match self with | PIdent n -> n
-
-    override self.Equals(a) =
-        match a with
-        | :? PIdent as i -> String.Equals(self.Name, i.Name, StringComparison.InvariantCultureIgnoreCase) // equalsOn PIdent.Name self i
-        | _ -> false
-
-    override self.GetHashCode() = self.Name.GetHashCode(StringComparison.InvariantCultureIgnoreCase) // hashOn PIdent.Name self
-
-    interface System.IComparable with
-      member self.CompareTo o = match o with
-                                | :? PIdent as i -> compare self.Name i.Name
-                                | _ -> invalidArg "o" "cannot compare values of different types"    
-
 type DIdent = DIdent of Designator list
 with
     override self.ToString() =
         match self with
         | DIdent (id::ids) ->
             let start = match id with
-                        | Ident i -> i.Name
+                        | Ident i -> i
                         | _ -> failwith "IE"
-            List.fold (fun s d -> s + match d with | Ident i -> "." + i.Name | d -> d.ToString()) start ids
+            List.fold (fun s d -> s + match d with | Ident i -> "." + i | d -> d.ToString()) start ids
         | _ -> failwith "IE"
 
     member self.BoxPos =
@@ -84,7 +66,8 @@ with
         | VNil -> "nil"
         | VSet sa -> sprintf "[%s]" ((List.fold (fun s i -> sprintf "%s, %O" s i) "" sa).Substring(2))
 
-and ExprEl =
+and [<ReferenceEquality>]
+    ExprEl =
     | Value of Value
     | Expr of ExprEl
     | Add of ExprEl * ExprEl
@@ -148,24 +131,26 @@ with
 
     member self.BoxPos = box self
 
-and Designator = 
-    | Ident of PIdent
+and [<ReferenceEquality>]
+    Designator =
+    | Ident of string
     | Deref
     | Array of ExprEl list
 with
     override self.ToString() =
         match self with
-        | Ident i -> i.Name
+        | Ident i -> i
         | Deref -> "^"
         | Array a -> List.fold (fun s i -> sprintf "%s[%O]" s i) "" a
 
     member self.BoxPos =
         match self with
-        | Ident(PIdent s) -> box s
+        | Ident _ -> box self
         | Deref -> failwith "IE"
         | Array _ -> failwith "IE"
 
-and CallParam =
+and
+    CallParam =
     | ParamExpr of ExprEl
     | ParamIdent of DIdent
 with
@@ -284,12 +269,6 @@ type Block = {decl: Declarations list; stmt: Statement list}
 
 type ProgramAst = ProgramAst of name: string option * block: Block
 
-let (|PIName|) = function
-    | Ident(PIdent n) -> n
-    | _ -> ""
-
 let (|UnitOp|_|) = function
     | TupleExpr[] -> Some UnitOp
     | _ -> None
-
-let PINameCreate = PIdent >> Ident

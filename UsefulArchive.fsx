@@ -25,6 +25,28 @@ let a = AssemblyDefinition.ReadAssembly(t.Assembly.Location);
 let methodToRef (m: System.Reflection.MethodInfo): MethodReference = a.MainModule.ImportReference(m)
 *)
 
+(* comparers
+
+[<CustomEquality; CustomComparison>]
+type PIdent =
+    | PIdent of string
+
+    member self.Name = match self with | PIdent n -> n
+
+    override self.Equals(a) =
+        match a with
+        | :? PIdent as i -> String.Equals(self.Name, i.Name, StringComparison.InvariantCultureIgnoreCase) // equalsOn PIdent.Name self i
+        | _ -> false
+
+    override self.GetHashCode() = self.Name.GetHashCode(StringComparison.InvariantCultureIgnoreCase) // hashOn PIdent.Name self
+
+    interface System.IComparable with
+      member self.CompareTo o = match o with
+                                | :? PIdent as i -> compare self.Name i.Name
+                                | _ -> invalidArg "o" "cannot compare values of different types"    
+
+
+*)
 
 // In place parser:
 (*

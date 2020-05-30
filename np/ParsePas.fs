@@ -193,7 +193,7 @@ let (~+) p =
         pr
 
 let designator =
-    let identifier_p = +identifier |>> PINameCreate
+    let identifier_p = +(identifier |>> Ident)
     pipe2   identifier_p
             (manyTill
                 (choice[
@@ -330,10 +330,9 @@ let exprSet =
 
 let callExpr =
     let actualParam =
-        +pexpr
-          |>> function
-              | Value(VIdent(i)) -> ParamIdent i
-              | pe -> ParamExpr pe
+        +pexpr |>> function
+                   | Value(VIdent(i)) -> ParamIdent i
+                   | pe -> ParamExpr pe
     let actualParamsList =
         between ``( `` ``) `` (sepEndBy actualParam ``, ``)
     designator .>>.? actualParamsList 

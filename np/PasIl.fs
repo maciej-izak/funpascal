@@ -208,7 +208,7 @@ type TypeName =
     | ErrorName
 with
     static member FromTypeId = function
-        | TIdIdent(DIdent([PIName(id)])) -> StringName id
+        | TIdIdent(DIdent([Ident id])) -> StringName id
         | TIdIdent _ -> failwith "IE"
         | ti -> TypedName ti
 
@@ -558,7 +558,7 @@ type ModuleDetails = {
         self.tb.Fields.Add fd
         fd
 
-let stdIdent = PINameCreate >> List.singleton >> DIdent
+let stdIdent = Ident >> List.singleton >> DIdent
 let stdType  = stdIdent >> TIdIdent
 
 let addMetaType (symbols: Dictionary<_,_>) (name: TypeName) typ =
@@ -1034,12 +1034,12 @@ let derefType (t: PasType) =
     | _ -> failwith "Cannot dereference non pointer type"
 
 let findSymbol (ctx: Ctx) (DIdent ident) =
-    let mainSym = ident.Head |> function | PIName n -> ctx.FindSym(StringName n)
+    let mainSym = ident.Head |> function | Ident n -> ctx.FindSym(StringName n)
     
     let rec findSym ref acc = function
     | (Designator.Array a)::t -> acc, Designator.Array(a)::t // TODO ?
     | (Designator.Deref)::t -> acc, Designator.Deref::t // TODO ?
-    | PIName(h)::t ->
+    | Ident(h)::t ->
         // TODO ? here is solved auto records dereference (x.y instead of x^.y) and dereference for array elements
         let ref = match ref.kind with | TkPointer r -> r | _ -> ref
         let symbols = match ref.kind with | TkRecord(d,_) -> d | _ -> failwith "IE"
@@ -1103,7 +1103,7 @@ let (|VariablePasType|_|) ctx id =
     | _ -> None
 
 let (|TypePasType|_|) (ctx: Ctx) = function
-    | DIdent[PIName(id)] ->
+    | DIdent[Ident(id)] ->
         match ctx.FindSym(StringName id) with
         | Some (TypeSym t) -> Some(TypePasType t)
         | _ -> None
@@ -1878,7 +1878,7 @@ let compileBlock (methodBuilder: MethodDefinition) (typeBuilder : TypeDefinition
     Seq.iter ilGenerator instr
     methodBuilder
 
-let simplifiedDIdent = List.map <| function | PIName s -> s
+let simplifiedDIdent = List.map <| function | Ident s -> s | _ -> failwith "IE"
 let inline packedToStr(p: bool) = if p then "1" else "0"
 
 let evalConstExprToStr (ctx: Ctx) = function
