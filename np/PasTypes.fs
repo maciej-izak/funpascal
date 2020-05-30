@@ -195,6 +195,7 @@ let isStrType = function | StrType -> true | _ -> false
 let strToSStr s =
     if (s:string).Length >= 256 then failwith "IE"
     (s + (String.replicate (256-s.Length) "\000")) |> Encoding.ASCII.GetBytes
+
 let rec sameTypeKind = function
     | {kind=TkArray(a,_,_)}, {kind=TkArray(b,_,_)} when a = b -> true
     | {kind=TkOrd(aok,aot)}, {kind=TkOrd(bok,bot)} when aok = bok && aot = bot -> true
@@ -202,3 +203,12 @@ let rec sameTypeKind = function
     | {kind=TkSet a}, {kind=TkSet b} when sameTypeKind(a,b) -> true
     | _ -> false
 
+let derefType (t: PasType) =
+    match t.kind with
+    | TkPointer t -> t
+    | _ -> failwith "Cannot dereference non pointer type"
+
+let (|CharacterType|_|) (defStrTyp: PasType) = function
+    | StrType as t -> Some(CharacterType t)
+    | ChrType -> Some(CharacterType defStrTyp)
+    | _ -> None

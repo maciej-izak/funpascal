@@ -48,6 +48,26 @@ with
         | GlobalVariable v -> v.FieldType
         | ParamVariable (_, v) -> v.ParameterType
 
+type LastTypePoint =
+    | LTPVar of VariableKind * PasType
+    | LTPDeref of PasType * bool
+    | LTPStruct of FieldDefinition * PasType
+    | LTPNone
+with
+    member self.ToTypeRef =
+        match self with
+        | LTPVar(_,tr) -> tr
+        | LTPDeref(tr, _) -> tr
+        | LTPStruct(_, tr) -> tr
+        | _ -> failwith "IE"
+
+    member self.PasType =
+        match self with
+        | LTPVar(_, pt) -> pt
+        | LTPDeref(pt, _) -> pt
+        | LTPStruct(_, pt) -> pt
+        | _ -> failwith "IE"
+
 type ReferencedDef = MethodInfo * (Symbol * Symbol) list ref
 
 and MethodSym =
