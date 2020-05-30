@@ -14,6 +14,8 @@
 //     - http://www.itu.dk/people/sestoft/plc/
 // referenceequals
 // https://stackoverflow.com/questions/39217116/how-do-i-check-for-reference-equality-in-f
+// TODO ;)
+//     - https://www.elementscompiler.com/elements/oxygene/evolution.aspx
 
 
 // meta trick to get assembly methods reference:

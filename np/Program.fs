@@ -3,7 +3,7 @@
 open System
 open System.IO
 open NP.CommandLineHandle
-open NP.ParsePas
+open NP.PasParser
 open Argu
 open FParsec
 open NP

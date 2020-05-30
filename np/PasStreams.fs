@@ -9,7 +9,7 @@ open System.Text.Json.Serialization
 open NP.PasVar
 open NP.PasAst
 open NP.BasicParsers
-open NP.ParsePas
+open NP.PasParser
 open NP.PasIl
 open FParsec
 open FParsec.Primitives
