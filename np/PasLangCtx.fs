@@ -458,44 +458,7 @@ let (|TypePasType|_|) (ctx: Ctx) = function
         | _ -> None
     | _ -> None
 
-type FoundFunction =
-    | RealFunction of (MethodSym * IlInstruction option)
-    | TypeCast of PasType
-
-let findFunction (ctx: Ctx) ident =
-        let callChain = ctx.FindSymbol ident
-        // TODO more advanced calls like foo().x().z^ := 10
-        match callChain with
-        | ChainLoad([CallableLoad cl], _) ->
-           match cl with
-           | Referenced ({raw=mr}, _) -> RealFunction(cl, +Call(mr) |> Some)
-           | Intrinsic _ -> RealFunction(cl, None)
-        | ChainLoad([TypeCastLoad t], _) -> TypeCast t
-        | _ -> failwith "Not supported"
-
 type ValueKind = ValueKind of (IlInstruction list * PasType)
-
-let Ldc_I4 i = LdcI4 i |> Ldc
-let Ldc_U1 (i: byte) = [
-    +Ldc (LdcI4 (int i))
-    +Conv Conv_U1
-]
-let Ldc_R4 r = LdcR4 r |> Ldc
-
-let typeRefToConv (r: TypeReference) =
-    match r.MetadataType with
-    | MetadataType.Pointer -> +Conv Conv_U
-    | MetadataType.SByte   -> +Conv Conv_I1
-    | MetadataType.Int16   -> +Conv Conv_I2
-    | MetadataType.Int32   -> +Conv Conv_I4
-    | MetadataType.Int64   -> +Conv Conv_I8
-    | MetadataType.Byte    -> +Conv Conv_U1
-    | MetadataType.Boolean -> +Conv Conv_U1
-    | MetadataType.Single  -> +Conv Conv_R4
-    | MetadataType.UInt16  -> +Conv Conv_U2
-    | MetadataType.UInt32  -> +Conv Conv_U4
-    | MetadataType.UInt64  -> +Conv Conv_U8
-    | _ -> failwith "IE"
 
 let useHelperOp ctx helperName valueType byRef =
     let _,v = (ctx: Ctx).EnsureVariable(valueType)
@@ -542,6 +505,21 @@ let typeCheck ctx at bt =
        | IntType, IntType -> true
        | PointerType, PointerType -> true // Todo better pointer types check
        | _ -> false
+
+type FoundFunction =
+    | RealFunction of (MethodSym * IlInstruction option)
+    | TypeCast of PasType
+
+let findFunction (ctx: Ctx) ident =
+        let callChain = ctx.FindSymbol ident
+        // TODO more advanced calls like foo().x().z^ := 10
+        match callChain with
+        | ChainLoad([CallableLoad cl], _) ->
+           match cl with
+           | Referenced ({raw=mr}, _) -> RealFunction(cl, +Call(mr) |> Some)
+           | Intrinsic _ -> RealFunction(cl, None)
+        | ChainLoad([TypeCastLoad t], _) -> TypeCast t
+        | _ -> failwith "Not supported"
 
 let rec exprToIlGen refRes (ctx: Ctx) exprEl expectedType =
     let rec exprToMetaExpr (el: ExprEl) et refRes =

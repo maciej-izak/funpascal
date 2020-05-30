@@ -197,3 +197,25 @@ let emit (ilg : Cil.ILProcessor) inst =
             |> ilg.Body.ExceptionHandlers.Add
         ilg.Append beginOfEnd
         List.iter (instr >> ilg.Append) endOfAll.Tail
+
+let Ldc_I4 i = LdcI4 i |> Ldc
+let Ldc_U1 (i: byte) = [
+    +Ldc (LdcI4 (int i))
+    +Conv Conv_U1
+]
+let Ldc_R4 r = LdcR4 r |> Ldc
+
+let typeRefToConv (r: TypeReference) =
+    match r.MetadataType with
+    | MetadataType.Pointer -> +Conv Conv_U
+    | MetadataType.SByte   -> +Conv Conv_I1
+    | MetadataType.Int16   -> +Conv Conv_I2
+    | MetadataType.Int32   -> +Conv Conv_I4
+    | MetadataType.Int64   -> +Conv Conv_I8
+    | MetadataType.Byte    -> +Conv Conv_U1
+    | MetadataType.Boolean -> +Conv Conv_U1
+    | MetadataType.Single  -> +Conv Conv_R4
+    | MetadataType.UInt16  -> +Conv Conv_U2
+    | MetadataType.UInt32  -> +Conv Conv_U4
+    | MetadataType.UInt64  -> +Conv Conv_U8
+    | _ -> failwith "IE"
