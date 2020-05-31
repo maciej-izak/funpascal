@@ -651,6 +651,266 @@ module rec EvalExpr =
                     ctx.NewError cp (sprintf "Incompatible types ('%O' and '%O') for %d parameter" param.Value.name t.name (fst idxmr.Value))
             (il, t)
 
+    let handleIntrinsic ctx ident i cp popResult =
+        let doWrite() =
+            let file, cp =
+                match cp with
+                | ParamIdent id::tail ->
+                    let sl, typ = findSymbolAndGetPtr ctx id
+                    if typ.raw = ctx.sysTypes.file.raw then Some sl, tail
+                    else None, cp
+                | _ -> None, cp
+            let file() = if file.IsNone then fst <| findSymbolAndGetPtr ctx (stdIdent "STDOUTPUTFILE")
+                         else file.Value
+
+            let doParam = fun (cp: CallParam) ->
+                let someInt = Some ctx.sysTypes.int32
+                let e,w,p = match cp with
+                            | ParamExpr(TupleExpr[v;w;p]) -> ParamExpr(v),fst(exprToIl ctx w someInt),fst(exprToIl ctx p someInt)
+                            | ParamExpr(TupleExpr[v;w]) -> ParamExpr(v),fst(exprToIl ctx w someInt),[+Ldc_I4 0]
+                            | _ -> cp,[+Ldc_I4 0],[+Ldc_I4 0]
+                let valParam, typ = callParamToIl ctx e None
+
+                if typ = ctx.sysTypes.unit then
+                    []
+                else
+                    match typ.kind with
+                    | TkOrd(OkInteger,_) -> "WRITEINTF"
+                    | TkOrd(OkBool,_) -> "WRITEBOOLEANF"
+                    | TkOrd(OkChar,_) -> "WRITECHARF"
+                    | TkFloat _ -> "WRITEREALF"
+                    | TkPointer _ -> "WRITEPOINTERF"
+                    | TkArray(AkSString _,_,_) -> "WRITESTRINGF"
+                    | _ -> ctx.NewError cp (sprintf "Unknown type kind of expression for Write/WriteLn: %O" cp); ""
+                    |> ctx.FindMethodReferenceOpt |>
+                    function
+                    | Some subWrite ->
+                        [
+                            yield! file()
+                            +Ldnull
+                            yield! valParam
+                            yield! w
+                            yield! p
+                            +Call subWrite
+                        ]
+                    | None -> []
+            file, cp |> List.collect doParam
+
+        let doRead() =
+            let file, cp =
+                match cp with
+                | ParamIdent id::tail ->
+                    let sl, typ = findSymbolAndGetPtr ctx id
+                    if typ.raw = ctx.sysTypes.file.raw then Some sl, tail
+                    else None, cp
+                | _ -> None, cp
+            let file() = if file.IsNone then fst <| findSymbolAndGetPtr ctx (stdIdent "STDINPUTFILE")
+                         else file.Value
+
+            let doParam = function
+                | ParamIdent id ->
+                    let valParam, typ = findSymbolAndGetPtr ctx id
+                    let subWrite = match typ.kind with
+                                   | TkOrd(OkInteger,OtUByte _) -> "READBYTE"
+                                   | TkOrd(OkInteger,OtSByte _) -> "READSHORTINT"
+                                   | TkOrd(OkInteger,OtUWord _) -> "READWORD"
+                                   | TkOrd(OkInteger,OtSWord _) -> "READSMALLINT"
+                                   | TkOrd(OkInteger,OtULong _) -> "READINT"
+                                   | TkOrd(OkInteger,OtSLong _) -> "READINT"
+                                   | TkOrd(OkBool,_) -> "READBOOLEAN"
+                                   | TkOrd(OkChar,_) -> "READCH"
+                                   | TkFloat _ -> "READREAL"
+                                   | TkArray(AkSString _,_,_) -> "READSTRING"
+                                   |> ctx.FindMethodReference
+                    [
+                        yield! file()
+                        +Ldnull
+                        yield! valParam
+                        +Call subWrite
+                    ]
+                | _ -> failwith "IE"
+            file, cp |> List.collect doParam
+
+        let deltaModify delta id =
+            let inst, typ = findSymbolAndGetPtr ctx id
+            let indKind = typ.IndKind
+            ([ // TODO change indirect to normal load/store?
+             yield! inst
+             +Dup
+             +Ldind indKind
+             +Ldc_I4 delta
+             +AddInst
+             +Stind indKind
+            ], None)
+        let deltaAdd delta cp =
+            let inst, typ = callParamToIl ctx cp None
+            ([ // TODO check type -> should be ordinal
+             yield! inst
+             +Ldc_I4 delta
+             +AddInst
+            ], Some typ)
+
+        match i, cp with
+        | IncProc, [ParamIdent id] -> deltaModify +1 id
+        | DecProc, [ParamIdent id] -> deltaModify -1 id
+        | SuccProc, [cp] -> deltaAdd +1 cp
+        | PredProc, [cp] -> deltaAdd -1 cp
+        | ContinueProc, [] -> match ctx.loop.TryPeek() with
+                              | true, (continueLabel, _) ->
+                                ([IlBranch(IlBr, continueLabel)], None)
+                              | _ -> failwith "IE"
+        | BreakProc, [] -> match ctx.loop.TryPeek() with
+                           | true, (_, breakLabel) ->
+                            ([IlBranch(IlBr, breakLabel)], None)
+                           | _ -> failwith "IE"
+        | ExitProc, [] -> // TODO handle Exit(result);
+            ([
+                +.Ret
+             ], None)
+        | WriteProc, _ ->
+            let _, writeParams = doWrite()
+            (writeParams, None)
+        | WriteLnProc, _ ->
+            let file, writeParams = doWrite()
+            ([
+                yield! writeParams
+                yield! file()
+                +Ldnull
+                +Call(ctx.FindMethodReference "WRITENEWLINE")
+             ], None)
+        | ReadProc, _ ->
+            let _, readParams = doRead()
+            (readParams, None)
+        | ReadLnProc, _ ->
+            let file, readParams = doRead()
+            ([
+                yield! readParams
+                yield! file()
+                +Ldnull
+                +Call(ctx.FindMethodReference "READNEWLINE")
+             ], None)
+        | WriteLineProc, _ ->
+            let high = ref 0
+            let cparams,str = cp |> List.mapi (fun i p -> incr high; callParamToIl ctx p None, sprintf "{%d}" i) |> List.unzip
+            let str = String.Concat(str)
+            ([
+                +Ldstr str
+                +Ldc_I4 !high
+                +Newarr ctx.sysTypes.net_obj.raw
+                yield! cparams
+                       |> List.mapi (
+                                       fun idx (i, t) ->
+                                           let putArrayElem i elems =
+                                               +Dup::+Ldc_I4 idx::i @
+                                               [yield! elems ; +Stelem Elem_Ref]
+                                           match t with
+                                           | StrType ->
+                                               [+Call ctx.sysProc.PtrToStringAnsi]
+                                               // TODO critical handle ptr to strings! bug found in .NET 32 bit
+                                               |> putArrayElem (match ilToAtom i with | [Ldsfld f] -> [+Ldsflda f] | _ -> i)
+                                           | ChrType ->
+                                               [
+                                                   +Conv Conv_U1
+                                                   +Call ctx.sysProc.ConvertU1ToChar
+                                                   +Box ctx.details.moduleBuilder.TypeSystem.Char
+                                               ]
+                                               |> putArrayElem i
+                                           | _ -> [+Box t.raw] |> putArrayElem i
+                                    )
+                       |> List.concat
+                +Call ctx.sysProc.WriteLine
+             ], None)
+        | NewProc, [ParamIdent id] ->
+            let ils, t = findSymbolAndGetPtr ctx id
+            let t = match t.kind with
+                    | TkPointer pt -> pt
+                    | _ -> failwith "IE"
+            ([
+                yield! ils
+                +Ldc_I4 t.SizeOf
+                +Call ctx.sysProc.GetMem
+                +Dup
+                +Initobj t.raw
+                +Stind Ind_U
+            ], None)
+        | DisposeProc, [ParamIdent id] ->
+            let ils, _ = findSymbolAndLoad ctx id
+            ([
+                yield! ils
+                +Call ctx.sysProc.FreeMem
+            ], None)
+        | HaltProc, _ ->
+            let exitCode = match cp with
+                           | [] -> [+Ldc_I4 0]
+                           | [cp] -> fst <| callParamToIl ctx cp None // TODO typecheck ?
+                           | _ -> failwith "IE only one param allowed"
+            ([
+                 yield! exitCode
+                 +Call(ctx.FindMethodReference "EXITPROCESS")
+                 // +Call ctx.sysProc.Exit
+            ], None)
+        | ChrFunc, _ ->
+            let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
+            let callInstr, typ = callParamToIl ctx cp None
+            ([
+                yield! callInstr
+                if popResult then yield +Pop // TODO or not generate call ?
+             ], Some ctx.sysTypes.char)
+        | OrdFunc, _ ->
+            let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
+            let callInstr, typ = callParamToIl ctx cp None
+            ([
+                yield! callInstr
+                if popResult then yield +Pop // TODO or not generate call ?
+             ], Some ctx.sysTypes.int32)
+        | TruncFunc, _ ->
+            match cp with
+            | [cp] ->
+                let callInstr, typ = callParamToIl ctx cp None
+                match typ with
+                | FloatType | IntType ->
+                    ([
+                        yield! callInstr
+                        match popResult with
+                        | true  -> +Pop
+                        | false -> +Conv Conv_I8
+                     ], Some ctx.sysTypes.int64)
+                | _ ->
+                    ctx.NewError cp (sprintf "Expected float type but '%O' found" typ.name)
+                    ([], Some ctx.sysTypes.int64)
+            | _ ->
+                ctx.NewError ident (sprintf "Expected 1 parameter but found %d" (cp.Length))
+                ([], Some ctx.sysTypes.int64)
+        | RoundFunc, _ ->
+            match cp with
+            | [cp] ->
+                let callInstr, typ = callParamToIl ctx cp None
+                match typ with
+                | FloatType | IntType ->
+                    ([
+                        yield! callInstr
+                        +Call ctx.sysProc.Round
+                        match popResult with
+                        | true  -> +Pop
+                        | false -> +Conv Conv_I8
+                     ], Some ctx.sysTypes.int64)
+                | _ ->
+                    ctx.NewError cp (sprintf "Expected float type but '%O' found" typ.name)
+                    ([], Some ctx.sysTypes.int64)
+            | _ ->
+                ctx.NewError ident (sprintf "Expected 1 parameter but found %d" (cp.Length))
+                ([], Some ctx.sysTypes.int64)
+        | SizeOfFunc, [ParamIdent id] ->
+            let t = match id with
+                    | VariablePasType ctx t -> t
+                    | TypePasType ctx t -> t
+                    | _ -> failwithf "IE cannot get size of %A" id
+            ([
+                +Ldc_I4 t.SizeOf
+                if popResult then +Pop // TODO or not generate call ?
+             ], Some ctx.sysTypes.int32)
+        | _ -> failwith "IE"
+
     let doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
         match ctx.FindFunction ident with
         | SymSearch.TypeCast t ->
@@ -676,264 +936,7 @@ module rec EvalExpr =
                     if popResult && mr.result.IsSome then
                         yield +Pop
                  ], mr.result)
-            | Intrinsic i, _ ->
-                let doWrite() =
-                    let file, cp =
-                        match cp with
-                        | ParamIdent id::tail ->
-                            let sl, typ = findSymbolAndGetPtr ctx id
-                            if typ.raw = ctx.sysTypes.file.raw then Some sl, tail
-                            else None, cp
-                        | _ -> None, cp
-                    let file() = if file.IsNone then fst <| findSymbolAndGetPtr ctx (stdIdent "STDOUTPUTFILE")
-                                 else file.Value
-
-                    let doParam = fun (cp: CallParam) ->
-                        let someInt = Some ctx.sysTypes.int32
-                        let e,w,p = match cp with
-                                    | ParamExpr(TupleExpr[v;w;p]) -> ParamExpr(v),fst(exprToIl ctx w someInt),fst(exprToIl ctx p someInt)
-                                    | ParamExpr(TupleExpr[v;w]) -> ParamExpr(v),fst(exprToIl ctx w someInt),[+Ldc_I4 0]
-                                    | _ -> cp,[+Ldc_I4 0],[+Ldc_I4 0]
-                        let valParam, typ = callParamToIl ctx e None
-
-                        if typ = ctx.sysTypes.unit then
-                            []
-                        else
-                            match typ.kind with
-                            | TkOrd(OkInteger,_) -> "WRITEINTF"
-                            | TkOrd(OkBool,_) -> "WRITEBOOLEANF"
-                            | TkOrd(OkChar,_) -> "WRITECHARF"
-                            | TkFloat _ -> "WRITEREALF"
-                            | TkPointer _ -> "WRITEPOINTERF"
-                            | TkArray(AkSString _,_,_) -> "WRITESTRINGF"
-                            | _ -> ctx.NewError cp (sprintf "Unknown type kind of expression for Write/WriteLn: %O" cp); ""
-                            |> ctx.FindMethodReferenceOpt |>
-                            function
-                            | Some subWrite ->
-                                [
-                                    yield! file()
-                                    +Ldnull
-                                    yield! valParam
-                                    yield! w
-                                    yield! p
-                                    +Call subWrite
-                                ]
-                            | None -> []
-                    file, cp |> List.collect doParam
-
-                let doRead() =
-                    let file, cp =
-                        match cp with
-                        | ParamIdent id::tail ->
-                            let sl, typ = findSymbolAndGetPtr ctx id
-                            if typ.raw = ctx.sysTypes.file.raw then Some sl, tail
-                            else None, cp
-                        | _ -> None, cp
-                    let file() = if file.IsNone then fst <| findSymbolAndGetPtr ctx (stdIdent "STDINPUTFILE")
-                                 else file.Value
-
-                    let doParam = function
-                        | ParamIdent id ->
-                            let valParam, typ = findSymbolAndGetPtr ctx id
-                            let subWrite = match typ.kind with
-                                           | TkOrd(OkInteger,OtUByte _) -> "READBYTE"
-                                           | TkOrd(OkInteger,OtSByte _) -> "READSHORTINT"
-                                           | TkOrd(OkInteger,OtUWord _) -> "READWORD"
-                                           | TkOrd(OkInteger,OtSWord _) -> "READSMALLINT"
-                                           | TkOrd(OkInteger,OtULong _) -> "READINT"
-                                           | TkOrd(OkInteger,OtSLong _) -> "READINT"
-                                           | TkOrd(OkBool,_) -> "READBOOLEAN"
-                                           | TkOrd(OkChar,_) -> "READCH"
-                                           | TkFloat _ -> "READREAL"
-                                           | TkArray(AkSString _,_,_) -> "READSTRING"
-                                           |> ctx.FindMethodReference
-                            [
-                                yield! file()
-                                +Ldnull
-                                yield! valParam
-                                +Call subWrite
-                            ]
-                        | _ -> failwith "IE"
-                    file, cp |> List.collect doParam
-
-                let deltaModify delta id =
-                    let inst, typ = findSymbolAndGetPtr ctx id
-                    let indKind = typ.IndKind
-                    ([ // TODO change indirect to normal load/store?
-                     yield! inst
-                     +Dup
-                     +Ldind indKind
-                     +Ldc_I4 delta
-                     +AddInst
-                     +Stind indKind
-                    ], None)
-                let deltaAdd delta cp =
-                    let inst, typ = callParamToIl ctx cp None
-                    ([ // TODO check type -> should be ordinal
-                     yield! inst
-                     +Ldc_I4 delta
-                     +AddInst
-                    ], Some typ)
-                match i, cp with
-                | IncProc, [ParamIdent id] -> deltaModify +1 id
-                | DecProc, [ParamIdent id] -> deltaModify -1 id
-                | SuccProc, [cp] -> deltaAdd +1 cp
-                | PredProc, [cp] -> deltaAdd -1 cp
-                | ContinueProc, [] -> match ctx.loop.TryPeek() with
-                                      | true, (continueLabel, _) ->
-                                        ([IlBranch(IlBr, continueLabel)], None)
-                                      | _ -> failwith "IE"
-                | BreakProc, [] -> match ctx.loop.TryPeek() with
-                                   | true, (_, breakLabel) ->
-                                    ([IlBranch(IlBr, breakLabel)], None)
-                                   | _ -> failwith "IE"
-                | ExitProc, [] -> // TODO handle Exit(result);
-                    ([
-                        +.Ret
-                     ], None)
-                | WriteProc, _ ->
-                    let _, writeParams = doWrite()
-                    (writeParams, None)
-                | WriteLnProc, _ ->
-                    let file, writeParams = doWrite()
-                    ([
-                        yield! writeParams
-                        yield! file()
-                        +Ldnull
-                        +Call(ctx.FindMethodReference "WRITENEWLINE")
-                     ], None)
-                | ReadProc, _ ->
-                    let _, readParams = doRead()
-                    (readParams, None)
-                | ReadLnProc, _ ->
-                    let file, readParams = doRead()
-                    ([
-                        yield! readParams
-                        yield! file()
-                        +Ldnull
-                        +Call(ctx.FindMethodReference "READNEWLINE")
-                     ], None)
-                | WriteLineProc, _ ->
-                    let high = ref 0
-                    let cparams,str = cp |> List.mapi (fun i p -> incr high; callParamToIl ctx p None, sprintf "{%d}" i) |> List.unzip
-                    let str = String.Concat(str)
-                    ([
-                        +Ldstr str
-                        +Ldc_I4 !high
-                        +Newarr ctx.sysTypes.net_obj.raw
-                        yield! cparams
-                               |> List.mapi (
-                                               fun idx (i, t) ->
-                                                   let putArrayElem i elems =
-                                                       +Dup::+Ldc_I4 idx::i @
-                                                       [yield! elems ; +Stelem Elem_Ref]
-                                                   match t with
-                                                   | StrType ->
-                                                       [+Call ctx.sysProc.PtrToStringAnsi]
-                                                       // TODO critical handle ptr to strings! bug found in .NET 32 bit
-                                                       |> putArrayElem (match ilToAtom i with | [Ldsfld f] -> [+Ldsflda f] | _ -> i)
-                                                   | ChrType ->
-                                                       [
-                                                           +Conv Conv_U1
-                                                           +Call ctx.sysProc.ConvertU1ToChar
-                                                           +Box ctx.details.moduleBuilder.TypeSystem.Char
-                                                       ]
-                                                       |> putArrayElem i
-                                                   | _ -> [+Box t.raw] |> putArrayElem i
-                                            )
-                               |> List.concat
-                        +Call ctx.sysProc.WriteLine
-                     ], None)
-                | NewProc, [ParamIdent id] ->
-                    let ils, t = findSymbolAndGetPtr ctx id
-                    let t = match t.kind with
-                            | TkPointer pt -> pt
-                            | _ -> failwith "IE"
-                    ([
-                        yield! ils
-                        +Ldc_I4 t.SizeOf
-                        +Call ctx.sysProc.GetMem
-                        +Dup
-                        +Initobj t.raw
-                        +Stind Ind_U
-                    ], None)
-                | DisposeProc, [ParamIdent id] ->
-                    let ils, _ = findSymbolAndLoad ctx id
-                    ([
-                        yield! ils
-                        +Call ctx.sysProc.FreeMem
-                    ], None)
-                | HaltProc, _ ->
-                    let exitCode = match cp with
-                                   | [] -> [+Ldc_I4 0]
-                                   | [cp] -> fst <| callParamToIl ctx cp None // TODO typecheck ?
-                                   | _ -> failwith "IE only one param allowed"
-                    ([
-                         yield! exitCode
-                         +Call(ctx.FindMethodReference "EXITPROCESS")
-                         // +Call ctx.sysProc.Exit
-                    ], None)
-                | ChrFunc, _ ->
-                    let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
-                    let callInstr, typ = callParamToIl ctx cp None
-                    ([
-                        yield! callInstr
-                        if popResult then yield +Pop // TODO or not generate call ?
-                     ], Some ctx.sysTypes.char)
-                | OrdFunc, _ ->
-                    let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
-                    let callInstr, typ = callParamToIl ctx cp None
-                    ([
-                        yield! callInstr
-                        if popResult then yield +Pop // TODO or not generate call ?
-                     ], Some ctx.sysTypes.int32)
-                | TruncFunc, _ ->
-                    match cp with
-                    | [cp] ->
-                        let callInstr, typ = callParamToIl ctx cp None
-                        match typ with
-                        | FloatType | IntType ->
-                            ([
-                                yield! callInstr
-                                match popResult with
-                                | true  -> +Pop
-                                | false -> +Conv Conv_I8
-                             ], Some ctx.sysTypes.int64)
-                        | _ ->
-                            ctx.NewError cp (sprintf "Expected float type but '%O' found" typ.name)
-                            ([], Some ctx.sysTypes.int64)
-                    | _ ->
-                        ctx.NewError ident (sprintf "Expected 1 parameter but found %d" (cp.Length))
-                        ([], Some ctx.sysTypes.int64)
-                | RoundFunc, _ ->
-                    match cp with
-                    | [cp] ->
-                        let callInstr, typ = callParamToIl ctx cp None
-                        match typ with
-                        | FloatType | IntType ->
-                            ([
-                                yield! callInstr
-                                +Call ctx.sysProc.Round
-                                match popResult with
-                                | true  -> +Pop
-                                | false -> +Conv Conv_I8
-                             ], Some ctx.sysTypes.int64)
-                        | _ ->
-                            ctx.NewError cp (sprintf "Expected float type but '%O' found" typ.name)
-                            ([], Some ctx.sysTypes.int64)
-                    | _ ->
-                        ctx.NewError ident (sprintf "Expected 1 parameter but found %d" (cp.Length))
-                        ([], Some ctx.sysTypes.int64)
-                | SizeOfFunc, [ParamIdent id] ->
-                    let t = match id with
-                            | VariablePasType ctx t -> t
-                            | TypePasType ctx t -> t
-                            | _ -> failwithf "IE cannot get size of %A" id
-                    ([
-                        +Ldc_I4 t.SizeOf
-                        if popResult then +Pop // TODO or not generate call ?
-                     ], Some ctx.sysTypes.int32)
-                | _ -> failwith "IE"
+            | Intrinsic i, _ -> handleIntrinsic ctx ident i cp popResult
             | _ -> failwith "IE"
         | _ -> failwith "IE"
 
