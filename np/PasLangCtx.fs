@@ -462,18 +462,6 @@ type Ctx with
         function | [ValueLoad(v)], Some(t) -> v, t | _ -> failwith "IE"
     member self.FindFunction = SymSearch.findFunction self
 
-let (|VariablePasType|_|) (ctx: Ctx) id =
-    match ctx.FindSymbol id |> chainToSLList with
-    | _, Some(t) -> Some(VariablePasType t)
-    | _ -> None
-
-let (|TypePasType|_|) (ctx: Ctx) = function
-    | DIdent[Ident(id)] ->
-        match ctx.FindSym(StringName id) with
-        | Some (TypeSym t) -> Some(TypePasType t)
-        | _ -> None
-    | _ -> None
-
 type ValueKind = ValueKind of (IlInstruction list * PasType)
 
 let useHelperOp ctx helperName valueType byRef =
@@ -924,6 +912,18 @@ module PasIntrinsics =
 
     open EvalExpr
 
+    let (|VariablePasType|_|) (ctx: Ctx) id =
+        match ctx.FindSymbol id |> chainToSLList with
+        | _, Some(t) -> Some(VariablePasType t)
+        | _ -> None
+
+    let (|TypePasType|_|) (ctx: Ctx) = function
+        | DIdent[Ident(id)] ->
+            match ctx.FindSym(StringName id) with
+            | Some (TypeSym t) -> Some(TypePasType t)
+            | _ -> None
+        | _ -> None
+
     let private doWrite ctx cp =
         let file, cp =
             match cp with
@@ -1022,7 +1022,6 @@ module PasIntrinsics =
          +Ldc_I4 delta
          +AddInst
         ], Some typ)
-
 
     let handleIntrinsic ctx ident popResult = function
         | IncProc, [ParamIdent id] -> deltaModify ctx +1 id
