@@ -8,65 +8,6 @@ open Mono.Cecil.Cil
 open NP
 
 exception CompilerFatalError of Ctx
-type LangCtx() =
-    let mutable ec = caseInsensitive
-    member self.caseSensitive
-        with get() = ec = caseSensitive
-        and set(cs) =  ec <- if cs then caseSensitive else caseInsensitive
-
-    interface IEqualityComparer<TypeName> with
-        member _.GetHashCode(x) = ec.GetHashCode(x)
-        member _.Equals(x,y) = ec.Equals(x, y)
-
-type ModuleDetails = {
-        typesCount: int ref
-        moduleBuilder: ModuleDefinition
-        ns: string
-        tb: TypeDefinition
-        vt: TypeReference
-        uvt: MethodReference
-        anonSizeTypes: Dictionary<int, TypeDefinition>
-    } with
-    static member Create moduleBuilder ns tb =
-        {
-            typesCount = ref 0
-            moduleBuilder = moduleBuilder
-            ns = ns
-            tb = tb
-            vt = moduleBuilder.ImportReference(typeof<ValueType>)
-            uvt = moduleBuilder.ImportReference(typeof<UnsafeValueTypeAttribute>.GetConstructor(Type.EmptyTypes))
-            anonSizeTypes = Dictionary<_, _>()
-        }
-
-    member self.UniqueTypeName() =
-        incr self.typesCount
-        "T" + string !self.typesCount
-
-    member self.NewSizedType size =
-            let attributes = TypeAttributes.SequentialLayout ||| TypeAttributes.AnsiClass ||| TypeAttributes.Sealed ||| TypeAttributes.Public
-            let at = TypeDefinition(self.ns, self.UniqueTypeName(), attributes)
-
-            at.CustomAttributes.Add(CustomAttribute self.uvt)
-            at.ClassSize <- size
-            at.PackingSize <- 1s;
-            at.BaseType <- self.vt
-            self.moduleBuilder.Types.Add(at)
-            at
-
-    member self.SelectAnonSizeType size =
-        match self.anonSizeTypes.TryGetValue size with
-        | true, t -> t
-        | _ ->
-            let at = self.NewSizedType size
-            self.anonSizeTypes.Add(size, at)
-            at
-
-    member self.AddBytesConst (bytes: byte[]) =
-        let ast = self.SelectAnonSizeType bytes.Length
-        let fd = FieldDefinition(null, FieldAttributes.Public ||| FieldAttributes.Static ||| FieldAttributes.HasFieldRVA, ast)
-        fd.InitialValue <- bytes
-        self.tb.Fields.Add fd
-        fd
 
 module Utils =
     let stdIdent = Ident >> List.singleton >> DIdent
@@ -102,9 +43,9 @@ type Ctx = {
         symbols: (SymOwner * Dictionary<TypeName, Symbol>) list
         forward: Dictionary<string, ReferencedDef * Dictionary<TypeName,Symbol> * VariableKind option>
         localVariables: int ref
-        lang: LangCtx
+        lang: Ctx.LangCtx
         res: List<MetaInstruction>
-        details: ModuleDetails
+        details: Ctx.ModuleDetails
         loop: Stack<BranchLabel ref * BranchLabel ref>
         enumSet: Dictionary<PasType, PasType>
         posMap: Dictionary<obj, FParsec.Position>
@@ -223,6 +164,66 @@ type Ctx = {
     member self.DoCall = EvalExpr.doCall self
 
 module Ctx =
+
+    type LangCtx() =
+        let mutable ec = caseInsensitive
+        member self.caseSensitive
+            with get() = ec = caseSensitive
+            and set(cs) =  ec <- if cs then caseSensitive else caseInsensitive
+
+        interface IEqualityComparer<TypeName> with
+            member _.GetHashCode(x) = ec.GetHashCode(x)
+            member _.Equals(x,y) = ec.Equals(x, y)
+
+    type ModuleDetails = {
+            typesCount: int ref
+            moduleBuilder: ModuleDefinition
+            ns: string
+            tb: TypeDefinition
+            vt: TypeReference
+            uvt: MethodReference
+            anonSizeTypes: Dictionary<int, TypeDefinition>
+        } with
+        static member Create moduleBuilder ns tb =
+            {
+                typesCount = ref 0
+                moduleBuilder = moduleBuilder
+                ns = ns
+                tb = tb
+                vt = moduleBuilder.ImportReference(typeof<ValueType>)
+                uvt = moduleBuilder.ImportReference(typeof<UnsafeValueTypeAttribute>.GetConstructor(Type.EmptyTypes))
+                anonSizeTypes = Dictionary<_, _>()
+            }
+
+        member self.UniqueTypeName() =
+            incr self.typesCount
+            "T" + string !self.typesCount
+
+        member self.NewSizedType size =
+                let attributes = TypeAttributes.SequentialLayout ||| TypeAttributes.AnsiClass ||| TypeAttributes.Sealed ||| TypeAttributes.Public
+                let at = TypeDefinition(self.ns, self.UniqueTypeName(), attributes)
+
+                at.CustomAttributes.Add(CustomAttribute self.uvt)
+                at.ClassSize <- size
+                at.PackingSize <- 1s;
+                at.BaseType <- self.vt
+                self.moduleBuilder.Types.Add(at)
+                at
+
+        member self.SelectAnonSizeType size =
+            match self.anonSizeTypes.TryGetValue size with
+            | true, t -> t
+            | _ ->
+                let at = self.NewSizedType size
+                self.anonSizeTypes.Add(size, at)
+                at
+
+        member self.AddBytesConst (bytes: byte[]) =
+            let ast = self.SelectAnonSizeType bytes.Length
+            let fd = FieldDefinition(null, FieldAttributes.Public ||| FieldAttributes.Static ||| FieldAttributes.HasFieldRVA, ast)
+            fd.InitialValue <- bytes
+            self.tb.Fields.Add fd
+            fd
 
     type SystemTypes = {
         int32: PasType
@@ -344,26 +345,27 @@ module Ctx =
         intrinsic "Pred" PredProc 
         intrinsic "Succ" SuccProc 
         intrinsic "Round" RoundFunc 
+        intrinsic "Trunc" TruncFunc
         // function Abs(x: T): T;
         // function Sqr(x: T): T;
         // function Sin(x: Real): Real;
         // function Cos(x: Real): Real;
         // function Arctan(x: Real): Real;
-        let mathLog = typeof<System.MathF>.GetMethod("Log", [| typeof<single> |])  |> ctx.details.moduleBuilder.ImportReference
-        let mathExp = typeof<System.MathF>.GetMethod("Exp", [| typeof<single> |])  |> ctx.details.moduleBuilder.ImportReference
         let singleScalar raw =
            Referenced({
                paramList = [|{typ=tsingle;ref=false}|]
                result = Some tsingle
                raw = raw
            }, ref[]) |> MethodSym
+        let mathLog = typeof<System.MathF>.GetMethod("Log", [| typeof<single> |])  |> ctx.details.moduleBuilder.ImportReference
+        let mathExp = typeof<System.MathF>.GetMethod("Exp", [| typeof<single> |])  |> ctx.details.moduleBuilder.ImportReference
         symbols.Add(StringName "Exp", singleScalar mathExp)
         symbols.Add(StringName "Ln", singleScalar mathLog)
-        symbols.Add(StringName "Trunc", Intrinsic TruncFunc  |> MethodSym)
         ctx
 
-    let createCtx owner pm details =
+    let createCtx moduleBuilder ns tb owner pm =
         let lang = LangCtx()
+        let details = ModuleDetails.Create moduleBuilder ns tb
         let symbols = Dictionary<TypeName,Symbol>(lang)
         {
             errors = List<_>()
