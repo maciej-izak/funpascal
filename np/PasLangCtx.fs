@@ -679,7 +679,7 @@ module EvalExpr =
                     if popResult && mr.result.IsSome then
                         yield +Pop
                  ], mr.result)
-            | Intrinsic i, _ -> handleIntrinsic ctx ident i cp popResult
+            | Intrinsic i, _ -> handleIntrinsic ctx ident popResult (i, cp)
             | _ -> failwith "IE"
         | _ -> failwith "IE"
 
@@ -999,32 +999,32 @@ module PasIntrinsics =
             | _ -> failwith "IE"
         file, cp |> List.collect doParam
 
-    let handleIntrinsic ctx ident i cp popResult =
+    let private deltaModify ctx delta id =
+        let inst, typ = findSymbolAndGetPtr ctx id
+        let indKind = typ.IndKind
+        ([ // TODO change indirect to normal load/store?
+         yield! inst
+         +Dup
+         +Ldind indKind
+         +Ldc_I4 delta
+         +AddInst
+         +Stind indKind
+        ], None)
 
-        let deltaModify delta id =
-            let inst, typ = findSymbolAndGetPtr ctx id
-            let indKind = typ.IndKind
-            ([ // TODO change indirect to normal load/store?
-             yield! inst
-             +Dup
-             +Ldind indKind
-             +Ldc_I4 delta
-             +AddInst
-             +Stind indKind
-            ], None)
-        let deltaAdd delta cp =
-            let inst, typ = callParamToIl ctx cp None
-            ([ // TODO check type -> should be ordinal
-             yield! inst
-             +Ldc_I4 delta
-             +AddInst
-            ], Some typ)
+    let private deltaAdd ctx delta cp =
+        let inst, typ = callParamToIl ctx cp None
+        ([ // TODO check type -> should be ordinal
+         yield! inst
+         +Ldc_I4 delta
+         +AddInst
+        ], Some typ)
 
-        match i, cp with
-        | IncProc, [ParamIdent id] -> deltaModify +1 id
-        | DecProc, [ParamIdent id] -> deltaModify -1 id
-        | SuccProc, [cp] -> deltaAdd +1 cp
-        | PredProc, [cp] -> deltaAdd -1 cp
+
+    let handleIntrinsic ctx ident popResult = function
+        | IncProc, [ParamIdent id] -> deltaModify ctx +1 id
+        | DecProc, [ParamIdent id] -> deltaModify ctx -1 id
+        | SuccProc, [cp] -> deltaAdd ctx +1 cp
+        | PredProc, [cp] -> deltaAdd  ctx -1 cp
         | ContinueProc, [] -> match ctx.loop.TryPeek() with
                               | true, (continueLabel, _) ->
                                 ([IlBranch(IlBr, continueLabel)], None)
@@ -1037,10 +1037,10 @@ module PasIntrinsics =
             ([
                 +.Ret
              ], None)
-        | WriteProc, _ ->
+        | WriteProc, cp ->
             let _, writeParams = doWrite ctx cp
             (writeParams, None)
-        | WriteLnProc, _ ->
+        | WriteLnProc, cp ->
             let file, writeParams = doWrite ctx cp
             ([
                 yield! writeParams
@@ -1048,10 +1048,10 @@ module PasIntrinsics =
                 +Ldnull
                 +Call(ctx.FindMethodReference "WRITENEWLINE")
              ], None)
-        | ReadProc, _ ->
+        | ReadProc, cp ->
             let _, readParams = doRead ctx cp
             (readParams, None)
-        | ReadLnProc, _ ->
+        | ReadLnProc, cp ->
             let file, readParams = doRead ctx cp
             ([
                 yield! readParams
@@ -1059,7 +1059,7 @@ module PasIntrinsics =
                 +Ldnull
                 +Call(ctx.FindMethodReference "READNEWLINE")
              ], None)
-        | WriteLineProc, _ ->
+        | WriteLineProc, cp ->
             let high = ref 0
             let cparams,str = cp |> List.mapi (fun i p -> incr high; callParamToIl ctx p None, sprintf "{%d}" i) |> List.unzip
             let str = String.Concat(str)
@@ -1109,7 +1109,7 @@ module PasIntrinsics =
                 yield! ils
                 +Call ctx.sysProc.FreeMem
             ], None)
-        | HaltProc, _ ->
+        | HaltProc, cp ->
             let exitCode = match cp with
                            | [] -> [+Ldc_I4 0]
                            | [cp] -> fst <| callParamToIl ctx cp None // TODO typecheck ?
@@ -1119,21 +1119,21 @@ module PasIntrinsics =
                  +Call(ctx.FindMethodReference "EXITPROCESS")
                  // +Call ctx.sysProc.Exit
             ], None)
-        | ChrFunc, _ ->
+        | ChrFunc, cp ->
             let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
             let callInstr, typ = callParamToIl ctx cp None
             ([
                 yield! callInstr
                 if popResult then yield +Pop // TODO or not generate call ?
              ], Some ctx.sysTypes.char)
-        | OrdFunc, _ ->
+        | OrdFunc, cp ->
             let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
             let callInstr, typ = callParamToIl ctx cp None
             ([
                 yield! callInstr
                 if popResult then yield +Pop // TODO or not generate call ?
              ], Some ctx.sysTypes.int32)
-        | TruncFunc, _ ->
+        | TruncFunc, cp ->
             match cp with
             | [cp] ->
                 let callInstr, typ = callParamToIl ctx cp None
@@ -1151,7 +1151,7 @@ module PasIntrinsics =
             | _ ->
                 ctx.NewError ident (sprintf "Expected 1 parameter but found %d" (cp.Length))
                 ([], Some ctx.sysTypes.int64)
-        | RoundFunc, _ ->
+        | RoundFunc, cp ->
             match cp with
             | [cp] ->
                 let callInstr, typ = callParamToIl ctx cp None
