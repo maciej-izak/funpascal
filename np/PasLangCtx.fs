@@ -18,36 +18,6 @@ type LangCtx() =
         member _.GetHashCode(x) = ec.GetHashCode(x)
         member _.Equals(x,y) = ec.Equals(x, y)
 
-type SystemTypes = {
-        int32: PasType
-        int64: PasType
-        single: PasType
-        string: PasType
-        setStorage: PasType
-        char: PasType
-        file: PasType
-        value: PasType
-        pointer: PasType
-        unit: PasType
-        unknown: PasType
-        constParam: PasType
-        varParam: PasType
-        boolean: PasType
-        net_obj: PasType
-        net_void: PasType
-    }
-
-type SystemProc = {
-        GetMem: MethodReference
-        FreeMem: MethodReference
-        WriteLine: MethodReference
-        Exit: MethodReference
-        ConvertU1ToChar: MethodReference
-        PtrToStringAnsi: MethodReference
-        Trunc: MethodReference
-        Round: MethodReference
-    }
-
 type ModuleDetails = {
         typesCount: int ref
         moduleBuilder: ModuleDefinition
@@ -120,7 +90,6 @@ module Utils =
            | PointerType, PointerType -> true // Todo better pointer types check
            | _ -> false
 
-
 type SymOwner =
     | GlobalSpace
     | StandaloneMethod of ReferencedDef
@@ -139,8 +108,8 @@ type Ctx = {
         loop: Stack<BranchLabel ref * BranchLabel ref>
         enumSet: Dictionary<PasType, PasType>
         posMap: Dictionary<obj, FParsec.Position>
-        sysTypes: SystemTypes
-        sysProc: SystemProc
+        sysTypes: Ctx.SystemTypes
+        sysProc: Ctx.SystemProc
     } with
 
     member inline self.NewError(pos: ^T) s =
@@ -148,79 +117,9 @@ type Ctx = {
         let p = (^T : (member BoxPos : obj) pos)
         self.errors.Add(fmtPos (self.posMap.[p]) + " " + s)
 
-    static member CreateStdTypes(details, (symbols: Dictionary<TypeName, Symbol>)) =
-        let mb = details.moduleBuilder
-        let vt = mb.ImportReference(typeof<ValueType>)
-        let ot = mb.ImportReference(typeof<obj>)
-        let addAnyType name raw kind =
-            let t = {name=name;raw=raw;kind=kind}
-            Utils.addMetaType symbols name t
-        let addOrdType name raw ordKind ordType = TkOrd(ordKind, ordType) |> addAnyType (StringName name) raw
-        let addFloatType name raw = TkFloat(FtSingle) |> addAnyType (StringName name) raw
-        let addArrayType name (p: PasType) ad = addAnyType name p.raw ad
-
-        addOrdType "Byte" mb.TypeSystem.Byte OkInteger (OtUByte(int Byte.MinValue, int Byte.MaxValue)) |> ignore
-        addOrdType "ShortInt" mb.TypeSystem.SByte OkInteger (OtSByte(int SByte.MinValue, int SByte.MaxValue)) |> ignore
-        addOrdType "Word" mb.TypeSystem.UInt16 OkInteger (OtUWord(int UInt16.MinValue, int UInt16.MaxValue)) |> ignore
-        addOrdType "SmallInt" mb.TypeSystem.Int16 OkInteger (OtSWord(int Int16.MinValue, int Int16.MaxValue)) |> ignore
-        addOrdType "LongWord" mb.TypeSystem.UInt32 OkInteger (OtULong(int UInt32.MinValue, int UInt32.MaxValue)) |> ignore
-        addOrdType "UInt64" mb.TypeSystem.UInt64 OkInteger (OtUQWord(UInt64.MinValue, UInt64.MaxValue)) |> ignore
-        let charType = addOrdType "Char" mb.TypeSystem.Byte OkChar (OtUByte(int Byte.MinValue, int Byte.MaxValue))
-        let strType = {name=AnonName;raw=(details.NewSizedType 256) :> TypeReference;kind=TkUnknown 256}
-        let strDim = {
-                        low = 1
-                        high = 255
-                        size = 256
-                        elemSize = 1
-                        elemType = charType
-                        selfType = ref strType
-                     }
-        // allow to use string as array
-
-        // file = name + handle
-        let fileType = (details.NewSizedType (256 + ptrSize)) :> TypeReference
-        let fileType = Utils.addMetaType symbols (TypedName TIdFile) {name=TypedName TIdFile;kind=TkUnknown(256 + ptrSize);raw=fileType}
-        {
-            int32 = addOrdType "Integer" mb.TypeSystem.Int32 OkInteger (OtSLong(int Int32.MinValue, int Int32.MaxValue))
-            int64 = addOrdType "Int64" mb.TypeSystem.Int64 OkInteger (OtSQWord(Int64.MinValue, Int64.MaxValue))
-            single = addFloatType "Real" mb.TypeSystem.Single
-            string = addArrayType (TypedName TIdString) strType (TkArray(AkSString 255uy, [strDim], charType))
-            setStorage = {name=AnonName;raw=details.NewSizedType 256;kind=TkUnknown 0}
-            char = charType
-            file = fileType
-            value = {name=AnonName;raw=vt;kind=TkUnknown 0}
-            pointer = addAnyType (StringName "Pointer") (PointerType mb.TypeSystem.Void) (TkPointer({name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}))
-            unit = {name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}
-            unknown = {name=ErrorName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}
-            constParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown 0}
-            varParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown 0}
-            boolean = addOrdType "Boolean" mb.TypeSystem.Byte OkBool (OtUByte(0, 1))
-            net_obj = {name=AnonName;raw=ot;kind=TkUnknown 0}
-            net_void = {name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}
-        }
-
     static member Create owner symbols (lang: LangCtx) pm details =
         let moduleBuilder = details.moduleBuilder
-        let exitMethod =
-            typeof<System.Environment>.GetMethod("Exit", [| typeof<int> |]) |> moduleBuilder.ImportReference
-        let writeLineMethod =
-            typeof<System.Console>.GetMethod("WriteLine", [| typeof<string> ; typeof<obj array> |]) |> moduleBuilder.ImportReference
-        let ptrToStringAnsi =
-            typeof<System.Runtime.InteropServices.Marshal>.GetMethod("PtrToStringAnsi", [| typeof<nativeint> |]) |> moduleBuilder.ImportReference
-        let convertU1ToChar =
-            typeof<System.Convert>.GetMethod("ToChar", [| typeof<byte> |]) |> moduleBuilder.ImportReference
-        let allocMem =
-            typeof<System.Runtime.InteropServices.Marshal>.GetMethod("AllocCoTaskMem")  |> moduleBuilder.ImportReference
-        let freeMem =
-            typeof<System.Runtime.InteropServices.Marshal>.GetMethod("FreeCoTaskMem")  |> moduleBuilder.ImportReference
-        let mathLog =
-            typeof<System.MathF>.GetMethod("Log", [| typeof<single> |])  |> moduleBuilder.ImportReference
-        let mathTrunc =
-            typeof<System.MathF>.GetMethod("Truncate", [| typeof<single> |])  |> moduleBuilder.ImportReference
-        let mathExp =
-            typeof<System.MathF>.GetMethod("Exp", [| typeof<single> |])  |> moduleBuilder.ImportReference
-        let mathRound =
-            typeof<System.MathF>.GetMethod("Round", [| typeof<single> |])  |> moduleBuilder.ImportReference
+
         let res = {
             errors = List<_>()
             variables = [List<VariableKind>()]
@@ -234,17 +133,8 @@ type Ctx = {
             loop = Stack<_>()
             enumSet = Dictionary<_, _>()
             posMap = pm
-            sysTypes = Ctx.CreateStdTypes(details,symbols)
-            sysProc = {
-                            GetMem = allocMem
-                            FreeMem = freeMem
-                            WriteLine = writeLineMethod
-                            Exit = exitMethod
-                            ConvertU1ToChar = convertU1ToChar
-                            PtrToStringAnsi = ptrToStringAnsi
-                            Trunc = mathTrunc
-                            Round = mathRound
-                      }
+            sysTypes = Ctx.createSystemTypes details symbols
+            sysProc = Ctx.createSystemProc details
         }
 
         let tsingle = res.sysTypes.single
@@ -282,6 +172,8 @@ type Ctx = {
         // function Sin(x: Real): Real;
         // function Cos(x: Real): Real;
         // function Arctan(x: Real): Real;
+        let mathLog = typeof<System.MathF>.GetMethod("Log", [| typeof<single> |])  |> details.moduleBuilder.ImportReference
+        let mathExp = typeof<System.MathF>.GetMethod("Exp", [| typeof<single> |])  |> details.moduleBuilder.ImportReference
         symbols.Add(StringName "Exp", singleScalar mathExp)
         symbols.Add(StringName "Ln", singleScalar mathLog)
         symbols.Add(StringName "Trunc", Intrinsic TruncFunc  |> MethodSym)
@@ -389,6 +281,101 @@ type Ctx = {
     member self.ChainWriterFactory = EvalExpr.chainWriterFactory self
     member self.ChainReaderFactory = EvalExpr.chainReaderFactory self
     member self.DoCall = EvalExpr.doCall self
+
+module Ctx =
+
+    type SystemTypes = {
+        int32: PasType
+        int64: PasType
+        single: PasType
+        string: PasType
+        setStorage: PasType
+        char: PasType
+        file: PasType
+        value: PasType
+        pointer: PasType
+        unit: PasType
+        unknown: PasType
+        constParam: PasType
+        varParam: PasType
+        boolean: PasType
+        net_obj: PasType
+        net_void: PasType
+    }
+
+    type SystemProc = {
+            GetMem: MethodReference
+            FreeMem: MethodReference
+            WriteLine: MethodReference
+            Exit: MethodReference
+            ConvertU1ToChar: MethodReference
+            PtrToStringAnsi: MethodReference
+            Round: MethodReference
+        }
+
+    let createSystemTypes details (symbols: Dictionary<TypeName, Symbol>) =
+        let mb = details.moduleBuilder
+        let vt = mb.ImportReference(typeof<ValueType>)
+        let ot = mb.ImportReference(typeof<obj>)
+        let addAnyType name raw kind =
+            let t = {name=name;raw=raw;kind=kind}
+            Utils.addMetaType symbols name t
+        let addOrdType name raw ordKind ordType = TkOrd(ordKind, ordType) |> addAnyType (StringName name) raw
+        let addFloatType name raw = TkFloat(FtSingle) |> addAnyType (StringName name) raw
+        let addArrayType name (p: PasType) ad = addAnyType name p.raw ad
+
+        addOrdType "Byte" mb.TypeSystem.Byte OkInteger (OtUByte(int Byte.MinValue, int Byte.MaxValue)) |> ignore
+        addOrdType "ShortInt" mb.TypeSystem.SByte OkInteger (OtSByte(int SByte.MinValue, int SByte.MaxValue)) |> ignore
+        addOrdType "Word" mb.TypeSystem.UInt16 OkInteger (OtUWord(int UInt16.MinValue, int UInt16.MaxValue)) |> ignore
+        addOrdType "SmallInt" mb.TypeSystem.Int16 OkInteger (OtSWord(int Int16.MinValue, int Int16.MaxValue)) |> ignore
+        addOrdType "LongWord" mb.TypeSystem.UInt32 OkInteger (OtULong(int UInt32.MinValue, int UInt32.MaxValue)) |> ignore
+        addOrdType "UInt64" mb.TypeSystem.UInt64 OkInteger (OtUQWord(UInt64.MinValue, UInt64.MaxValue)) |> ignore
+        let charType = addOrdType "Char" mb.TypeSystem.Byte OkChar (OtUByte(int Byte.MinValue, int Byte.MaxValue))
+        let strType = {name=AnonName;raw=(details.NewSizedType 256) :> TypeReference;kind=TkUnknown 256}
+        let strDim = {
+                        low = 1
+                        high = 255
+                        size = 256
+                        elemSize = 1
+                        elemType = charType
+                        selfType = ref strType
+                     }
+        // allow to use string as array
+
+        // file = name + handle
+        let fileType = (details.NewSizedType (256 + ptrSize)) :> TypeReference
+        let fileType = Utils.addMetaType symbols (TypedName TIdFile) {name=TypedName TIdFile;kind=TkUnknown(256 + ptrSize);raw=fileType}
+        {
+            int32 = addOrdType "Integer" mb.TypeSystem.Int32 OkInteger (OtSLong(int Int32.MinValue, int Int32.MaxValue))
+            int64 = addOrdType "Int64" mb.TypeSystem.Int64 OkInteger (OtSQWord(Int64.MinValue, Int64.MaxValue))
+            single = addFloatType "Real" mb.TypeSystem.Single
+            string = addArrayType (TypedName TIdString) strType (TkArray(AkSString 255uy, [strDim], charType))
+            setStorage = {name=AnonName;raw=details.NewSizedType 256;kind=TkUnknown 0}
+            char = charType
+            file = fileType
+            value = {name=AnonName;raw=vt;kind=TkUnknown 0}
+            pointer = addAnyType (StringName "Pointer") (PointerType mb.TypeSystem.Void) (TkPointer({name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}))
+            unit = {name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}
+            unknown = {name=ErrorName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}
+            constParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown 0}
+            varParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown 0}
+            boolean = addOrdType "Boolean" mb.TypeSystem.Byte OkBool (OtUByte(0, 1))
+            net_obj = {name=AnonName;raw=ot;kind=TkUnknown 0}
+            net_void = {name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}
+        }
+
+    let createSystemProc details =
+        let mb = details.moduleBuilder
+//        let mathTrunc = typeof<System.MathF>.GetMethod("Truncate", [| typeof<single> |])  |> mb.ImportReference
+        {
+            GetMem = typeof<System.Runtime.InteropServices.Marshal>.GetMethod("AllocCoTaskMem")  |> mb.ImportReference
+            FreeMem = typeof<System.Runtime.InteropServices.Marshal>.GetMethod("FreeCoTaskMem")  |> mb.ImportReference
+            WriteLine = typeof<System.Console>.GetMethod("WriteLine", [| typeof<string> ; typeof<obj array> |]) |> mb.ImportReference
+            Exit = typeof<System.Environment>.GetMethod("Exit", [| typeof<int> |]) |> mb.ImportReference
+            ConvertU1ToChar = typeof<System.Convert>.GetMethod("ToChar", [| typeof<byte> |]) |> mb.ImportReference
+            PtrToStringAnsi = typeof<System.Runtime.InteropServices.Marshal>.GetMethod("PtrToStringAnsi", [| typeof<nativeint> |]) |> mb.ImportReference
+            Round = typeof<System.MathF>.GetMethod("Round", [| typeof<single> |])  |> mb.ImportReference
+        }
 
 module Types =
 
