@@ -378,9 +378,84 @@ module Types =
             | _ -> failwith "IE unknown type"
         addTypeSetForEnum ctx t name
 
+    let addType ctx = Utils.addMetaType (snd ctx.symbols.Head)
+
+    let addTypePointer (ctx: Ctx) count typeName name =
+        let t =
+            match ctx.FindType typeName with
+            | Some t -> t
+            | _ -> failwith "IE unknown type"
+        let mutable pt = PointerType(t.raw)
+        for i = 2 to count do pt <- PointerType(pt)
+        addType ctx name {name=name;kind=TkPointer(t);raw=pt:>TypeReference}
+
+    let getInternalType (ctx: Ctx) t =
+        let name = TypeName.FromTypeId t
+        match ctx.FindType name with
+        | Some t -> t
+        | None -> // inline type?
+            match t with
+            | TIdPointer(count, typeId) -> addTypePointer ctx count (TypeName.FromTypeId typeId) (TypedName t)
+            | TIdArray(ArrayDef(_, dimensions, tname)) -> addTypeArray ctx dimensions tname (TypedName t)
+            | TIdSet(_, typeId) -> addTypeSet ctx (TypeName.FromTypeId typeId) (TypedName t)
+            | _ -> ctx.NewError t (sprintf "Cannot find type identifier \"%O\"" t); ctx.sysTypes.unknown // raise (CompilerFatalError ctx)
+
+    let addTypeArray ctx dimensions tname name =
+        let newSubType (dims, size) (typ: PasType, typSize) name =
+            let size = size * typSize
+            let at = ctx.details.NewSizedType size
+            FieldDefinition("item0", FieldAttributes.Public, typ.raw)
+            |> at.Fields.Add
+            let name = StringName name
+            {name=name;raw=at;kind=TkArray(AkArray,dims,typ)}.ResolveArraySelfType()
+
+        let rec doArrayDef dimensions tname dims name =
+
+            let newDims, typAndSize, newTyp =
+                match tname with
+                | TIdArray(ArrayDef(_, dimensions, tname)) -> doArrayDef dimensions tname dims (name + "$a$")
+                | t ->
+                    let typ = getInternalType ctx t
+                    dims, (typ, typ.SizeOf), typ
+
+            let newArrayDim ad ((dims, totalSize), elemType, i, newTyp) =
+                match ad with
+                | DimensionExpr(ConstExpr(l),ConstExpr(h)) ->
+                    let pint32 = ctx.sysTypes.int32
+                    let l = match ctx.EvalConstExpr (Some pint32) l with | CERInt(i,_) -> i | _ -> failwith "IE"
+                    let h = match ctx.EvalConstExpr (Some pint32) h with | CERInt(i,_) -> i | _ -> failwith "IE"
+                    if l > h then failwith "IE"
+                    let size = (h - l) + 1
+                    let newDim = {
+                        low = l
+                        high = h
+                        size = size
+                        elemSize = totalSize*(snd typAndSize)
+                        elemType = newTyp
+                        selfType = ref Unchecked.defaultof<_>
+                    }
+                    let totalSize = totalSize * size
+                    let dimsAndSize = newDim::dims,totalSize
+                    let newTyp = newSubType dimsAndSize typAndSize (name + "$" + string(i))
+                    dimsAndSize, elemType, i+1, newTyp
+                | _ -> failwith "IE"
+
+            let (res, _, _, typ) = List.foldBack newArrayDim dimensions (newDims, null, 0, newTyp)
+            res, typAndSize, typ
+        // final array
+        let strName = string ((string name).Length)
+        let _,_,typ = doArrayDef dimensions tname ([], 1) strName
+        //typ.raw.Name <- strName
+        addType ctx name typ
+        //(doArrayDef dimensions tname (ref []) name).Name <- name
+
 type Ctx with
     member self.AddTypeSetForEnum = Types.addTypeSetForEnum self
     member self.AddTypeSet = Types.addTypeSet self
+    member self.AddType = Types.addType self
+    member self.AddTypePointer = Types.addTypePointer self
+    member self.GetInternalType = Types.getInternalType self
+    member self.AddTypeArray = Types.addTypeArray self
 
 module SymSearch =
     let findSymbol (ctx: Ctx) (DIdent ident) =
@@ -1190,73 +1265,3 @@ type Ctx with
     member self.ChainWriterFactory = EvalExpr.chainWriterFactory self
     member self.ChainReaderFactory = EvalExpr.chainReaderFactory self
     member self.DoCall = EvalExpr.doCall self
-    member self.AddType = Utils.addMetaType (snd self.symbols.Head)
-
-    member self.AddTypePointer count typeName name =
-        let t =
-            match self.FindType typeName with
-            | Some t -> t
-            | _ -> failwith "IE unknown type"
-        let mutable pt = PointerType(t.raw)
-        for i = 2 to count do pt <- PointerType(pt)
-        self.AddType name {name=name;kind=TkPointer(t);raw=pt:>TypeReference}
-
-    member self.GetInternalType t =
-        let name = TypeName.FromTypeId t
-        match self.FindType name with
-        | Some t -> t
-        | None -> // inline type?
-            match t with
-            | TIdPointer(count, typeId) -> self.AddTypePointer count (TypeName.FromTypeId typeId) (TypedName t)
-            | TIdArray(ArrayDef(_, dimensions, tname)) -> self.AddTypeArray dimensions tname (TypedName t)
-            | TIdSet(_, typeId) -> self.AddTypeSet (TypeName.FromTypeId typeId) (TypedName t)
-            | _ -> self.NewError t (sprintf "Cannot find type identifier \"%O\"" t); self.sysTypes.unknown // raise (CompilerFatalError ctx)
-
-    member self.AddTypeArray dimensions tname name =
-        let newSubType (dims, size) (typ: PasType, typSize) name =
-            let size = size * typSize
-            let at = self.details.NewSizedType size
-            FieldDefinition("item0", FieldAttributes.Public, typ.raw)
-            |> at.Fields.Add
-            let name = StringName name
-            {name=name;raw=at;kind=TkArray(AkArray,dims,typ)}.ResolveArraySelfType()
-
-        let rec doArrayDef dimensions tname dims name =
-
-            let newDims, typAndSize, newTyp =
-                match tname with
-                | TIdArray(ArrayDef(_, dimensions, tname)) -> doArrayDef dimensions tname dims (name + "$a$")
-                | t ->
-                    let typ = self.GetInternalType t
-                    dims, (typ, typ.SizeOf), typ
-
-            let newArrayDim ad ((dims, totalSize), elemType, i, newTyp) =
-                match ad with
-                | DimensionExpr(ConstExpr(l),ConstExpr(h)) ->
-                    let pint32 = self.sysTypes.int32
-                    let l = match self.EvalConstExpr (Some pint32) l with | CERInt(i,_) -> i | _ -> failwith "IE"
-                    let h = match self.EvalConstExpr (Some pint32) h with | CERInt(i,_) -> i | _ -> failwith "IE"
-                    if l > h then failwith "IE"
-                    let size = (h - l) + 1
-                    let newDim = {
-                        low = l
-                        high = h
-                        size = size
-                        elemSize = totalSize*(snd typAndSize)
-                        elemType = newTyp
-                        selfType = ref Unchecked.defaultof<_>
-                    }
-                    let totalSize = totalSize * size
-                    let dimsAndSize = newDim::dims,totalSize
-                    let newTyp = newSubType dimsAndSize typAndSize (name + "$" + string(i))
-                    dimsAndSize, elemType, i+1, newTyp
-                | _ -> failwith "IE"
-
-            let (res, _, _, typ) = List.foldBack newArrayDim dimensions (newDims, null, 0, newTyp)
-            res, typAndSize, typ
-        // final array
-        let strName = string ((string name).Length)
-        let _,_,typ = doArrayDef dimensions tname ([], 1) strName
-        //typ.raw.Name <- strName
-        self.AddType name typ
-        //(doArrayDef dimensions tname (ref []) name).Name <- name
