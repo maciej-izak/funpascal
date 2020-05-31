@@ -522,655 +522,662 @@ let typeCheck ctx at bt =
        | PointerType, PointerType -> true // Todo better pointer types check
        | _ -> false
 
-let rec exprToIlGen refRes (ctx: Ctx) exprEl expectedType =
-    let rec exprToMetaExpr (el: ExprEl) et refRes =
-        let constConvertTo op (aExpr: ExprEl, aVal, aTyp) (bExpr: ExprEl, bVal, bTyp) =
-            let typesConverter (expr: ExprEl) aVal aTyp bTyp =
-                match aTyp, bTyp with
-                | ChrType, CharacterType ctx.sysTypes.string (t) ->
-                    exprToMetaExpr expr (Some t) false
-                    |> (function | ValueKind t -> t)
-                | _ -> aVal, aTyp
-            op,
-            match op with
-            | InInst ->
-                (aVal, aTyp), (exprToMetaExpr bExpr (Some bTyp) true |> (function | ValueKind t -> t))
-            | BoolOp -> (aVal, aTyp), (bVal, bTyp)
-            | _ ->
-                typesConverter aExpr aVal aTyp bTyp,
-                typesConverter bExpr bVal bTyp aTyp
+module rec EvalExpr =
+    let rec exprToIlGen refRes (ctx: Ctx) exprEl expectedType =
+        let rec exprToMetaExpr (el: ExprEl) et refRes =
+            let constConvertTo op (aExpr: ExprEl, aVal, aTyp) (bExpr: ExprEl, bVal, bTyp) =
+                let typesConverter (expr: ExprEl) aVal aTyp bTyp =
+                    match aTyp, bTyp with
+                    | ChrType, CharacterType ctx.sysTypes.string (t) ->
+                        exprToMetaExpr expr (Some t) false
+                        |> (function | ValueKind t -> t)
+                    | _ -> aVal, aTyp
+                op,
+                match op with
+                | InInst ->
+                    (aVal, aTyp), (exprToMetaExpr bExpr (Some bTyp) true |> (function | ValueKind t -> t))
+                | BoolOp -> (aVal, aTyp), (bVal, bTyp)
+                | _ ->
+                    typesConverter aExpr aVal aTyp bTyp,
+                    typesConverter bExpr bVal bTyp aTyp
 
-        let typeConvertTo op ((aVal, aTyp), (bVal, bTyp)) =
-            let convertChrToStr c t =
-                let _,v = ctx.EnsureVariable t
-                [
-                    +Ldloca v
-                    yield! c
-                    +Stind Ind_U1
-                    +Ldloc v
-                ]
-            let strt = ctx.sysTypes.string
-            op,
-            match op, aTyp, bTyp with
-            | _, ErrorType, _ | _, _, ErrorType -> [], aTyp, bTyp
-            | BoolOp, _, _ -> [yield! aVal; yield! bVal],aTyp,bTyp
-            | _, ChrType, (StrType as t) -> [yield! convertChrToStr aVal t; yield! bVal],t,t
-            | _, (StrType as t), ChrType -> [yield! aVal; yield! convertChrToStr bVal t],t,t
-            | _, ChrType, ChrType -> [yield! aVal; yield! convertChrToStr bVal strt],strt,strt
-            | _ when sameTypeKind(aTyp, bTyp) -> [yield! aVal; yield! bVal],aTyp,bTyp
-            | InInst, _, _ -> [yield! aVal; yield! bVal],aTyp,bTyp
-            | _ -> [yield! aVal; yield! bVal; typeRefToConv aTyp.raw],aTyp,bTyp
+            let typeConvertTo op ((aVal, aTyp), (bVal, bTyp)) =
+                let convertChrToStr c t =
+                    let _,v = ctx.EnsureVariable t
+                    [
+                        +Ldloca v
+                        yield! c
+                        +Stind Ind_U1
+                        +Ldloc v
+                    ]
+                let strt = ctx.sysTypes.string
+                op,
+                match op, aTyp, bTyp with
+                | _, ErrorType, _ | _, _, ErrorType -> [], aTyp, bTyp
+                | BoolOp, _, _ -> [yield! aVal; yield! bVal],aTyp,bTyp
+                | _, ChrType, (StrType as t) -> [yield! convertChrToStr aVal t; yield! bVal],t,t
+                | _, (StrType as t), ChrType -> [yield! aVal; yield! convertChrToStr bVal t],t,t
+                | _, ChrType, ChrType -> [yield! aVal; yield! convertChrToStr bVal strt],strt,strt
+                | _ when sameTypeKind(aTyp, bTyp) -> [yield! aVal; yield! bVal],aTyp,bTyp
+                | InInst, _, _ -> [yield! aVal; yield! bVal],aTyp,bTyp
+                | _ -> [yield! aVal; yield! bVal; typeRefToConv aTyp.raw],aTyp,bTyp
 
-        let add2OpIlTyped aExpr bExpr i et =
-            match exprToMetaExpr aExpr et false with
-            | ValueKind(a, at) ->
-                match exprToMetaExpr bExpr (if i = InInst then None else Some at) false with
-                | ValueKind(b, bt) ->
-                    let opIls, typ =
-                        constConvertTo i (aExpr, a, at) (bExpr, b, bt)
-                        ||> typeConvertTo
-                        |> handleOperator ctx et refRes
-                    ([
-                        yield! opIls
-                        // need to cast to proper type (for simple types)
-                        match et with
-                        | Some NumericType -> yield typeRefToConv et.Value.raw
-                        | _ -> ()
-                    ], typ)
-        let add2OpIl a b i = add2OpIlTyped a b i et
-        let add2OpIlBool a b i = add2OpIlTyped a b i (Some ctx.sysTypes.boolean)
-        let inline add1OpIl a i =
-            match exprToMetaExpr a et false with
-            | ValueKind(a, at) -> [ yield! a; yield +i; yield typeRefToConv at.raw], at
-        match el with
-        | Value v -> valueToValueKind ctx v et refRes
-        | Add(a, b) -> add2OpIl a b AddInst
-        | Multiply(a, b) -> add2OpIl a b MultiplyInst
-        | Minus(a, b) -> add2OpIl a b MinusInst
-        | Divide(a, b) -> add2OpIl a b DivideInst
-        | And(a, b) -> add2OpIl a b AndInst
-        | Or(a, b) -> add2OpIl a b OrInst
-        | Xor(a, b) -> add2OpIl a b XorInst
-        | Mod(a, b) -> add2OpIl a b Rem
-        | Div(a, b) -> add2OpIl a b DivideInst
-        | Shl(a, b) -> add2OpIl a b ShlInst
-        | Shr(a, b) -> add2OpIl a b ShrInst
-        | Not(a) -> add1OpIl a NotInst
-        | UnaryMinus(a) -> add1OpIl a NegInst
-        | Equal(a, b) -> add2OpIl a b Ceq
-        | NotEqual(a, b) ->
-            match add2OpIlBool a b Ceq with
-            | o, ot -> ([ yield! o; +Ldc_I4 0; +Ceq ], ctx.sysTypes.boolean)
-        | StrictlyLessThan(a, b) -> add2OpIlBool a b Clt
-        | StrictlyGreaterThan(a, b) -> add2OpIlBool a b Cgt
-        | LessThanOrEqual(a, b) ->
-            match add2OpIlBool a b Cgt with
-            | o, ot -> [ yield! o; +Ldc_I4 0; +Ceq ], ctx.sysTypes.boolean
-        | GreaterThanOrEqual(a, b) ->
-            match add2OpIlBool a b Clt with
-            | o, ot -> [ yield! o; +Ldc_I4 0; +Ceq ], ctx.sysTypes.boolean
-        | In(a, b) -> add2OpIlBool a b InInst
-        | Addr(a) ->
+            let add2OpIlTyped aExpr bExpr i et =
+                match exprToMetaExpr aExpr et false with
+                | ValueKind(a, at) ->
+                    match exprToMetaExpr bExpr (if i = InInst then None else Some at) false with
+                    | ValueKind(b, bt) ->
+                        let opIls, typ =
+                            constConvertTo i (aExpr, a, at) (bExpr, b, bt)
+                            ||> typeConvertTo
+                            |> handleOperator ctx et refRes
+                        ([
+                            yield! opIls
+                            // need to cast to proper type (for simple types)
+                            match et with
+                            | Some NumericType -> yield typeRefToConv et.Value.raw
+                            | _ -> ()
+                        ], typ)
+            let add2OpIl a b i = add2OpIlTyped a b i et
+            let add2OpIlBool a b i = add2OpIlTyped a b i (Some ctx.sysTypes.boolean)
+            let inline add1OpIl a i =
+                match exprToMetaExpr a et false with
+                | ValueKind(a, at) -> [ yield! a; yield +i; yield typeRefToConv at.raw], at
+            match el with
+            | Value v -> valueToValueKind ctx v et refRes
+            | Add(a, b) -> add2OpIl a b AddInst
+            | Multiply(a, b) -> add2OpIl a b MultiplyInst
+            | Minus(a, b) -> add2OpIl a b MinusInst
+            | Divide(a, b) -> add2OpIl a b DivideInst
+            | And(a, b) -> add2OpIl a b AndInst
+            | Or(a, b) -> add2OpIl a b OrInst
+            | Xor(a, b) -> add2OpIl a b XorInst
+            | Mod(a, b) -> add2OpIl a b Rem
+            | Div(a, b) -> add2OpIl a b DivideInst
+            | Shl(a, b) -> add2OpIl a b ShlInst
+            | Shr(a, b) -> add2OpIl a b ShrInst
+            | Not(a) -> add1OpIl a NotInst
+            | UnaryMinus(a) -> add1OpIl a NegInst
+            | Equal(a, b) -> add2OpIl a b Ceq
+            | NotEqual(a, b) ->
+                match add2OpIlBool a b Ceq with
+                | o, ot -> ([ yield! o; +Ldc_I4 0; +Ceq ], ctx.sysTypes.boolean)
+            | StrictlyLessThan(a, b) -> add2OpIlBool a b Clt
+            | StrictlyGreaterThan(a, b) -> add2OpIlBool a b Cgt
+            | LessThanOrEqual(a, b) ->
+                match add2OpIlBool a b Cgt with
+                | o, ot -> [ yield! o; +Ldc_I4 0; +Ceq ], ctx.sysTypes.boolean
+            | GreaterThanOrEqual(a, b) ->
+                match add2OpIlBool a b Clt with
+                | o, ot -> [ yield! o; +Ldc_I4 0; +Ceq ], ctx.sysTypes.boolean
+            | In(a, b) -> add2OpIlBool a b InInst
+            | Addr(a) ->
+                ([
+                    match a with
+                    | Value((VIdent _) as v) -> yield! (valueToValueKind ctx v et true |> fst)
+                    | _ -> failwith "IE"
+                ], ctx.sysTypes.pointer)
+            | UnitOp -> ([], ctx.sysTypes.unit) // call `WriteLn();`
+            | _ -> failwith "IE"
+            |> ValueKind
+
+        match exprToMetaExpr exprEl expectedType refRes with
+        | ValueKind (a, at) ->
+            [
+             yield! a
+             if expectedType.IsSome then
+                let typ = expectedType.Value
+                match typ.kind with | TkOrd _ | TkFloat _ -> yield typeRefToConv typ.raw | _ -> ()
+            ], at
+
+    let exprToIl = exprToIlGen false
+
+    let callParamToIl ctx cp (idxmr: Option<int * MethodInfo>) =
+        let param, byRef =
+            match idxmr with
+            | Some(idx,{paramList=pl}) ->
+                let p = pl.[idx]
+                Some p.typ, p.ref
+            | _ -> None, false
+        match cp with
+        | ParamExpr expr -> exprToIl ctx (if byRef then Addr expr else expr) param
+        | ParamIdent id ->
+            let useRef = byRef || (param.IsSome && (param.Value = ctx.sysTypes.constParam || param.Value = ctx.sysTypes.varParam))
+            if useRef then findSymbolAndGetPtr ctx id
+            else findSymbolAndLoad ctx id
+        |> fun(il, t) ->
+            if param.IsSome then
+                if not(typeCheck ctx param.Value t) then
+                    ctx.NewError cp (sprintf "Incompatible types ('%O' and '%O') for %d parameter" param.Value.name t.name (fst idxmr.Value))
+            (il, t)
+
+    let doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
+        match ctx.FindFunction ident with
+        | SymSearch.TypeCast t ->
+            let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
+            let callInstr, typ = callParamToIl ctx cp None
+            // TODO some real conversion ? Conv_I4 + explicit operators?
             ([
-                match a with
-                | Value((VIdent _) as v) -> yield! (valueToValueKind ctx v et true |> fst)
-                | _ -> failwith "IE"
-            ], ctx.sysTypes.pointer)
-        | UnitOp -> ([], ctx.sysTypes.unit) // call `WriteLn();`
-        | _ -> failwith "IE"
-        |> ValueKind
+                yield! callInstr
+                typeRefToConv t.raw
+            ], Some t)
+        | SymSearch.RealFunction rf ->
+            match rf with
+            | Referenced(mr,np), Some f ->
+                ([
+                    yield! cp
+                    |> List.mapi (fun i p -> fst <| callParamToIl ctx p (Some(i, mr)))
+                    |> List.concat
+                    // TODO recursive call nested! For now before nested routine is added call can be generated
+                    yield! !np
+                    |> List.map (fun (VariableSymLoad vlt) -> loadSymList ctx false true vlt |> fst)
+                    |> List.concat
+                    yield f
+                    if popResult && mr.result.IsSome then
+                        yield +Pop
+                 ], mr.result)
+            | Intrinsic i, _ ->
+                let doWrite() =
+                    let file, cp =
+                        match cp with
+                        | ParamIdent id::tail ->
+                            let sl, typ = findSymbolAndGetPtr ctx id
+                            if typ.raw = ctx.sysTypes.file.raw then Some sl, tail
+                            else None, cp
+                        | _ -> None, cp
+                    let file() = if file.IsNone then fst <| findSymbolAndGetPtr ctx (stdIdent "STDOUTPUTFILE")
+                                 else file.Value
 
-    match exprToMetaExpr exprEl expectedType refRes with
-    | ValueKind (a, at) ->
-        [
-         yield! a
-         if expectedType.IsSome then
-            let typ = expectedType.Value
-            match typ.kind with | TkOrd _ | TkFloat _ -> yield typeRefToConv typ.raw | _ -> ()
-        ], at
+                    let doParam = fun (cp: CallParam) ->
+                        let someInt = Some ctx.sysTypes.int32
+                        let e,w,p = match cp with
+                                    | ParamExpr(TupleExpr[v;w;p]) -> ParamExpr(v),fst(exprToIl ctx w someInt),fst(exprToIl ctx p someInt)
+                                    | ParamExpr(TupleExpr[v;w]) -> ParamExpr(v),fst(exprToIl ctx w someInt),[+Ldc_I4 0]
+                                    | _ -> cp,[+Ldc_I4 0],[+Ldc_I4 0]
+                        let valParam, typ = callParamToIl ctx e None
 
-and exprToIl = exprToIlGen false
+                        if typ = ctx.sysTypes.unit then
+                            []
+                        else
+                            match typ.kind with
+                            | TkOrd(OkInteger,_) -> "WRITEINTF"
+                            | TkOrd(OkBool,_) -> "WRITEBOOLEANF"
+                            | TkOrd(OkChar,_) -> "WRITECHARF"
+                            | TkFloat _ -> "WRITEREALF"
+                            | TkPointer _ -> "WRITEPOINTERF"
+                            | TkArray(AkSString _,_,_) -> "WRITESTRINGF"
+                            | _ -> ctx.NewError cp (sprintf "Unknown type kind of expression for Write/WriteLn: %O" cp); ""
+                            |> ctx.FindMethodReferenceOpt |>
+                            function
+                            | Some subWrite ->
+                                [
+                                    yield! file()
+                                    +Ldnull
+                                    yield! valParam
+                                    yield! w
+                                    yield! p
+                                    +Call subWrite
+                                ]
+                            | None -> []
+                    file, cp |> List.collect doParam
 
-and callParamToIl ctx cp (idxmr: Option<int * MethodInfo>) =
-    let param, byRef =
-        match idxmr with
-        | Some(idx,{paramList=pl}) ->
-            let p = pl.[idx]
-            Some p.typ, p.ref
-        | _ -> None, false
-    match cp with
-    | ParamExpr expr -> exprToIl ctx (if byRef then Addr expr else expr) param
-    | ParamIdent id ->
-        let useRef = byRef || (param.IsSome && (param.Value = ctx.sysTypes.constParam || param.Value = ctx.sysTypes.varParam))
-        if useRef then findSymbolAndGetPtr ctx id
-        else findSymbolAndLoad ctx id
-    |> fun(il, t) ->
-        if param.IsSome then
-            if not(typeCheck ctx param.Value t) then
-                ctx.NewError cp (sprintf "Incompatible types ('%O' and '%O') for %d parameter" param.Value.name t.name (fst idxmr.Value))
-        (il, t)
+                let doRead() =
+                    let file, cp =
+                        match cp with
+                        | ParamIdent id::tail ->
+                            let sl, typ = findSymbolAndGetPtr ctx id
+                            if typ.raw = ctx.sysTypes.file.raw then Some sl, tail
+                            else None, cp
+                        | _ -> None, cp
+                    let file() = if file.IsNone then fst <| findSymbolAndGetPtr ctx (stdIdent "STDINPUTFILE")
+                                 else file.Value
 
-and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
-    match ctx.FindFunction ident with
-    | SymSearch.TypeCast t ->
-        let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
-        let callInstr, typ = callParamToIl ctx cp None
-        // TODO some real conversion ? Conv_I4 + explicit operators?
-        ([
-            yield! callInstr
-            typeRefToConv t.raw
-        ], Some t)
-    | SymSearch.RealFunction rf ->
-        match rf with
-        | Referenced(mr,np), Some f ->
-            ([
-                yield! cp
-                |> List.mapi (fun i p -> fst <| callParamToIl ctx p (Some(i, mr)))
-                |> List.concat
-                // TODO recursive call nested! For now before nested routine is added call can be generated
-                yield! !np
-                |> List.map (fun (VariableSymLoad vlt) -> loadSymList ctx false true vlt |> fst)
-                |> List.concat
-                yield f
-                if popResult && mr.result.IsSome then
-                    yield +Pop
-             ], mr.result)
-        | Intrinsic i, _ ->
-            let doWrite() =
-                let file, cp =
-                    match cp with
-                    | ParamIdent id::tail ->
-                        let sl, typ = findSymbolAndGetPtr ctx id
-                        if typ.raw = ctx.sysTypes.file.raw then Some sl, tail
-                        else None, cp
-                    | _ -> None, cp
-                let file() = if file.IsNone then fst <| findSymbolAndGetPtr ctx (stdIdent "STDOUTPUTFILE")
-                             else file.Value
-
-                let doParam = fun (cp: CallParam) ->
-                    let someInt = Some ctx.sysTypes.int32
-                    let e,w,p = match cp with
-                                | ParamExpr(TupleExpr[v;w;p]) -> ParamExpr(v),fst(exprToIl ctx w someInt),fst(exprToIl ctx p someInt)
-                                | ParamExpr(TupleExpr[v;w]) -> ParamExpr(v),fst(exprToIl ctx w someInt),[+Ldc_I4 0]
-                                | _ -> cp,[+Ldc_I4 0],[+Ldc_I4 0]
-                    let valParam, typ = callParamToIl ctx e None
-
-                    if typ = ctx.sysTypes.unit then
-                        []
-                    else
-                        match typ.kind with
-                        | TkOrd(OkInteger,_) -> "WRITEINTF"
-                        | TkOrd(OkBool,_) -> "WRITEBOOLEANF"
-                        | TkOrd(OkChar,_) -> "WRITECHARF"
-                        | TkFloat _ -> "WRITEREALF"
-                        | TkPointer _ -> "WRITEPOINTERF"
-                        | TkArray(AkSString _,_,_) -> "WRITESTRINGF"
-                        | _ -> ctx.NewError cp (sprintf "Unknown type kind of expression for Write/WriteLn: %O" cp); ""
-                        |> ctx.FindMethodReferenceOpt |>
-                        function
-                        | Some subWrite ->
+                    let doParam = function
+                        | ParamIdent id ->
+                            let valParam, typ = findSymbolAndGetPtr ctx id
+                            let subWrite = match typ.kind with
+                                           | TkOrd(OkInteger,OtUByte _) -> "READBYTE"
+                                           | TkOrd(OkInteger,OtSByte _) -> "READSHORTINT"
+                                           | TkOrd(OkInteger,OtUWord _) -> "READWORD"
+                                           | TkOrd(OkInteger,OtSWord _) -> "READSMALLINT"
+                                           | TkOrd(OkInteger,OtULong _) -> "READINT"
+                                           | TkOrd(OkInteger,OtSLong _) -> "READINT"
+                                           | TkOrd(OkBool,_) -> "READBOOLEAN"
+                                           | TkOrd(OkChar,_) -> "READCH"
+                                           | TkFloat _ -> "READREAL"
+                                           | TkArray(AkSString _,_,_) -> "READSTRING"
+                                           |> ctx.FindMethodReference
                             [
                                 yield! file()
                                 +Ldnull
                                 yield! valParam
-                                yield! w
-                                yield! p
                                 +Call subWrite
                             ]
-                        | None -> []
-                file, cp |> List.collect doParam
+                        | _ -> failwith "IE"
+                    file, cp |> List.collect doParam
 
-            let doRead() =
-                let file, cp =
+                let deltaModify delta id =
+                    let inst, typ = findSymbolAndGetPtr ctx id
+                    let indKind = typ.IndKind
+                    ([ // TODO change indirect to normal load/store?
+                     yield! inst
+                     +Dup
+                     +Ldind indKind
+                     +Ldc_I4 delta
+                     +AddInst
+                     +Stind indKind
+                    ], None)
+                let deltaAdd delta cp =
+                    let inst, typ = callParamToIl ctx cp None
+                    ([ // TODO check type -> should be ordinal
+                     yield! inst
+                     +Ldc_I4 delta
+                     +AddInst
+                    ], Some typ)
+                match i, cp with
+                | IncProc, [ParamIdent id] -> deltaModify +1 id
+                | DecProc, [ParamIdent id] -> deltaModify -1 id
+                | SuccProc, [cp] -> deltaAdd +1 cp
+                | PredProc, [cp] -> deltaAdd -1 cp
+                | ContinueProc, [] -> match ctx.loop.TryPeek() with
+                                      | true, (continueLabel, _) ->
+                                        ([IlBranch(IlBr, continueLabel)], None)
+                                      | _ -> failwith "IE"
+                | BreakProc, [] -> match ctx.loop.TryPeek() with
+                                   | true, (_, breakLabel) ->
+                                    ([IlBranch(IlBr, breakLabel)], None)
+                                   | _ -> failwith "IE"
+                | ExitProc, [] -> // TODO handle Exit(result);
+                    ([
+                        +.Ret
+                     ], None)
+                | WriteProc, _ ->
+                    let _, writeParams = doWrite()
+                    (writeParams, None)
+                | WriteLnProc, _ ->
+                    let file, writeParams = doWrite()
+                    ([
+                        yield! writeParams
+                        yield! file()
+                        +Ldnull
+                        +Call(ctx.FindMethodReference "WRITENEWLINE")
+                     ], None)
+                | ReadProc, _ ->
+                    let _, readParams = doRead()
+                    (readParams, None)
+                | ReadLnProc, _ ->
+                    let file, readParams = doRead()
+                    ([
+                        yield! readParams
+                        yield! file()
+                        +Ldnull
+                        +Call(ctx.FindMethodReference "READNEWLINE")
+                     ], None)
+                | WriteLineProc, _ ->
+                    let high = ref 0
+                    let cparams,str = cp |> List.mapi (fun i p -> incr high; callParamToIl ctx p None, sprintf "{%d}" i) |> List.unzip
+                    let str = String.Concat(str)
+                    ([
+                        +Ldstr str
+                        +Ldc_I4 !high
+                        +Newarr ctx.sysTypes.net_obj.raw
+                        yield! cparams
+                               |> List.mapi (
+                                               fun idx (i, t) ->
+                                                   let putArrayElem i elems =
+                                                       +Dup::+Ldc_I4 idx::i @
+                                                       [yield! elems ; +Stelem Elem_Ref]
+                                                   match t with
+                                                   | StrType ->
+                                                       [+Call ctx.sysProc.PtrToStringAnsi]
+                                                       // TODO critical handle ptr to strings! bug found in .NET 32 bit
+                                                       |> putArrayElem (match ilToAtom i with | [Ldsfld f] -> [+Ldsflda f] | _ -> i)
+                                                   | ChrType ->
+                                                       [
+                                                           +Conv Conv_U1
+                                                           +Call ctx.sysProc.ConvertU1ToChar
+                                                           +Box ctx.details.moduleBuilder.TypeSystem.Char
+                                                       ]
+                                                       |> putArrayElem i
+                                                   | _ -> [+Box t.raw] |> putArrayElem i
+                                            )
+                               |> List.concat
+                        +Call ctx.sysProc.WriteLine
+                     ], None)
+                | NewProc, [ParamIdent id] ->
+                    let ils, t = findSymbolAndGetPtr ctx id
+                    let t = match t.kind with
+                            | TkPointer pt -> pt
+                            | _ -> failwith "IE"
+                    ([
+                        yield! ils
+                        +Ldc_I4 t.SizeOf
+                        +Call ctx.sysProc.GetMem
+                        +Dup
+                        +Initobj t.raw
+                        +Stind Ind_U
+                    ], None)
+                | DisposeProc, [ParamIdent id] ->
+                    let ils, _ = findSymbolAndLoad ctx id
+                    ([
+                        yield! ils
+                        +Call ctx.sysProc.FreeMem
+                    ], None)
+                | HaltProc, _ ->
+                    let exitCode = match cp with
+                                   | [] -> [+Ldc_I4 0]
+                                   | [cp] -> fst <| callParamToIl ctx cp None // TODO typecheck ?
+                                   | _ -> failwith "IE only one param allowed"
+                    ([
+                         yield! exitCode
+                         +Call(ctx.FindMethodReference "EXITPROCESS")
+                         // +Call ctx.sysProc.Exit
+                    ], None)
+                | ChrFunc, _ ->
+                    let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
+                    let callInstr, typ = callParamToIl ctx cp None
+                    ([
+                        yield! callInstr
+                        if popResult then yield +Pop // TODO or not generate call ?
+                     ], Some ctx.sysTypes.char)
+                | OrdFunc, _ ->
+                    let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
+                    let callInstr, typ = callParamToIl ctx cp None
+                    ([
+                        yield! callInstr
+                        if popResult then yield +Pop // TODO or not generate call ?
+                     ], Some ctx.sysTypes.int32)
+                | TruncFunc, _ ->
                     match cp with
-                    | ParamIdent id::tail ->
-                        let sl, typ = findSymbolAndGetPtr ctx id
-                        if typ.raw = ctx.sysTypes.file.raw then Some sl, tail
-                        else None, cp
-                    | _ -> None, cp
-                let file() = if file.IsNone then fst <| findSymbolAndGetPtr ctx (stdIdent "STDINPUTFILE")
-                             else file.Value
-
-                let doParam = function
-                    | ParamIdent id ->
-                        let valParam, typ = findSymbolAndGetPtr ctx id
-                        let subWrite = match typ.kind with
-                                       | TkOrd(OkInteger,OtUByte _) -> "READBYTE"
-                                       | TkOrd(OkInteger,OtSByte _) -> "READSHORTINT"
-                                       | TkOrd(OkInteger,OtUWord _) -> "READWORD"
-                                       | TkOrd(OkInteger,OtSWord _) -> "READSMALLINT"
-                                       | TkOrd(OkInteger,OtULong _) -> "READINT"
-                                       | TkOrd(OkInteger,OtSLong _) -> "READINT"
-                                       | TkOrd(OkBool,_) -> "READBOOLEAN"
-                                       | TkOrd(OkChar,_) -> "READCH"
-                                       | TkFloat _ -> "READREAL"
-                                       | TkArray(AkSString _,_,_) -> "READSTRING"
-                                       |> ctx.FindMethodReference
-                        [
-                            yield! file()
-                            +Ldnull
-                            yield! valParam
-                            +Call subWrite
-                        ]
-                    | _ -> failwith "IE"
-                file, cp |> List.collect doParam
-
-            let deltaModify delta id =
-                let inst, typ = findSymbolAndGetPtr ctx id
-                let indKind = typ.IndKind
-                ([ // TODO change indirect to normal load/store?
-                 yield! inst
-                 +Dup
-                 +Ldind indKind
-                 +Ldc_I4 delta
-                 +AddInst
-                 +Stind indKind
-                ], None)
-            let deltaAdd delta cp =
-                let inst, typ = callParamToIl ctx cp None
-                ([ // TODO check type -> should be ordinal
-                 yield! inst
-                 +Ldc_I4 delta
-                 +AddInst
-                ], Some typ)
-            match i, cp with
-            | IncProc, [ParamIdent id] -> deltaModify +1 id
-            | DecProc, [ParamIdent id] -> deltaModify -1 id
-            | SuccProc, [cp] -> deltaAdd +1 cp
-            | PredProc, [cp] -> deltaAdd -1 cp
-            | ContinueProc, [] -> match ctx.loop.TryPeek() with
-                                  | true, (continueLabel, _) ->
-                                    ([IlBranch(IlBr, continueLabel)], None)
-                                  | _ -> failwith "IE"
-            | BreakProc, [] -> match ctx.loop.TryPeek() with
-                               | true, (_, breakLabel) ->
-                                ([IlBranch(IlBr, breakLabel)], None)
-                               | _ -> failwith "IE"
-            | ExitProc, [] -> // TODO handle Exit(result);
-                ([
-                    +.Ret
-                 ], None)
-            | WriteProc, _ ->
-                let _, writeParams = doWrite()
-                (writeParams, None)
-            | WriteLnProc, _ ->
-                let file, writeParams = doWrite()
-                ([
-                    yield! writeParams
-                    yield! file()
-                    +Ldnull
-                    +Call(ctx.FindMethodReference "WRITENEWLINE")
-                 ], None)
-            | ReadProc, _ ->
-                let _, readParams = doRead()
-                (readParams, None)
-            | ReadLnProc, _ ->
-                let file, readParams = doRead()
-                ([
-                    yield! readParams
-                    yield! file()
-                    +Ldnull
-                    +Call(ctx.FindMethodReference "READNEWLINE")
-                 ], None)
-            | WriteLineProc, _ ->
-                let high = ref 0
-                let cparams,str = cp |> List.mapi (fun i p -> incr high; callParamToIl ctx p None, sprintf "{%d}" i) |> List.unzip
-                let str = String.Concat(str)
-                ([
-                    +Ldstr str
-                    +Ldc_I4 !high
-                    +Newarr ctx.sysTypes.net_obj.raw
-                    yield! cparams
-                           |> List.mapi (
-                                           fun idx (i, t) ->
-                                               let putArrayElem i elems =
-                                                   +Dup::+Ldc_I4 idx::i @
-                                                   [yield! elems ; +Stelem Elem_Ref]
-                                               match t with
-                                               | StrType ->
-                                                   [+Call ctx.sysProc.PtrToStringAnsi]
-                                                   // TODO critical handle ptr to strings! bug found in .NET 32 bit
-                                                   |> putArrayElem (match ilToAtom i with | [Ldsfld f] -> [+Ldsflda f] | _ -> i)
-                                               | ChrType ->
-                                                   [
-                                                       +Conv Conv_U1
-                                                       +Call ctx.sysProc.ConvertU1ToChar
-                                                       +Box ctx.details.moduleBuilder.TypeSystem.Char
-                                                   ]
-                                                   |> putArrayElem i
-                                               | _ -> [+Box t.raw] |> putArrayElem i
-                                        )
-                           |> List.concat
-                    +Call ctx.sysProc.WriteLine
-                 ], None)
-            | NewProc, [ParamIdent id] ->
-                let ils, t = findSymbolAndGetPtr ctx id
-                let t = match t.kind with
-                        | TkPointer pt -> pt
-                        | _ -> failwith "IE"
-                ([
-                    yield! ils
-                    +Ldc_I4 t.SizeOf
-                    +Call ctx.sysProc.GetMem
-                    +Dup
-                    +Initobj t.raw
-                    +Stind Ind_U
-                ], None)
-            | DisposeProc, [ParamIdent id] ->
-                let ils, _ = findSymbolAndLoad ctx id
-                ([
-                    yield! ils
-                    +Call ctx.sysProc.FreeMem
-                ], None)
-            | HaltProc, _ ->
-                let exitCode = match cp with
-                               | [] -> [+Ldc_I4 0]
-                               | [cp] -> fst <| callParamToIl ctx cp None // TODO typecheck ?
-                               | _ -> failwith "IE only one param allowed"
-                ([
-                     yield! exitCode
-                     +Call(ctx.FindMethodReference "EXITPROCESS")
-                     // +Call ctx.sysProc.Exit
-                ], None)
-            | ChrFunc, _ ->
-                let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
-                let callInstr, typ = callParamToIl ctx cp None
-                ([
-                    yield! callInstr
-                    if popResult then yield +Pop // TODO or not generate call ?
-                 ], Some ctx.sysTypes.char)
-            | OrdFunc, _ ->
-                let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
-                let callInstr, typ = callParamToIl ctx cp None
-                ([
-                    yield! callInstr
-                    if popResult then yield +Pop // TODO or not generate call ?
-                 ], Some ctx.sysTypes.int32)
-            | TruncFunc, _ ->
-                match cp with
-                | [cp] ->
-                    let callInstr, typ = callParamToIl ctx cp None
-                    match typ with
-                    | FloatType | IntType ->
-                        ([
-                            yield! callInstr
-                            match popResult with
-                            | true  -> +Pop
-                            | false -> +Conv Conv_I8
-                         ], Some ctx.sysTypes.int64)
+                    | [cp] ->
+                        let callInstr, typ = callParamToIl ctx cp None
+                        match typ with
+                        | FloatType | IntType ->
+                            ([
+                                yield! callInstr
+                                match popResult with
+                                | true  -> +Pop
+                                | false -> +Conv Conv_I8
+                             ], Some ctx.sysTypes.int64)
+                        | _ ->
+                            ctx.NewError cp (sprintf "Expected float type but '%O' found" typ.name)
+                            ([], Some ctx.sysTypes.int64)
                     | _ ->
-                        ctx.NewError cp (sprintf "Expected float type but '%O' found" typ.name)
+                        ctx.NewError ident (sprintf "Expected 1 parameter but found %d" (cp.Length))
                         ([], Some ctx.sysTypes.int64)
-                | _ ->
-                    ctx.NewError ident (sprintf "Expected 1 parameter but found %d" (cp.Length))
-                    ([], Some ctx.sysTypes.int64)
-            | RoundFunc, _ ->
-                match cp with
-                | [cp] ->
-                    let callInstr, typ = callParamToIl ctx cp None
-                    match typ with
-                    | FloatType | IntType ->
-                        ([
-                            yield! callInstr
-                            +Call ctx.sysProc.Round
-                            match popResult with
-                            | true  -> +Pop
-                            | false -> +Conv Conv_I8
-                         ], Some ctx.sysTypes.int64)
+                | RoundFunc, _ ->
+                    match cp with
+                    | [cp] ->
+                        let callInstr, typ = callParamToIl ctx cp None
+                        match typ with
+                        | FloatType | IntType ->
+                            ([
+                                yield! callInstr
+                                +Call ctx.sysProc.Round
+                                match popResult with
+                                | true  -> +Pop
+                                | false -> +Conv Conv_I8
+                             ], Some ctx.sysTypes.int64)
+                        | _ ->
+                            ctx.NewError cp (sprintf "Expected float type but '%O' found" typ.name)
+                            ([], Some ctx.sysTypes.int64)
                     | _ ->
-                        ctx.NewError cp (sprintf "Expected float type but '%O' found" typ.name)
+                        ctx.NewError ident (sprintf "Expected 1 parameter but found %d" (cp.Length))
                         ([], Some ctx.sysTypes.int64)
-                | _ ->
-                    ctx.NewError ident (sprintf "Expected 1 parameter but found %d" (cp.Length))
-                    ([], Some ctx.sysTypes.int64)
-            | SizeOfFunc, [ParamIdent id] ->
-                let t = match id with
-                        | VariablePasType ctx t -> t
-                        | TypePasType ctx t -> t
-                        | _ -> failwithf "IE cannot get size of %A" id
-                ([
-                    +Ldc_I4 t.SizeOf
-                    if popResult then +Pop // TODO or not generate call ?
-                 ], Some ctx.sysTypes.int32)
+                | SizeOfFunc, [ParamIdent id] ->
+                    let t = match id with
+                            | VariablePasType ctx t -> t
+                            | TypePasType ctx t -> t
+                            | _ -> failwithf "IE cannot get size of %A" id
+                    ([
+                        +Ldc_I4 t.SizeOf
+                        if popResult then +Pop // TODO or not generate call ?
+                     ], Some ctx.sysTypes.int32)
+                | _ -> failwith "IE"
             | _ -> failwith "IE"
         | _ -> failwith "IE"
-    | _ -> failwith "IE"
 
-and inline eval1 ctx typ e1 = evalConstExpr ctx typ e1
+    let inline eval1 ctx typ e1 = evalConstExpr ctx typ e1
 
-and SetValueToCER ctx typ al =
-    let inline eval1 e1 = eval1 ctx typ e1
+    let SetValueToCER ctx typ al =
+        let inline eval1 e1 = eval1 ctx typ e1
 
-    let exprToByteValue = function
-        | CERString s when s.Length = 1 -> byte(s.Chars 0), ctx.sysTypes.char
-        | CERInt(i,t) when i >= 0 && i <= 255 -> byte(i), t
-        | _ -> failwith "IE"
-
-    let exprToSetItem = function
-        | SValue e -> let r, t = eval1 e |> exprToByteValue in [r], t
-        | SRange(e1, e2) ->
-            // TODO types check
-            let r1, t1 = eval1 e1 |> exprToByteValue
-            let r2, t2 = eval1 e2 |> exprToByteValue
-            if r2 < r1 then failwith "IE"
-            [r1..r2], t1
-
-    let finalSet: byte[] = Array.zeroCreate 256
-    let items, enumTyp =
-        List.map exprToSetItem al
-        |> List.unzip
-        |> (fun (i, t) -> i, t.Head)
-    List.concat items
-    |> List.fold (fun s i -> if Set.contains i s then failwith "IE" else Set.add i s) Set.empty // TODO contains better error
-    |> Set.iter (fun i -> finalSet.[int i] <- 0xFFuy)
-    match typ, enumTyp with
-    | Some t, _ -> CEROrdSet(finalSet, t)
-    | None, EnumType | None, ChrType ->
-        let typeSet =
-            match ctx.enumSet.TryGetValue enumTyp with
-            | true, t -> t
-            | _ -> ctx.AddTypeSetForEnum enumTyp AnonName
-        CEROrdSet(finalSet, typeSet)
-    | _ -> failwith "IE"
-
-and valueToValueKind ctx v (expectedType: PasType option) byRef =
-    match v, byRef with
-    | VIdent _, true | VSet _, true -> ()
-    | _, false -> ()
-    | _ -> failwith "IE"
-
-    match v, expectedType with
-    | VInteger i, Some FloatType -> [+Ldc_R4(single i)], ctx.sysTypes.single
-    | VInteger i, _ -> [+Ldc_I4 i], ctx.sysTypes.int32
-    | VFloat f, _ -> [+Ldc_R4 (single f)], ctx.sysTypes.single
-    | VIdent i, _ -> if byRef then findSymbolAndGetPtr ctx i else findSymbolAndLoad ctx i
-    | VString s, _ ->
-        let doChr() =
-            let cv = int(s.Chars 0)
-            [+Ldc_I4 cv], ctx.sysTypes.char
-        // TODO protect string as char interpretation when needed
-        match expectedType with
-        | None when s.Length = 1 -> doChr()
-        | Some ChrType ->
-            if s.Length <> 1 then failwith "IE"
-            else doChr()
-        | _ -> // handle string
-            ([
-                strToSStr s
-                |> ctx.details.AddBytesConst
-                |> Ldsfld |> (~+)
-            ], ctx.sysTypes.string)
-    | VCallResult(ce), _ ->
-        match doCall ctx ce false with
-        | ils, Some t -> ils, t
-        | _ -> failwith "IE"
-    | VNil, _ -> [+Ldnull], ctx.sysTypes.pointer
-    | VSet al, _ ->
-        let bytes, ft = match SetValueToCER ctx expectedType al with
-                        | CEROrdSet(b,t) -> b, t
-                        | _ -> failwith "IE"
-        let fd = ctx.details.AddBytesConst bytes
-        [+(if byRef then Ldsflda fd else Ldsfld fd)], ft
-
-and chainReaderFactory (ctx: Ctx) asValue addr ltp =
-    let valOrPtr v p (t: TypeReference) = (if asValue || (t :? PointerType && addr = false) then v else p) |> List.singleton
-    match ltp with
-    | LTPVar(v, vt) -> match v with
-                       | LocalVariable v -> valOrPtr +(Ldloc v) +(Ldloca v) vt.raw
-                       | GlobalVariable v -> valOrPtr +(Ldsfld v) +(Ldsflda v) vt.raw
-                       | ParamVariable(r, v) -> // handle by ref params
-                         match r with
-                         | RefNone | RefConst -> valOrPtr +(Ldarg v) +(Ldarga v) vt.raw
-                         | RefVar ->
-                             [
-                                +Ldarg v
-                                if asValue then
-                                    +Ldobj vt.raw
-                             ]
-                         | RefUntypedVar | RefUntypedConst ->
-                             if asValue then failwith "IE"
-                             [+Ldarg v]
-    | LTPStruct (fld, _) -> valOrPtr +(Ldfld fld) +(Ldflda fld) fld.FieldType
-    | LTPDeref (dt, force) ->
-        match dt, addr, force, asValue with
-        | _, true, _, _ -> []
-        | NumericType, _, _, _ | ChrType, _, _, _ -> dt.IndKind |> Ldind |> (~+) |> List.singleton
-        | _, _, true, _ | _, _, _, true ->
-            if dt.raw.MetadataType <> MetadataType.ValueType then failwith "IE"
-            [+Ldobj dt.raw]
-        | _ -> []
-    | LTPNone -> []
-
-and chainWriterFactory (ctx: Ctx) = function
-    | LTPVar(v, t) -> match v with
-                      | LocalVariable v -> [+Stloc v]
-                      | GlobalVariable v -> [+Stsfld v]
-                      | ParamVariable(r, v) ->
-                           match r with // handle by ref params
-                           | RefNone | RefConst -> [+Starg v]
-                           | RefVar -> chainWriterFactory ctx (LTPDeref(t, true))
-                           | RefUntypedConst | RefUntypedVar -> failwith "IE"
-    | LTPStruct(fld, _) -> [+Stfld fld]
-    | LTPDeref(dt, _) ->
-        if dt.raw.MetadataType = MetadataType.ValueType then
-            [+Stobj dt.raw]
-        else
-            dt.IndKind |> Stind |> (~+) |> List.singleton
-    | LTPNone -> []
-
-and derefLastTypePoint = function
-    | LTPVar(_, t) -> derefType t
-    | LTPDeref(t, _) -> derefType t
-    | LTPStruct(_, t) -> derefType t
-    | _ -> failwith "cannot deref"
-
-and loadSymList (ctx: Ctx) value addr (sl, t) =
-    let lastPoint = ref LTPNone
-    sl
-    |> List.collect (chainLoadToIl ctx lastPoint (chainReaderFactory ctx false false))
-    |> fun l -> l @ (chainReaderFactory ctx value addr !lastPoint)
-    ,match t with | Some t -> t | _ -> failwith "IE"
-
-and findSymbolInternal value addr (ctx: Ctx) ident =
-    ctx.FindSymbol ident
-    |> chainToSLList
-    |> loadSymList ctx value addr
-
-and findSymbolAndLoad = findSymbolInternal true false
-
-and findSymbolAndGetPtr = findSymbolInternal false true
-
-and chainLoadToIl ctx lastType factory symload =
-    let res = factory !lastType
-    match symload with
-    | VariableLoad vs ->
-        lastType := LTPVar vs
-        res
-    | DerefLoad ->
-        let dt = derefLastTypePoint !lastType
-        match dt.kind with
-        // TODO what with arrays ?
-        | TkRecord _ | TkArray _ -> lastType := LTPDeref(dt, false) // special case like someRec^.Field or str^[4]
-        | _ -> lastType := LTPDeref(dt, true)
-        res
-    | ElemLoad (exprs, rt) ->
-        lastType := LTPDeref(rt, false)
-        [
-            yield! res
-            for e, d in exprs do
-                // do not minus if not needed
-                yield! fst <| exprToIl ctx (Multiply(Minus(e,d.low |> VInteger |> Value), d.elemSize |> VInteger |> Value)) (Some ctx.sysTypes.int32)
-                yield +AddInst
-        ]
-    | StructLoad fds ->
-        let instr, last, count = List.fold (fun (acc, _, c) f -> +Ldflda (fst f)::acc, f, c+1) ([],Unchecked.defaultof<_>,0) fds
-        lastType := LTPStruct last
-        res @ (List.take (count-1) (instr |> List.rev))
-    | ValueLoad evs ->
-        lastType := LTPNone
-        res @
-        [
-            match evs with
-            | ValueInt i -> +Ldc_I4 i
-            | ValueFloat f -> +Ldc_R4 f
-        ]
-    | CallableLoad (Referenced(mr,_)) ->
-        if mr.result.IsNone then failwith "IE"
-        [+Call mr.raw]
-
-and evalConstExpr (ctx: Ctx) typ expr =
-
-    let inline eval2 e1 e2 = (evalConstExpr ctx typ e1, evalConstExpr ctx typ e2)
-    let inline eval1 e1 = eval1 ctx typ e1
-
-    match expr with
-    | Value v ->
-        match v with
-        | VFloat f -> CERFloat <| single f
-        | VInteger i -> CERInt(i, ctx.sysTypes.int32)
-        | VString s -> CERString s
-        | VIdent id ->
-            match ctx.FindConstSym id with
-            | ValueInt i, t ->
-                // TODO Type check with typ
-                match t with
-                | EnumType -> CERInt(i, t)
-                | _ -> CERInt(i, ctx.sysTypes.int32)
+        let exprToByteValue = function
+            | CERString s when s.Length = 1 -> byte(s.Chars 0), ctx.sysTypes.char
+            | CERInt(i,t) when i >= 0 && i <= 255 -> byte(i), t
             | _ -> failwith "IE"
-        | VCallResult _ -> CERUnknown
-        | VNil -> CERUnknown
-        | VSet al -> SetValueToCER ctx typ al
-    | Expr e -> evalConstExpr ctx typ e
-    | Add(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 (Some (+)) (Some (+)  )
-    | Multiply(e1, e2) -> eval2 e1 e2 |> evalExprOp2 None       (Some (*)  )
-    | Minus(e1, e2)    -> eval2 e1 e2 |> evalExprOp2 None       (Some (-)  )
-    | Divide(e1, e2)   -> eval2 e1 e2 |> evalExprOp2 None       (Some (/)  )
-    | And(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (&&&))
-    | Or(e1, e2)       -> eval2 e1 e2 |> evalExprOp2 None       (Some (|||))
-    | Xor(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (^^^))
-    | Mod(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (%)  )
-    | Div(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (/)  )
-    | Shl(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (<<<))
-    | Shr(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (>>>))
-    | Not(e1)          -> eval1 e1 |> evalExprOp1 None (Some (~~~))
-    | UnaryPlus(e1)    -> eval1 e1 |> evalExprOp1 None (Some Microsoft.FSharp.Core.Operators.(~+) )
-    | UnaryMinus(e1)   -> eval1 e1 |> evalExprOp1 None (Some (~-) )
-    | _ -> CERUnknown
-    (*
-    | As of ExprEl * ExprEl
-    | Addr of ExprEl
-    | Equal of ExprEl * ExprEl
-    | NotEqual of ExprEl * ExprEl
-    | StrictlyLessThan of ExprEl * ExprEl
-    | StrictlyGreaterThan of ExprEl * ExprEl
-    | LessThanOrEqual of ExprEl * ExprEl
-    | GreaterThanOrEqual of ExprEl * ExprEl
-    | Is of ExprEl * ExprEl
-    | In of ExprEl * ExprEl
-    *)
+
+        let exprToSetItem = function
+            | SValue e -> let r, t = eval1 e |> exprToByteValue in [r], t
+            | SRange(e1, e2) ->
+                // TODO types check
+                let r1, t1 = eval1 e1 |> exprToByteValue
+                let r2, t2 = eval1 e2 |> exprToByteValue
+                if r2 < r1 then failwith "IE"
+                [r1..r2], t1
+
+        let finalSet: byte[] = Array.zeroCreate 256
+        let items, enumTyp =
+            List.map exprToSetItem al
+            |> List.unzip
+            |> (fun (i, t) -> i, t.Head)
+        List.concat items
+        |> List.fold (fun s i -> if Set.contains i s then failwith "IE" else Set.add i s) Set.empty // TODO contains better error
+        |> Set.iter (fun i -> finalSet.[int i] <- 0xFFuy)
+        match typ, enumTyp with
+        | Some t, _ -> CEROrdSet(finalSet, t)
+        | None, EnumType | None, ChrType ->
+            let typeSet =
+                match ctx.enumSet.TryGetValue enumTyp with
+                | true, t -> t
+                | _ -> ctx.AddTypeSetForEnum enumTyp AnonName
+            CEROrdSet(finalSet, typeSet)
+        | _ -> failwith "IE"
+
+    let valueToValueKind ctx v (expectedType: PasType option) byRef =
+        match v, byRef with
+        | VIdent _, true | VSet _, true -> ()
+        | _, false -> ()
+        | _ -> failwith "IE"
+
+        match v, expectedType with
+        | VInteger i, Some FloatType -> [+Ldc_R4(single i)], ctx.sysTypes.single
+        | VInteger i, _ -> [+Ldc_I4 i], ctx.sysTypes.int32
+        | VFloat f, _ -> [+Ldc_R4 (single f)], ctx.sysTypes.single
+        | VIdent i, _ -> if byRef then findSymbolAndGetPtr ctx i else findSymbolAndLoad ctx i
+        | VString s, _ ->
+            let doChr() =
+                let cv = int(s.Chars 0)
+                [+Ldc_I4 cv], ctx.sysTypes.char
+            // TODO protect string as char interpretation when needed
+            match expectedType with
+            | None when s.Length = 1 -> doChr()
+            | Some ChrType ->
+                if s.Length <> 1 then failwith "IE"
+                else doChr()
+            | _ -> // handle string
+                ([
+                    strToSStr s
+                    |> ctx.details.AddBytesConst
+                    |> Ldsfld |> (~+)
+                ], ctx.sysTypes.string)
+        | VCallResult(ce), _ ->
+            match doCall ctx ce false with
+            | ils, Some t -> ils, t
+            | _ -> failwith "IE"
+        | VNil, _ -> [+Ldnull], ctx.sysTypes.pointer
+        | VSet al, _ ->
+            let bytes, ft = match SetValueToCER ctx expectedType al with
+                            | CEROrdSet(b,t) -> b, t
+                            | _ -> failwith "IE"
+            let fd = ctx.details.AddBytesConst bytes
+            [+(if byRef then Ldsflda fd else Ldsfld fd)], ft
+
+    let chainReaderFactory (ctx: Ctx) asValue addr ltp =
+        let valOrPtr v p (t: TypeReference) = (if asValue || (t :? PointerType && addr = false) then v else p) |> List.singleton
+        match ltp with
+        | LTPVar(v, vt) -> match v with
+                           | LocalVariable v -> valOrPtr +(Ldloc v) +(Ldloca v) vt.raw
+                           | GlobalVariable v -> valOrPtr +(Ldsfld v) +(Ldsflda v) vt.raw
+                           | ParamVariable(r, v) -> // handle by ref params
+                             match r with
+                             | RefNone | RefConst -> valOrPtr +(Ldarg v) +(Ldarga v) vt.raw
+                             | RefVar ->
+                                 [
+                                    +Ldarg v
+                                    if asValue then
+                                        +Ldobj vt.raw
+                                 ]
+                             | RefUntypedVar | RefUntypedConst ->
+                                 if asValue then failwith "IE"
+                                 [+Ldarg v]
+        | LTPStruct (fld, _) -> valOrPtr +(Ldfld fld) +(Ldflda fld) fld.FieldType
+        | LTPDeref (dt, force) ->
+            match dt, addr, force, asValue with
+            | _, true, _, _ -> []
+            | NumericType, _, _, _ | ChrType, _, _, _ -> dt.IndKind |> Ldind |> (~+) |> List.singleton
+            | _, _, true, _ | _, _, _, true ->
+                if dt.raw.MetadataType <> MetadataType.ValueType then failwith "IE"
+                [+Ldobj dt.raw]
+            | _ -> []
+        | LTPNone -> []
+
+    let chainWriterFactory (ctx: Ctx) = function
+        | LTPVar(v, t) -> match v with
+                          | LocalVariable v -> [+Stloc v]
+                          | GlobalVariable v -> [+Stsfld v]
+                          | ParamVariable(r, v) ->
+                               match r with // handle by ref params
+                               | RefNone | RefConst -> [+Starg v]
+                               | RefVar -> chainWriterFactory ctx (LTPDeref(t, true))
+                               | RefUntypedConst | RefUntypedVar -> failwith "IE"
+        | LTPStruct(fld, _) -> [+Stfld fld]
+        | LTPDeref(dt, _) ->
+            if dt.raw.MetadataType = MetadataType.ValueType then
+                [+Stobj dt.raw]
+            else
+                dt.IndKind |> Stind |> (~+) |> List.singleton
+        | LTPNone -> []
+
+    let derefLastTypePoint = function
+        | LTPVar(_, t) -> derefType t
+        | LTPDeref(t, _) -> derefType t
+        | LTPStruct(_, t) -> derefType t
+        | _ -> failwith "cannot deref"
+
+    let loadSymList (ctx: Ctx) value addr (sl, t) =
+        let lastPoint = ref LTPNone
+        sl
+        |> List.collect (chainLoadToIl ctx lastPoint (chainReaderFactory ctx false false))
+        |> fun l -> l @ (chainReaderFactory ctx value addr !lastPoint)
+        ,match t with | Some t -> t | _ -> failwith "IE"
+
+    let findSymbolInternal value addr (ctx: Ctx) ident =
+        ctx.FindSymbol ident
+        |> chainToSLList
+        |> loadSymList ctx value addr
+
+    let findSymbolAndLoad = findSymbolInternal true false
+
+    let findSymbolAndGetPtr = findSymbolInternal false true
+
+    let chainLoadToIl ctx lastType factory symload =
+        let res = factory !lastType
+        match symload with
+        | VariableLoad vs ->
+            lastType := LTPVar vs
+            res
+        | DerefLoad ->
+            let dt = derefLastTypePoint !lastType
+            match dt.kind with
+            // TODO what with arrays ?
+            | TkRecord _ | TkArray _ -> lastType := LTPDeref(dt, false) // special case like someRec^.Field or str^[4]
+            | _ -> lastType := LTPDeref(dt, true)
+            res
+        | ElemLoad (exprs, rt) ->
+            lastType := LTPDeref(rt, false)
+            [
+                yield! res
+                for e, d in exprs do
+                    // do not minus if not needed
+                    yield! fst <| exprToIl ctx (Multiply(Minus(e,d.low |> VInteger |> Value), d.elemSize |> VInteger |> Value)) (Some ctx.sysTypes.int32)
+                    yield +AddInst
+            ]
+        | StructLoad fds ->
+            let instr, last, count = List.fold (fun (acc, _, c) f -> +Ldflda (fst f)::acc, f, c+1) ([],Unchecked.defaultof<_>,0) fds
+            lastType := LTPStruct last
+            res @ (List.take (count-1) (instr |> List.rev))
+        | ValueLoad evs ->
+            lastType := LTPNone
+            res @
+            [
+                match evs with
+                | ValueInt i -> +Ldc_I4 i
+                | ValueFloat f -> +Ldc_R4 f
+            ]
+        | CallableLoad (Referenced(mr,_)) ->
+            if mr.result.IsNone then failwith "IE"
+            [+Call mr.raw]
+
+    let evalConstExpr (ctx: Ctx) typ expr =
+
+        let inline eval2 e1 e2 = (evalConstExpr ctx typ e1, evalConstExpr ctx typ e2)
+        let inline eval1 e1 = eval1 ctx typ e1
+
+        match expr with
+        | Value v ->
+            match v with
+            | VFloat f -> CERFloat <| single f
+            | VInteger i -> CERInt(i, ctx.sysTypes.int32)
+            | VString s -> CERString s
+            | VIdent id ->
+                match ctx.FindConstSym id with
+                | ValueInt i, t ->
+                    // TODO Type check with typ
+                    match t with
+                    | EnumType -> CERInt(i, t)
+                    | _ -> CERInt(i, ctx.sysTypes.int32)
+                | _ -> failwith "IE"
+            | VCallResult _ -> CERUnknown
+            | VNil -> CERUnknown
+            | VSet al -> SetValueToCER ctx typ al
+        | Expr e -> evalConstExpr ctx typ e
+        | Add(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 (Some (+)) (Some (+)  )
+        | Multiply(e1, e2) -> eval2 e1 e2 |> evalExprOp2 None       (Some (*)  )
+        | Minus(e1, e2)    -> eval2 e1 e2 |> evalExprOp2 None       (Some (-)  )
+        | Divide(e1, e2)   -> eval2 e1 e2 |> evalExprOp2 None       (Some (/)  )
+        | And(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (&&&))
+        | Or(e1, e2)       -> eval2 e1 e2 |> evalExprOp2 None       (Some (|||))
+        | Xor(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (^^^))
+        | Mod(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (%)  )
+        | Div(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (/)  )
+        | Shl(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (<<<))
+        | Shr(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 None       (Some (>>>))
+        | Not(e1)          -> eval1 e1 |> evalExprOp1 None (Some (~~~))
+        | UnaryPlus(e1)    -> eval1 e1 |> evalExprOp1 None (Some Microsoft.FSharp.Core.Operators.(~+) )
+        | UnaryMinus(e1)   -> eval1 e1 |> evalExprOp1 None (Some (~-) )
+        | _ -> CERUnknown
+        (*
+        | As of ExprEl * ExprEl
+        | Addr of ExprEl
+        | Equal of ExprEl * ExprEl
+        | NotEqual of ExprEl * ExprEl
+        | StrictlyLessThan of ExprEl * ExprEl
+        | StrictlyGreaterThan of ExprEl * ExprEl
+        | LessThanOrEqual of ExprEl * ExprEl
+        | GreaterThanOrEqual of ExprEl * ExprEl
+        | Is of ExprEl * ExprEl
+        | In of ExprEl * ExprEl
+        *)
 
 
 type Ctx with
+    member self.EvalConstExpr = EvalExpr.evalConstExpr self
+    member self.ExprToIl = EvalExpr.exprToIl self
+    member self.ChainLoadToIl = EvalExpr.chainLoadToIl self
+    member self.ChainWriterFactory = EvalExpr.chainWriterFactory self
+    member self.ChainReaderFactory = EvalExpr.chainReaderFactory self
+    member self.DoCall = EvalExpr.doCall self
     member self.AddType = addMetaType (snd self.symbols.Head)
 
     member self.AddTypePointer count typeName name =
@@ -1215,8 +1222,8 @@ type Ctx with
                 match ad with
                 | DimensionExpr(ConstExpr(l),ConstExpr(h)) ->
                     let pint32 = self.sysTypes.int32
-                    let l = match evalConstExpr self (Some pint32) l with | CERInt(i,_) -> i | _ -> failwith "IE"
-                    let h = match evalConstExpr self (Some pint32) h with | CERInt(i,_) -> i | _ -> failwith "IE"
+                    let l = match self.EvalConstExpr (Some pint32) l with | CERInt(i,_) -> i | _ -> failwith "IE"
+                    let h = match self.EvalConstExpr (Some pint32) h with | CERInt(i,_) -> i | _ -> failwith "IE"
                     if l > h then failwith "IE"
                     let size = (h - l) + 1
                     let newDim = {

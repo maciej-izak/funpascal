@@ -28,7 +28,7 @@ let inline packedToStr(p: bool) = if p then "1" else "0"
 
 let evalConstExprToStr (ctx: Ctx) = function
     | ConstExpr expr ->
-        match evalConstExpr ctx (Some ctx.sysTypes.string) expr with
+        match ctx.EvalConstExpr (Some ctx.sysTypes.string) expr with
         | CERString s -> s
         | CERInt(i,_) -> string i
         | CERUnknown -> ""
@@ -62,7 +62,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
 
     let rec stmtToIl (ctx: Ctx) sysLabels (s: Statement): (MetaInstruction * BranchLabel ref list) =
         let stmtToIlList = stmtListToIlList ctx
-        let exprToIl = exprToIl ctx
+        let exprToIl = ctx.ExprToIl
         let getVar4ForLoop = ctx.FindSymbol >>
                              function
                              | ChainLoad([VariableLoad(vs, vt)], _) -> vs, vt
@@ -73,7 +73,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
              | ChainLoad(symbols,_) ->
                  let ltp = ref LTPNone
                  let loadDest =
-                     let load = List.collect (chainLoadToIl ctx ltp (chainReaderFactory ctx false false)) symbols
+                     let load = List.collect (ctx.ChainLoadToIl ltp (ctx.ChainReaderFactory false false)) symbols
                      match symbols with // needed to proper store values to ref parameters in methods
                      | VariableLoad(ParamVariable(RefVar, i),_)::[] -> +Ldarg i::load
                      | _ -> load
@@ -84,7 +84,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                  [
                      yield! loadDest
                      yield! expr
-                     yield! chainWriterFactory ctx ltp
+                     yield! ctx.ChainWriterFactory ltp
                  ]
              | _ -> failwith "IE"
         let getVar4With idents =
@@ -95,7 +95,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                         match ctx.FindSymbol i with
                         | ChainLoad (symbols, _) ->
                             let ltp = ref LTPNone
-                            let cl = List.collect (chainLoadToIl ctx ltp (chainReaderFactory ctx false false)) symbols
+                            let cl = List.collect (ctx.ChainLoadToIl ltp (ctx.ChainReaderFactory false false)) symbols
                             let vt = match !ltp with // TODO allow structs only ? (ValueType as records/classes only)
                                      | LTPVar(_,t) -> t
                                      | LTPStruct(_,t) -> t
@@ -107,7 +107,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                             let (_, vv) = ctx.EnsureVariable pvt
                             ([
                                 yield! cl
-                                yield! chainReaderFactory ctx false true !ltp
+                                yield! ctx.ChainReaderFactory false true !ltp
                                 +Stloc vv
                             ], (vv, vt.raw :?> TypeDefinition, pvt))
                         | _ -> failwith "IE"
@@ -122,8 +122,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
 
         let (instructions, newSysLabels) =
                 match s with
-                | CallStm ce -> (fst (doCall ctx ce true), [])
-                | IdentStm i -> (fst (doCall ctx (CallExpr(i,[])) true), [])
+                | CallStm ce -> (fst (ctx.DoCall ce true), [])
+                | IdentStm i -> (fst (ctx.DoCall (CallExpr(i,[])) true), [])
                 | AssignStm(ident, expr) ->
                     (getVar4Assign ident (exprToIl expr), [])
                 | IfStm(expr, tb, fb) ->
@@ -381,22 +381,22 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
             let rec addConstAtom pt ce =
                 match pt, ce with
                 | None, ConstExpr expr ->
-                    match evalConstExpr ctx None expr with
+                    match ctx.EvalConstExpr None expr with
                     | CERInt(i, _) -> ConstInt i
                     | CERFloat f -> ConstFloat f
                     | _ -> failwith "IE"
                 | Some t, ConstExpr expr ->
                     match t with
                     | SetType pt ->
-                        match evalConstExpr ctx (Some pt) expr with
+                        match ctx.EvalConstExpr (Some pt) expr with
                         | CEROrdSet(b, _) -> ConstTempValue(b, t)
                         | _ -> failwith "IE"
                     | OrdType ->
-                        match evalConstExpr ctx pt expr with
+                        match ctx.EvalConstExpr pt expr with
                         | CERInt(i,_) -> ConstInt i
                         | _ -> failwith "IE"
                     | StrType ->
-                        match evalConstExpr ctx pt expr with
+                        match ctx.EvalConstExpr pt expr with
                         | CERString s -> ConstString s
                         | _ -> failwith "IE"
                     | _ -> failwith "IE"
