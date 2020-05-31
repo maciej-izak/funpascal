@@ -525,6 +525,7 @@ let typeCheck ctx at bt =
 module EvalExpr =
 
     open PasIntrinsics
+    open EvalConstExpr
 
     let rec exprToIlGen refRes (ctx: Ctx) exprEl expectedType =
         let rec exprToMetaExpr (el: ExprEl) et refRes =
@@ -683,43 +684,6 @@ module EvalExpr =
             | _ -> failwith "IE"
         | _ -> failwith "IE"
 
-    let inline eval1 ctx typ e1 = evalConstExpr ctx typ e1
-
-    let SetValueToCER ctx typ al =
-        let inline eval1 e1 = eval1 ctx typ e1
-
-        let exprToByteValue = function
-            | CERString s when s.Length = 1 -> byte(s.Chars 0), ctx.sysTypes.char
-            | CERInt(i,t) when i >= 0 && i <= 255 -> byte(i), t
-            | _ -> failwith "IE"
-
-        let exprToSetItem = function
-            | SValue e -> let r, t = eval1 e |> exprToByteValue in [r], t
-            | SRange(e1, e2) ->
-                // TODO types check
-                let r1, t1 = eval1 e1 |> exprToByteValue
-                let r2, t2 = eval1 e2 |> exprToByteValue
-                if r2 < r1 then failwith "IE"
-                [r1..r2], t1
-
-        let finalSet: byte[] = Array.zeroCreate 256
-        let items, enumTyp =
-            List.map exprToSetItem al
-            |> List.unzip
-            |> (fun (i, t) -> i, t.Head)
-        List.concat items
-        |> List.fold (fun s i -> if Set.contains i s then failwith "IE" else Set.add i s) Set.empty // TODO contains better error
-        |> Set.iter (fun i -> finalSet.[int i] <- 0xFFuy)
-        match typ, enumTyp with
-        | Some t, _ -> CEROrdSet(finalSet, t)
-        | None, EnumType | None, ChrType ->
-            let typeSet =
-                match ctx.enumSet.TryGetValue enumTyp with
-                | true, t -> t
-                | _ -> ctx.AddTypeSetForEnum enumTyp AnonName
-            CEROrdSet(finalSet, typeSet)
-        | _ -> failwith "IE"
-
     let valueToValueKind ctx v (expectedType: PasType option) byRef =
         match v, byRef with
         | VIdent _, true | VSet _, true -> ()
@@ -753,7 +717,7 @@ module EvalExpr =
             | _ -> failwith "IE"
         | VNil, _ -> [+Ldnull], ctx.sysTypes.pointer
         | VSet al, _ ->
-            let bytes, ft = match SetValueToCER ctx expectedType al with
+            let bytes, ft = match setValueToCER ctx expectedType al with
                             | CEROrdSet(b,t) -> b, t
                             | _ -> failwith "IE"
             let fd = ctx.details.AddBytesConst bytes
@@ -865,6 +829,46 @@ module EvalExpr =
             if mr.result.IsNone then failwith "IE"
             [+Call mr.raw]
 
+
+module EvalConstExpr =
+
+    let inline eval1 ctx typ e1 = evalConstExpr ctx typ e1
+
+    let setValueToCER ctx typ al =
+        let inline eval1 e1 = eval1 ctx typ e1
+
+        let exprToByteValue = function
+            | CERString s when s.Length = 1 -> byte(s.Chars 0), ctx.sysTypes.char
+            | CERInt(i,t) when i >= 0 && i <= 255 -> byte(i), t
+            | _ -> failwith "IE"
+
+        let exprToSetItem = function
+            | SValue e -> let r, t = eval1 e |> exprToByteValue in [r], t
+            | SRange(e1, e2) ->
+                // TODO types check
+                let r1, t1 = eval1 e1 |> exprToByteValue
+                let r2, t2 = eval1 e2 |> exprToByteValue
+                if r2 < r1 then failwith "IE"
+                [r1..r2], t1
+
+        let finalSet: byte[] = Array.zeroCreate 256
+        let items, enumTyp =
+            List.map exprToSetItem al
+            |> List.unzip
+            |> (fun (i, t) -> i, t.Head)
+        List.concat items
+        |> List.fold (fun s i -> if Set.contains i s then failwith "IE" else Set.add i s) Set.empty // TODO contains better error
+        |> Set.iter (fun i -> finalSet.[int i] <- 0xFFuy)
+        match typ, enumTyp with
+        | Some t, _ -> CEROrdSet(finalSet, t)
+        | None, EnumType | None, ChrType ->
+            let typeSet =
+                match ctx.enumSet.TryGetValue enumTyp with
+                | true, t -> t
+                | _ -> ctx.AddTypeSetForEnum enumTyp AnonName
+            CEROrdSet(finalSet, typeSet)
+        | _ -> failwith "IE"
+
     let evalConstExpr (ctx: Ctx) typ expr =
 
         let inline eval2 e1 e2 = (evalConstExpr ctx typ e1, evalConstExpr ctx typ e2)
@@ -886,7 +890,7 @@ module EvalExpr =
                 | _ -> failwith "IE"
             | VCallResult _ -> CERUnknown
             | VNil -> CERUnknown
-            | VSet al -> SetValueToCER ctx typ al
+            | VSet al -> setValueToCER ctx typ al
         | Expr e -> evalConstExpr ctx typ e
         | Add(e1, e2)      -> eval2 e1 e2 |> evalExprOp2 (Some (+)) (Some (+)  )
         | Multiply(e1, e2) -> eval2 e1 e2 |> evalExprOp2 None       (Some (*)  )
@@ -1182,7 +1186,7 @@ module PasIntrinsics =
         | _ -> failwith "IE"
 
 type Ctx with
-    member self.EvalConstExpr = EvalExpr.evalConstExpr self
+    member self.EvalConstExpr = EvalConstExpr.evalConstExpr self
     member self.ExprToIl = EvalExpr.exprToIl self
     member self.ChainLoadToIl = EvalExpr.chainLoadToIl self
     member self.ChainWriterFactory = EvalExpr.chainWriterFactory self
