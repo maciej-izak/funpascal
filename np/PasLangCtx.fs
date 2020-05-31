@@ -435,6 +435,21 @@ module SymSearch =
         | TypeSym t -> ChainLoad([TypeCastLoad t], Some t)
         | _ -> SymbolLoadError
 
+    type FoundFunction =
+        | RealFunction of (MethodSym * IlInstruction option)
+        | TypeCast of PasType
+
+    let findFunction (ctx: Ctx) ident =
+            let callChain = findSymbol ctx ident
+            // TODO more advanced calls like foo().x().z^ := 10
+            match callChain with
+            | ChainLoad([CallableLoad cl], _) ->
+               match cl with
+               | Referenced ({raw=mr}, _) -> RealFunction(cl, +Call(mr) |> Some)
+               | Intrinsic _ -> RealFunction(cl, None)
+            | ChainLoad([TypeCastLoad t], _) -> TypeCast t
+            | _ -> failwith "Not supported"
+
 type Ctx with
     member self.FindSymbol = SymSearch.findSymbol self
     member self.FindMethodReferenceOpt =
@@ -445,6 +460,7 @@ type Ctx with
     member self.FindConstSym =
         self.FindSymbol >> chainToSLList >>
         function | [ValueLoad(v)], Some(t) -> v, t | _ -> failwith "IE"
+    member self.FindFunction = SymSearch.findFunction self
 
 let (|VariablePasType|_|) (ctx: Ctx) id =
     match ctx.FindSymbol id |> chainToSLList with
@@ -505,21 +521,6 @@ let typeCheck ctx at bt =
        | IntType, IntType -> true
        | PointerType, PointerType -> true // Todo better pointer types check
        | _ -> false
-
-type FoundFunction =
-    | RealFunction of (MethodSym * IlInstruction option)
-    | TypeCast of PasType
-
-let findFunction (ctx: Ctx) ident =
-        let callChain = ctx.FindSymbol ident
-        // TODO more advanced calls like foo().x().z^ := 10
-        match callChain with
-        | ChainLoad([CallableLoad cl], _) ->
-           match cl with
-           | Referenced ({raw=mr}, _) -> RealFunction(cl, +Call(mr) |> Some)
-           | Intrinsic _ -> RealFunction(cl, None)
-        | ChainLoad([TypeCastLoad t], _) -> TypeCast t
-        | _ -> failwith "Not supported"
 
 let rec exprToIlGen refRes (ctx: Ctx) exprEl expectedType =
     let rec exprToMetaExpr (el: ExprEl) et refRes =
@@ -650,8 +651,8 @@ and callParamToIl ctx cp (idxmr: Option<int * MethodInfo>) =
         (il, t)
 
 and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
-    match findFunction ctx ident with
-    | TypeCast t ->
+    match ctx.FindFunction ident with
+    | SymSearch.TypeCast t ->
         let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
         let callInstr, typ = callParamToIl ctx cp None
         // TODO some real conversion ? Conv_I4 + explicit operators?
@@ -659,7 +660,7 @@ and doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
             yield! callInstr
             typeRefToConv t.raw
         ], Some t)
-    | RealFunction rf ->
+    | SymSearch.RealFunction rf ->
         match rf with
         | Referenced(mr,np), Some f ->
             ([
