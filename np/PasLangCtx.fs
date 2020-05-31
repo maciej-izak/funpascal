@@ -117,67 +117,7 @@ type Ctx = {
         let p = (^T : (member BoxPos : obj) pos)
         self.errors.Add(fmtPos (self.posMap.[p]) + " " + s)
 
-    static member Create owner symbols (lang: LangCtx) pm details =
-        let moduleBuilder = details.moduleBuilder
-
-        let res = {
-            errors = List<_>()
-            variables = [List<VariableKind>()]
-            labels = [Dictionary<_,_>()]
-            symbols = [owner,symbols]
-            forward = Dictionary<_, _>()
-            localVariables = ref 0
-            lang = lang
-            res = List<MetaInstruction>()
-            details = details
-            loop = Stack<_>()
-            enumSet = Dictionary<_, _>()
-            posMap = pm
-            sysTypes = Ctx.createSystemTypes details symbols
-            sysProc = Ctx.createSystemProc details
-        }
-
-        let tsingle = res.sysTypes.single
-        symbols.Add(StringName "true", ConstBool 0xFFuy |> ConstSym)
-        symbols.Add(StringName "false", ConstBool 0uy |> ConstSym)
-        //newSymbols.Add("GetMem", Referenced allocMem |> MethodSym)
-        //newSymbols.Add("FreeMem", Referenced freeMem |> MethodSym)
-        let singleScalar raw =
-           Referenced({
-               paramList = [|{typ=tsingle;ref=false}|]
-               result = Some tsingle
-               raw = raw
-           }, ref[]) |> MethodSym
-        symbols.Add(StringName "Inc", Intrinsic IncProc |> MethodSym)
-        symbols.Add(StringName "Dec", Intrinsic DecProc |> MethodSym)
-        symbols.Add(StringName "Read", Intrinsic ReadProc |> MethodSym)
-        symbols.Add(StringName "Write", Intrinsic WriteProc |> MethodSym)
-        symbols.Add(StringName "ReadLn", Intrinsic ReadLnProc |> MethodSym)
-        symbols.Add(StringName "WriteLn", Intrinsic WriteLnProc |> MethodSym)
-        symbols.Add(StringName "WriteLine", Intrinsic WriteLineProc |> MethodSym)
-        symbols.Add(StringName "New", Intrinsic NewProc |> MethodSym)
-        symbols.Add(StringName "Dispose", Intrinsic DisposeProc |> MethodSym)
-        symbols.Add(StringName "Break", Intrinsic BreakProc |> MethodSym)
-        symbols.Add(StringName "Continue", Intrinsic ContinueProc |> MethodSym)
-        symbols.Add(StringName "Exit", Intrinsic ExitProc |> MethodSym)
-        symbols.Add(StringName "Halt", Intrinsic HaltProc |> MethodSym)
-        symbols.Add(StringName "SizeOf", Intrinsic SizeOfFunc |> MethodSym)
-        symbols.Add(StringName "Ord", Intrinsic OrdFunc |> MethodSym)
-        symbols.Add(StringName "Chr", Intrinsic ChrFunc |> MethodSym)
-        symbols.Add(StringName "Pred", Intrinsic PredProc |> MethodSym)
-        symbols.Add(StringName "Succ", Intrinsic SuccProc |> MethodSym)
-        symbols.Add(StringName "Round", Intrinsic RoundFunc |> MethodSym)
-        // function Abs(x: T): T;
-        // function Sqr(x: T): T;
-        // function Sin(x: Real): Real;
-        // function Cos(x: Real): Real;
-        // function Arctan(x: Real): Real;
-        let mathLog = typeof<System.MathF>.GetMethod("Log", [| typeof<single> |])  |> details.moduleBuilder.ImportReference
-        let mathExp = typeof<System.MathF>.GetMethod("Exp", [| typeof<single> |])  |> details.moduleBuilder.ImportReference
-        symbols.Add(StringName "Exp", singleScalar mathExp)
-        symbols.Add(StringName "Ln", singleScalar mathLog)
-        symbols.Add(StringName "Trunc", Intrinsic TruncFunc  |> MethodSym)
-        res
+    static member Create = Ctx.createCtx
 
     member self.Inner symbolsEntry =
         { self with
@@ -313,7 +253,7 @@ module Ctx =
             Round: MethodReference
         }
 
-    let createSystemTypes details (symbols: Dictionary<TypeName, Symbol>) =
+    let private createSystemTypes details (symbols: Dictionary<TypeName, Symbol>) =
         let mb = details.moduleBuilder
         let vt = mb.ImportReference(typeof<ValueType>)
         let ot = mb.ImportReference(typeof<obj>)
@@ -364,7 +304,7 @@ module Ctx =
             net_void = {name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}
         }
 
-    let createSystemProc details =
+    let private createSystemProc details =
         let mb = details.moduleBuilder
 //        let mathTrunc = typeof<System.MathF>.GetMethod("Truncate", [| typeof<single> |])  |> mb.ImportReference
         {
@@ -376,6 +316,71 @@ module Ctx =
             PtrToStringAnsi = typeof<System.Runtime.InteropServices.Marshal>.GetMethod("PtrToStringAnsi", [| typeof<nativeint> |]) |> mb.ImportReference
             Round = typeof<System.MathF>.GetMethod("Round", [| typeof<single> |])  |> mb.ImportReference
         }
+
+    let private addSystemRoutines ctx =
+        let symbols = snd ctx.symbols.Head
+        let tsingle = ctx.sysTypes.single
+        symbols.Add(StringName "true", ConstBool 0xFFuy |> ConstSym)
+        symbols.Add(StringName "false", ConstBool 0uy |> ConstSym)
+        //newSymbols.Add("GetMem", Referenced allocMem |> MethodSym)
+        //newSymbols.Add("FreeMem", Referenced freeMem |> MethodSym)
+        let intrinsic name i = symbols.Add(StringName name, Intrinsic i |> MethodSym)
+        intrinsic "Inc" IncProc
+        intrinsic "Dec" DecProc 
+        intrinsic "Read" ReadProc 
+        intrinsic "Write" WriteProc 
+        intrinsic "ReadLn" ReadLnProc 
+        intrinsic "WriteLn" WriteLnProc 
+        intrinsic "WriteLine" WriteLineProc 
+        intrinsic "New" NewProc 
+        intrinsic "Dispose" DisposeProc 
+        intrinsic "Break" BreakProc 
+        intrinsic "Continue" ContinueProc 
+        intrinsic "Exit" ExitProc 
+        intrinsic "Halt" HaltProc 
+        intrinsic "SizeOf" SizeOfFunc 
+        intrinsic "Ord" OrdFunc 
+        intrinsic "Chr" ChrFunc 
+        intrinsic "Pred" PredProc 
+        intrinsic "Succ" SuccProc 
+        intrinsic "Round" RoundFunc 
+        // function Abs(x: T): T;
+        // function Sqr(x: T): T;
+        // function Sin(x: Real): Real;
+        // function Cos(x: Real): Real;
+        // function Arctan(x: Real): Real;
+        let mathLog = typeof<System.MathF>.GetMethod("Log", [| typeof<single> |])  |> ctx.details.moduleBuilder.ImportReference
+        let mathExp = typeof<System.MathF>.GetMethod("Exp", [| typeof<single> |])  |> ctx.details.moduleBuilder.ImportReference
+        let singleScalar raw =
+           Referenced({
+               paramList = [|{typ=tsingle;ref=false}|]
+               result = Some tsingle
+               raw = raw
+           }, ref[]) |> MethodSym
+        symbols.Add(StringName "Exp", singleScalar mathExp)
+        symbols.Add(StringName "Ln", singleScalar mathLog)
+        symbols.Add(StringName "Trunc", Intrinsic TruncFunc  |> MethodSym)
+        ctx
+
+    let createCtx owner pm details =
+        let lang = LangCtx()
+        let symbols = Dictionary<TypeName,Symbol>(lang)
+        {
+            errors = List<_>()
+            variables = [List<VariableKind>()]
+            labels = [Dictionary<_,_>()]
+            symbols = [owner,symbols]
+            forward = Dictionary<_, _>()
+            localVariables = ref 0
+            lang = LangCtx()
+            res = List<MetaInstruction>()
+            details = details
+            loop = Stack<_>()
+            enumSet = Dictionary<_, _>()
+            posMap = pm
+            sysTypes = Ctx.createSystemTypes details symbols
+            sysProc = Ctx.createSystemProc details
+        } |> addSystemRoutines
 
 module Types =
 

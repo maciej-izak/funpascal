@@ -347,10 +347,8 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
     member self.BuildIl(block: Block, buildScope, ?resVar) =
         let ctx = match buildScope with
                   | MainScope (ns, tb, s) ->
-                    let langCtx = LangCtx()
-                    let newSymbols = Dictionary<TypeName,_>(langCtx)
                     ModuleDetails.Create moduleBuilder ns tb
-                    |> Ctx.Create GlobalSpace newSymbols langCtx s.posMap
+                    |> Ctx.Create GlobalSpace s.posMap
                   | LocalScope ctx -> ctx
         let newSymbols = snd ctx.symbols.Head
         let result = match resVar with
