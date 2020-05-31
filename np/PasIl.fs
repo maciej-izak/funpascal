@@ -11,6 +11,7 @@ open Mono.Cecil.Cil
 open Mono.Cecil.Rocks
 open Microsoft.FSharp.Linq
 open NP.PasSymbols
+open Pas
 
 let inline toMap kvps =
     kvps
@@ -79,7 +80,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                      | _ -> load
                  let ltp = !ltp
                  let expr, exprType = expr (Some ltp.ToTypeRef)
-                 if not(typeCheck ctx ltp.PasType exprType) then
+                 if not(Utils.typeCheck ctx ltp.PasType exprType) then
                      ctx.NewError ident (sprintf "Incompatible types ('%O' and '%O') for \"%O\"" ltp.PasType.name exprType.name ident)
                  [
                      yield! loadDest
@@ -250,7 +251,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                     let (varFinalName, varFinal) = ctx.EnsureVariable varType
                     // TODO optimization for simple values (dont store in var)
                     let (loopInitializeVariables, _) =
-                        [AssignStm(ident, initExpr);AssignStm(stdIdent varFinalName, finiExpr)] |> stmtToIlList
+                        [AssignStm(ident, initExpr);AssignStm(Utils.stdIdent varFinalName, finiExpr)] |> stmtToIlList
                     let breakLabel = ref ForwardLabel
                     // TODO method param?
                     let varLoad = match var with | GlobalVariable vk -> +Ldsfld vk | LocalVariable vk -> +Ldloc vk

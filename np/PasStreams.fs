@@ -21,6 +21,7 @@ open MBrace.FsPickler
 open Mono.Cecil
 open Mono.Cecil.Cil
 open Mono.Cecil.Rocks
+open Pas
 
 let applyParser (parser: Parser<'Result,'UserState>) (stream: CharStream<'UserState>) =
     let reply = parser stream

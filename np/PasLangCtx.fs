@@ -1,12 +1,13 @@
-﻿[<AutoOpen>]
-module rec NP.PasLangCtx
+﻿namespace rec Pas
 
 open System
 open System.Collections.Generic
 open System.Runtime.CompilerServices
 open Mono.Cecil
 open Mono.Cecil.Cil
+open NP
 
+exception CompilerFatalError of Ctx
 type LangCtx() =
     let mutable ec = caseInsensitive
     member self.caseSensitive
@@ -97,21 +98,33 @@ type ModuleDetails = {
         self.tb.Fields.Add fd
         fd
 
-let stdIdent = Ident >> List.singleton >> DIdent
-let stdType  = stdIdent >> TIdIdent
+module Utils =
+    let stdIdent = Ident >> List.singleton >> DIdent
 
-let addMetaType (symbols: Dictionary<_,_>) (name: TypeName) typ =
-    match name with
-    | AnonName -> () // ie for char sets
-    | _ -> symbols.Add(name, TypeSym typ)
-    typ
+    let addMetaType (symbols: Dictionary<_,_>) (name: TypeName) typ =
+        match name with
+        | AnonName -> () // ie for char sets
+        | _ -> symbols.Add(name, TypeSym typ)
+        typ
+
+    let typeCheck ctx at bt =
+        // at is used for function params
+        // bt can be error too
+        at = ctx.sysTypes.constParam
+        || at = ctx.sysTypes.varParam
+        || at = ctx.sysTypes.unknown || bt = ctx.sysTypes.unknown
+        || at.kind = bt.kind
+        || match at, bt with
+           | FloatType, IntType -> true
+           | IntType, IntType -> true
+           | PointerType, PointerType -> true // Todo better pointer types check
+           | _ -> false
+
 
 type SymOwner =
     | GlobalSpace
     | StandaloneMethod of ReferencedDef
     | WithSpace
-
-let fmtPos (pos: FParsec.Position) = sprintf "[Error] %s(%d,%d)" (pos.StreamName) (pos.Line) (pos.Column)
 
 type Ctx = {
         errors: List<string>
@@ -131,6 +144,7 @@ type Ctx = {
     } with
 
     member inline self.NewError(pos: ^T) s =
+        let fmtPos (pos: FParsec.Position) = sprintf "[Error] %s(%d,%d)" (pos.StreamName) (pos.Line) (pos.Column)
         let p = (^T : (member BoxPos : obj) pos)
         self.errors.Add(fmtPos (self.posMap.[p]) + " " + s)
 
@@ -140,7 +154,7 @@ type Ctx = {
         let ot = mb.ImportReference(typeof<obj>)
         let addAnyType name raw kind =
             let t = {name=name;raw=raw;kind=kind}
-            addMetaType symbols name t
+            Utils.addMetaType symbols name t
         let addOrdType name raw ordKind ordType = TkOrd(ordKind, ordType) |> addAnyType (StringName name) raw
         let addFloatType name raw = TkFloat(FtSingle) |> addAnyType (StringName name) raw
         let addArrayType name (p: PasType) ad = addAnyType name p.raw ad
@@ -165,7 +179,7 @@ type Ctx = {
 
         // file = name + handle
         let fileType = (details.NewSizedType (256 + ptrSize)) :> TypeReference
-        let fileType = addMetaType symbols (TypedName TIdFile) {name=TypedName TIdFile;kind=TkUnknown(256 + ptrSize);raw=fileType}
+        let fileType = Utils.addMetaType symbols (TypedName TIdFile) {name=TypedName TIdFile;kind=TkUnknown(256 + ptrSize);raw=fileType}
         {
             int32 = addOrdType "Integer" mb.TypeSystem.Int32 OkInteger (OtSLong(int Int32.MinValue, int Int32.MaxValue))
             int64 = addOrdType "Int64" mb.TypeSystem.Int64 OkInteger (OtSQWord(Int64.MinValue, Int64.MaxValue))
@@ -346,12 +360,10 @@ type Ctx = {
         | Some h -> for l in labels do l := LazyLabel(h, nullRef())
         | _ -> ()
 
-exception CompilerFatalError of Ctx
-
 module SetTypes =
 
     let addTypeSetForEnum ctx pasType name =
-        let setType = addMetaType (snd ctx.symbols.Head) name {name=name;kind=TkSet(pasType);raw=ctx.sysTypes.setStorage.raw}
+        let setType = Utils.addMetaType (snd ctx.symbols.Head) name {name=name;kind=TkSet(pasType);raw=ctx.sysTypes.setStorage.raw}
         ctx.enumSet.TryAdd(pasType, setType) |> ignore
         setType
 
@@ -453,7 +465,7 @@ module SymSearch =
 type Ctx with
     member self.FindSymbol = SymSearch.findSymbol self
     member self.FindMethodReferenceOpt =
-        stdIdent >> self.FindSymbol >> chainToSLList >>
+        Utils.stdIdent >> self.FindSymbol >> chainToSLList >>
         function | [CallableLoad(Referenced({raw=mr}, _))], _ -> Some mr | _ -> None
     member self.FindMethodReferenceUnsafe = self.FindMethodReferenceOpt >> function | Some r -> r | _ -> null
     member self.FindMethodReference = self.FindMethodReferenceOpt >> function | Some r -> r | _ -> failwith "IE"
@@ -464,56 +476,31 @@ type Ctx with
 
 type ValueKind = ValueKind of (IlInstruction list * PasType)
 
-let useHelperOp ctx helperName valueType byRef =
-    let _,v = (ctx: Ctx).EnsureVariable(valueType)
-    [
-        +Ldloca v
-        +Call(ctx.FindMethodReference helperName)
-        +(if byRef then Ldloca else Ldloc) v
-    ]
-
-let handleOperator (ctx: Ctx) et byRef (op, (ils, at, bt)) =
-    let convCmpOp = function | Cgt -> Clt | Clt -> Cgt | o -> o
-    match at, bt, op with
-    | ErrorType, _, _ | _, ErrorType, _ -> []
-    | _, _, InInst -> [yield! ils; +Call(ctx.FindMethodReference "INSET")]
-    | (StrType as t), StrType, AddInst -> ils @ useHelperOp ctx "ConcatStr" t byRef
-    | StrType, StrType, BoolOp -> [+Ldc_I4 0; yield! ils; +Call(ctx.FindMethodReference "CompareStr"); +convCmpOp op]
-    | (SetType at), ((SetType bt) as t), AddInst when at = bt -> ils @ useHelperOp ctx "SetUnion" t byRef
-    | (SetType at), ((SetType bt) as t), MinusInst when at = bt -> ils @ useHelperOp ctx "SetDifference" t byRef
-    | NumericType, NumericType, op -> [yield! ils; +op]
-    | _ -> failwith "IE"
-    ,match et with | Some t -> t | _ -> at
-
-let evalExprOp2 (opS: Option<string->string->string>) (opI: Option<int->int->int>) (r1, r2) =
-    match r1, opS, opI with
-    | CERString s1, Some so, _ -> match r2 with CERString s2 -> CERString(so s1 s2) | _ -> assert(false); CERUnknown
-    | CERInt(i1, t1), _, Some io -> match r2 with CERInt(i2, t2) -> CERInt(io i1 i2, t1) | _ -> assert(false); CERUnknown
-    | _ -> CERUnknown
-
-let evalExprOp1 (opS: Option<string->string>) (opI: Option<int->int>) r1 =
-    match r1, opS, opI with
-    | CERString s1, Some so, _ -> CERString(so s1)
-    | CERInt(i1, t1), _, Some io -> CERInt(io i1, t1)
-    | _ -> CERUnknown
-
-let typeCheck ctx at bt =
-    // at is used for function params
-    // bt can be error too
-    at = ctx.sysTypes.constParam
-    || at = ctx.sysTypes.varParam
-    || at = ctx.sysTypes.unknown || bt = ctx.sysTypes.unknown
-    || at.kind = bt.kind
-    || match at, bt with
-       | FloatType, IntType -> true
-       | IntType, IntType -> true
-       | PointerType, PointerType -> true // Todo better pointer types check
-       | _ -> false
-
 module EvalExpr =
 
-    open PasIntrinsics
+    open Intrinsics
     open EvalConstExpr
+
+    let useHelperOp ctx helperName valueType byRef =
+        let _,v = (ctx: Ctx).EnsureVariable(valueType)
+        [
+            +Ldloca v
+            +Call(ctx.FindMethodReference helperName)
+            +(if byRef then Ldloca else Ldloc) v
+        ]
+
+    let handleOperator (ctx: Ctx) et byRef (op, (ils, at, bt)) =
+        let convCmpOp = function | Cgt -> Clt | Clt -> Cgt | o -> o
+        match at, bt, op with
+        | ErrorType, _, _ | _, ErrorType, _ -> []
+        | _, _, InInst -> [yield! ils; +Call(ctx.FindMethodReference "INSET")]
+        | (StrType as t), StrType, AddInst -> ils @ useHelperOp ctx "ConcatStr" t byRef
+        | StrType, StrType, BoolOp -> [+Ldc_I4 0; yield! ils; +Call(ctx.FindMethodReference "CompareStr"); +convCmpOp op]
+        | (SetType at), ((SetType bt) as t), AddInst when at = bt -> ils @ useHelperOp ctx "SetUnion" t byRef
+        | (SetType at), ((SetType bt) as t), MinusInst when at = bt -> ils @ useHelperOp ctx "SetDifference" t byRef
+        | NumericType, NumericType, op -> [yield! ils; +op]
+        | _ -> failwith "IE"
+        ,match et with | Some t -> t | _ -> at
 
     let rec exprToIlGen refRes (ctx: Ctx) exprEl expectedType =
         let rec exprToMetaExpr (el: ExprEl) et refRes =
@@ -639,7 +626,7 @@ module EvalExpr =
             else findSymbolAndLoad ctx id
         |> fun(il, t) ->
             if param.IsSome then
-                if not(typeCheck ctx param.Value t) then
+                if not(Utils.typeCheck ctx param.Value t) then
                     ctx.NewError cp (sprintf "Incompatible types ('%O' and '%O') for %d parameter" param.Value.name t.name (fst idxmr.Value))
             (il, t)
 
@@ -822,6 +809,18 @@ module EvalConstExpr =
 
     let inline eval1 ctx typ e1 = evalConstExpr ctx typ e1
 
+    let evalExprOp2 (opS: Option<string->string->string>) (opI: Option<int->int->int>) (r1, r2) =
+        match r1, opS, opI with
+        | CERString s1, Some so, _ -> match r2 with CERString s2 -> CERString(so s1 s2) | _ -> assert(false); CERUnknown
+        | CERInt(i1, t1), _, Some io -> match r2 with CERInt(i2, t2) -> CERInt(io i1 i2, t1) | _ -> assert(false); CERUnknown
+        | _ -> CERUnknown
+
+    let evalExprOp1 (opS: Option<string->string>) (opI: Option<int->int>) r1 =
+        match r1, opS, opI with
+        | CERString s1, Some so, _ -> CERString(so s1)
+        | CERInt(i1, t1), _, Some io -> CERInt(io i1, t1)
+        | _ -> CERUnknown
+
     let setValueToCER ctx typ al =
         let inline eval1 e1 = eval1 ctx typ e1
 
@@ -908,7 +907,7 @@ module EvalConstExpr =
         | In of ExprEl * ExprEl
         *)
 
-module PasIntrinsics =
+module Intrinsics =
 
     open EvalExpr
 
@@ -932,7 +931,7 @@ module PasIntrinsics =
                 if typ.raw = ctx.sysTypes.file.raw then Some sl, tail
                 else None, cp
             | _ -> None, cp
-        let file() = if file.IsNone then fst <| findSymbolAndGetPtr ctx (stdIdent "STDOUTPUTFILE")
+        let file() = if file.IsNone then fst <| findSymbolAndGetPtr ctx (Utils.stdIdent "STDOUTPUTFILE")
                      else file.Value
 
         let doParam = fun (cp: CallParam) ->
@@ -976,7 +975,7 @@ module PasIntrinsics =
                 if typ.raw = ctx.sysTypes.file.raw then Some sl, tail
                 else None, cp
             | _ -> None, cp
-        let file() = if file.IsNone then fst <| findSymbolAndGetPtr ctx (stdIdent "STDINPUTFILE")
+        let file() = if file.IsNone then fst <| findSymbolAndGetPtr ctx (Utils.stdIdent "STDINPUTFILE")
                      else file.Value
 
         let doParam = function
@@ -1191,7 +1190,7 @@ type Ctx with
     member self.ChainWriterFactory = EvalExpr.chainWriterFactory self
     member self.ChainReaderFactory = EvalExpr.chainReaderFactory self
     member self.DoCall = EvalExpr.doCall self
-    member self.AddType = addMetaType (snd self.symbols.Head)
+    member self.AddType = Utils.addMetaType (snd self.symbols.Head)
 
     member self.AddTypePointer count typeName name =
         let t =
