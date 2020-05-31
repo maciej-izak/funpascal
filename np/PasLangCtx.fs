@@ -360,6 +360,36 @@ type Ctx = {
         | Some h -> for l in labels do l := LazyLabel(h, nullRef())
         | _ -> ()
 
+    // Types module
+    member self.AddTypeSetForEnum = Types.addTypeSetForEnum self
+    member self.AddTypeSet = Types.addTypeSet self
+    member self.AddType = Types.addType self
+    member self.AddTypePointer = Types.addTypePointer self
+    member self.GetInternalType = Types.getInternalType self
+    member self.AddTypeArray = Types.addTypeArray self
+
+    // SymSearch module
+    member self.FindSymbol = SymSearch.findSymbol self
+    member self.FindMethodReferenceOpt =
+        Utils.stdIdent >> self.FindSymbol >> chainToSLList >>
+        function | [CallableLoad(Referenced({raw=mr}, _))], _ -> Some mr | _ -> None
+    member self.FindMethodReferenceUnsafe = self.FindMethodReferenceOpt >> function | Some r -> r | _ -> null
+    member self.FindMethodReference = self.FindMethodReferenceOpt >> function | Some r -> r | _ -> failwith "IE"
+    member self.FindConstSym =
+        self.FindSymbol >> chainToSLList >>
+        function | [ValueLoad(v)], Some(t) -> v, t | _ -> failwith "IE"
+    member self.FindFunction = SymSearch.findFunction self
+
+    // EvalConstExpr module
+    member self.EvalConstExpr = EvalConstExpr.evalConstExpr self
+
+    // EvalExpr module
+    member self.ExprToIl = EvalExpr.exprToIl self
+    member self.ChainLoadToIl = EvalExpr.chainLoadToIl self
+    member self.ChainWriterFactory = EvalExpr.chainWriterFactory self
+    member self.ChainReaderFactory = EvalExpr.chainReaderFactory self
+    member self.DoCall = EvalExpr.doCall self
+
 module Types =
 
     let addTypeSetForEnum ctx pasType name =
@@ -449,14 +479,6 @@ module Types =
         addType ctx name typ
         //(doArrayDef dimensions tname (ref []) name).Name <- name
 
-type Ctx with
-    member self.AddTypeSetForEnum = Types.addTypeSetForEnum self
-    member self.AddTypeSet = Types.addTypeSet self
-    member self.AddType = Types.addType self
-    member self.AddTypePointer = Types.addTypePointer self
-    member self.GetInternalType = Types.getInternalType self
-    member self.AddTypeArray = Types.addTypeArray self
-
 module SymSearch =
     let findSymbol (ctx: Ctx) (DIdent ident) =
         let mainSym = ident.Head |> function | Ident n -> ctx.FindSym(StringName n)
@@ -537,24 +559,12 @@ module SymSearch =
             | ChainLoad([TypeCastLoad t], _) -> TypeCast t
             | _ -> failwith "Not supported"
 
-type Ctx with
-    member self.FindSymbol = SymSearch.findSymbol self
-    member self.FindMethodReferenceOpt =
-        Utils.stdIdent >> self.FindSymbol >> chainToSLList >>
-        function | [CallableLoad(Referenced({raw=mr}, _))], _ -> Some mr | _ -> None
-    member self.FindMethodReferenceUnsafe = self.FindMethodReferenceOpt >> function | Some r -> r | _ -> null
-    member self.FindMethodReference = self.FindMethodReferenceOpt >> function | Some r -> r | _ -> failwith "IE"
-    member self.FindConstSym =
-        self.FindSymbol >> chainToSLList >>
-        function | [ValueLoad(v)], Some(t) -> v, t | _ -> failwith "IE"
-    member self.FindFunction = SymSearch.findFunction self
-
-type ValueKind = ValueKind of (IlInstruction list * PasType)
-
 module EvalExpr =
 
     open Intrinsics
     open EvalConstExpr
+
+    type ValueKind = (IlInstruction list * PasType)
 
     let useHelperOp ctx helperName valueType byRef =
         let _,v = (ctx: Ctx).EnsureVariable(valueType)
@@ -582,14 +592,11 @@ module EvalExpr =
             let constConvertTo op (aExpr: ExprEl, aVal, aTyp) (bExpr: ExprEl, bVal, bTyp) =
                 let typesConverter (expr: ExprEl) aVal aTyp bTyp =
                     match aTyp, bTyp with
-                    | ChrType, CharacterType ctx.sysTypes.string (t) ->
-                        exprToMetaExpr expr (Some t) false
-                        |> (function | ValueKind t -> t)
+                    | ChrType, CharacterType ctx.sysTypes.string (t) -> exprToMetaExpr expr (Some t) false
                     | _ -> aVal, aTyp
                 op,
                 match op with
-                | InInst ->
-                    (aVal, aTyp), (exprToMetaExpr bExpr (Some bTyp) true |> (function | ValueKind t -> t))
+                | InInst -> (aVal, aTyp), exprToMetaExpr bExpr (Some bTyp) true
                 | BoolOp -> (aVal, aTyp), (bVal, bTyp)
                 | _ ->
                     typesConverter aExpr aVal aTyp bTyp,
@@ -617,26 +624,24 @@ module EvalExpr =
                 | _ -> [yield! aVal; yield! bVal; typeRefToConv aTyp.raw],aTyp,bTyp
 
             let add2OpIlTyped aExpr bExpr i et =
-                match exprToMetaExpr aExpr et false with
-                | ValueKind(a, at) ->
-                    match exprToMetaExpr bExpr (if i = InInst then None else Some at) false with
-                    | ValueKind(b, bt) ->
-                        let opIls, typ =
-                            constConvertTo i (aExpr, a, at) (bExpr, b, bt)
-                            ||> typeConvertTo
-                            |> handleOperator ctx et refRes
-                        ([
-                            yield! opIls
-                            // need to cast to proper type (for simple types)
-                            match et with
-                            | Some NumericType -> yield typeRefToConv et.Value.raw
-                            | _ -> ()
-                        ], typ)
+                let a, at = exprToMetaExpr aExpr et false
+                let b, bt =  exprToMetaExpr bExpr (if i = InInst then None else Some at) false
+                let opIls, typ =
+                    constConvertTo i (aExpr, a, at) (bExpr, b, bt)
+                    ||> typeConvertTo
+                    |> handleOperator ctx et refRes
+                ([
+                    yield! opIls
+                    // need to cast to proper type (for simple types)
+                    match et with
+                    | Some NumericType -> yield typeRefToConv et.Value.raw
+                    | _ -> ()
+                ], typ)
             let add2OpIl a b i = add2OpIlTyped a b i et
             let add2OpIlBool a b i = add2OpIlTyped a b i (Some ctx.sysTypes.boolean)
             let inline add1OpIl a i =
-                match exprToMetaExpr a et false with
-                | ValueKind(a, at) -> [ yield! a; yield +i; yield typeRefToConv at.raw], at
+                let a, at = exprToMetaExpr a et false
+                [ yield! a; yield +i; yield typeRefToConv at.raw], at
             match el with
             | Value v -> valueToValueKind ctx v et refRes
             | Add(a, b) -> add2OpIl a b AddInst
@@ -675,14 +680,13 @@ module EvalExpr =
             | _ -> failwith "IE"
             |> ValueKind
 
-        match exprToMetaExpr exprEl expectedType refRes with
-        | ValueKind (a, at) ->
-            [
-             yield! a
-             if expectedType.IsSome then
-                let typ = expectedType.Value
-                match typ.kind with | TkOrd _ | TkFloat _ -> yield typeRefToConv typ.raw | _ -> ()
-            ], at
+        let a, at = exprToMetaExpr exprEl expectedType refRes
+        [
+         yield! a
+         if expectedType.IsSome then
+            let typ = expectedType.Value
+            match typ.kind with | TkOrd _ | TkFloat _ -> yield typeRefToConv typ.raw | _ -> ()
+        ], at
 
     let exprToIl = exprToIlGen false
 
@@ -1257,11 +1261,3 @@ module Intrinsics =
                 if popResult then +Pop // TODO or not generate call ?
              ], Some ctx.sysTypes.int32)
         | _ -> failwith "IE"
-
-type Ctx with
-    member self.EvalConstExpr = EvalConstExpr.evalConstExpr self
-    member self.ExprToIl = EvalExpr.exprToIl self
-    member self.ChainLoadToIl = EvalExpr.chainLoadToIl self
-    member self.ChainWriterFactory = EvalExpr.chainWriterFactory self
-    member self.ChainReaderFactory = EvalExpr.chainReaderFactory self
-    member self.DoCall = EvalExpr.doCall self
