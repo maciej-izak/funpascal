@@ -24,20 +24,6 @@ let compileBlock (methodBuilder: MethodDefinition) (typeBuilder : TypeDefinition
     Seq.iter ilGenerator instr
     methodBuilder
 
-let simplifiedDIdent = List.map <| function | Ident s -> s | _ -> failwith "IE"
-let inline packedToStr(p: bool) = if p then "1" else "0"
-
-let evalConstExprToStr (ctx: Ctx) = function
-    | ConstExpr expr ->
-        match ctx.EvalConstExpr (Some ctx.sysTypes.string) expr with
-        | CERString s -> s
-        | CERInt(i,_) -> string i
-        | CERUnknown -> ""
-        | _ -> failwith "IE"
-    | _ -> failwith "IE"
-
-let dimenstionsToStr ctx = List.map <| function | DimensionType s -> s | DimensionExpr (e1, e2) -> evalConstExprToStr ctx e1 + ".." + evalConstExprToStr ctx e2
-
 let (|IlNotEqual|_|) (items: IlInstruction list) =
     if items.Length < 3 then
         None

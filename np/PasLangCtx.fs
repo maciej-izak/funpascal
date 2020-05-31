@@ -360,7 +360,7 @@ type Ctx = {
         | Some h -> for l in labels do l := LazyLabel(h, nullRef())
         | _ -> ()
 
-module SetTypes =
+module Types =
 
     let addTypeSetForEnum ctx pasType name =
         let setType = Utils.addMetaType (snd ctx.symbols.Head) name {name=name;kind=TkSet(pasType);raw=ctx.sysTypes.setStorage.raw}
@@ -379,8 +379,8 @@ module SetTypes =
         addTypeSetForEnum ctx t name
 
 type Ctx with
-    member self.AddTypeSetForEnum = SetTypes.addTypeSetForEnum self
-    member self.AddTypeSet = SetTypes.addTypeSet self
+    member self.AddTypeSetForEnum = Types.addTypeSetForEnum self
+    member self.AddTypeSet = Types.addTypeSet self
 
 module SymSearch =
     let findSymbol (ctx: Ctx) (DIdent ident) =
