@@ -8,63 +8,71 @@ open Mono.Cecil.Cil
 open Mono.Cecil.Rocks
 
 [<AutoOpen>]
-module rec Lang =
+module rec LangStmt =
 
-    let getVar4Assign (ctx: Ctx) (ident: DIdent) expr =
-     // add param for findSymbol to set purpose (like this `assign`)
-     match ctx.FindSymbol ident with
-     | ChainLoad(symbols,_) ->
-         let ltp = ref LTPNone
-         let loadDest =
-             let load = List.collect (ctx.ChainLoadToIl ltp (ctx.ChainReaderFactory false false)) symbols
-             match symbols with // needed to proper store values to ref parameters in methods
-             | VariableLoad(ParamVariable(RefVar, i),_)::[] -> +Ldarg i::load
-             | _ -> load
-         let ltp = !ltp
-         let expr, exprType = expr (Some ltp.ToTypeRef)
-         if not(Utils.typeCheck ctx ltp.PasType exprType) then
-             ctx.NewError ident (sprintf "Incompatible types ('%O' and '%O') for \"%O\"" ltp.PasType.name exprType.name ident)
-         [
-             yield! loadDest
-             yield! expr
-             yield! ctx.ChainWriterFactory ltp
-         ]
-     | _ -> failwith "IE"
+    let doAssignStm (ident, expr) (ctx: Ctx) =
+        // add param for findSymbol to set purpose (like this `assign`)
+        match ctx.FindSymbol ident with
+        | ChainLoad(symbols,_) ->
+            let ltp = ref LTPNone
+            let loadDest =
+                let load = List.collect (ctx.ChainLoadToIl ltp (ctx.ChainReaderFactory false false)) symbols
+                match symbols with // needed to proper store values to ref parameters in methods
+                | VariableLoad(ParamVariable(RefVar, i),_)::[] -> +Ldarg i::load
+                | _ -> load
+            let ltp = !ltp
+            let expr, exprType = ctx.ExprToIl expr (Some ltp.ToTypeRef)
+            if not(Utils.typeCheck ctx ltp.PasType exprType) then
+                ctx.NewError ident (sprintf "Incompatible types ('%O' and '%O') for \"%O\"" ltp.PasType.name exprType.name ident)
+            [
+                yield! loadDest
+                yield! expr
+                yield! ctx.ChainWriterFactory ltp
+            ]
+        | _ -> failwith "IE"
+        |> fun ils -> (ils, [])
 
-    let getVar4With (ctx: Ctx) idents =
+    let doWithStm (idents, stmt) (ctx: Ctx) =
         let ils = List<_>()
-        List.fold
-            (fun symbols i ->
-                let loadVarW =
-                    match ctx.FindSymbol i with
-                    | ChainLoad (symbols, _) ->
-                        let ltp = ref LTPNone
-                        let cl = List.collect (ctx.ChainLoadToIl ltp (ctx.ChainReaderFactory false false)) symbols
-                        let vt = match !ltp with // TODO allow structs only ? (ValueType as records/classes only)
-                                 | LTPVar(_,t) -> t
-                                 | LTPStruct(_,t) -> t
-                                 | LTPDeref(dt,_) when dt.raw.MetadataType = MetadataType.ValueType -> dt
-                                 | _ -> failwith "IE"
-                        // TODO check type of vt for with ?
-                        match vt.kind with | TkRecord _ -> () | _ -> failwithf "IE bad type for with %A" vt.kind
-                        let pvt = PasType.NewPtr(vt)
-                        let (_, vv) = ctx.EnsureVariable pvt
-                        ([
-                            yield! cl
-                            yield! ctx.ChainReaderFactory false true !ltp
-                            +Stloc vv
-                        ], (vv, vt.raw :?> TypeDefinition, pvt))
-                    | _ -> failwith "IE"
+        let foldWithSymbols symbols i =
+            let loadVarW =
+                match ctx.FindSymbol i with
+                | ChainLoad (symbols, _) ->
+                    let ltp = ref LTPNone
+                    let cl = List.collect (ctx.ChainLoadToIl ltp (ctx.ChainReaderFactory false false)) symbols
+                    let vt = match !ltp with // TODO allow structs only ? (ValueType as records/classes only)
+                             | LTPVar(_,t) -> t
+                             | LTPStruct(_,t) -> t
+                             | LTPDeref(dt,_) when dt.raw.MetadataType = MetadataType.ValueType -> dt
+                             | _ -> failwith "IE"
+                    // TODO check type of vt for with ?
+                    match vt.kind with | TkRecord _ -> () | _ -> failwithf "IE bad type for with %A" vt.kind
+                    let pvt = PasType.NewPtr(vt)
+                    let (_, vv) = ctx.EnsureVariable pvt
+                    ([
+                        yield! cl
+                        yield! ctx.ChainReaderFactory false true !ltp
+                        +Stloc vv
+                    ], (vv, vt.raw :?> TypeDefinition, pvt))
+                | _ -> failwith "IE"
 
-                let newSymbols = Dictionary<_,_>()
-                let (v, td, ptd) = snd loadVarW
-                for f in td.Fields do
-                    newSymbols.Add(StringName f.Name, WithSym(LocalVariable v, ptd))
-                ils.Add(fst loadVarW)
-                (WithSpace, newSymbols)::symbols
-            ) ctx.symbols idents, ils
+            let newSymbols = Dictionary<_,_>()
+            let (v, td, ptd) = snd loadVarW
+            for f in td.Fields do
+                newSymbols.Add(StringName f.Name, WithSym(LocalVariable v, ptd))
+            ils.Add(fst loadVarW)
+            (WithSpace, newSymbols)::symbols
 
-    let doIfStm (ctx: Ctx) (expr, tb, fb) =
+        let withSymbols = List.fold foldWithSymbols ctx.symbols idents
+        let newCtx = { ctx with symbols = withSymbols }
+        // TODO check if some part is unused in ils
+        let (branch, labels) = stmtListToIlList newCtx stmt
+        ([
+            for i in ils do yield! i
+            yield! branch
+        ], labels)
+
+    let doIfStm (expr, tb, fb) (ctx: Ctx) =
         // if logic
         let firstEnfOfStm = ref ForwardLabel
         let lastEndOfStm = ref ForwardLabel
@@ -84,7 +92,7 @@ module rec Lang =
                 yield IlBranch(IlBr,lastEndOfStm)
         ], List.concat [[firstEnfOfStm;lastEndOfStm];trueLabels;falseLabels])
 
-    let doCaseStm (ctx: Ctx) (expr, mainLabels, stmt) =
+    let doCaseStm (expr, mainLabels, stmt) (ctx: Ctx) =
         let lastEndOfStm = ref ForwardLabel
         let (defBranch, defLabels) = stmtListToIlList ctx stmt
         // TODO reduce creation of new var if we want to just read variable
@@ -145,7 +153,7 @@ module rec Lang =
             ]
          , [yield! labels ; yield lastEndOfStm])
 
-    let doWhileStm (ctx: Ctx) (expr, stmt) =
+    let doWhileStm (expr, stmt) (ctx: Ctx) =
         let condition = fst <| ctx.ExprToIl expr (Some ctx.sysTypes.boolean)
         let conditionLabel = ref (LazyLabel (condition.Head, nullRef()))
         // push loop context
@@ -153,7 +161,7 @@ module rec Lang =
         let continueLabel = ref (LazyLabel (condition.Head, nullRef()))
         ctx.loop.Push(continueLabel, breakLabel)
         let (whileBranch, whileLabels) = stmtListToIlList ctx stmt
-        Ctx.resolveSysLabels (List.tryHead condition) whileLabels
+        Ctx.ResolveSysLabels (List.tryHead condition) whileLabels
         ctx.loop.Pop() |> ignore
         ([
             yield IlBranch(IlBr,conditionLabel)
@@ -165,14 +173,14 @@ module rec Lang =
                                     | _ -> condition.Head), nullRef())))
         ],[breakLabel])
 
-    let doRepeatStm (ctx: Ctx) (stmt, expr) =
+    let doRepeatStm (stmt, expr) (ctx: Ctx) =
         let condition = fst <| ctx.ExprToIl expr (Some ctx.sysTypes.boolean)
         // push loop context
         let breakLabel = ref ForwardLabel
         let continueLabel = ref (LazyLabel(condition.Head,nullRef()))
         ctx.loop.Push(continueLabel, breakLabel)
         let (repeatBranch, whileLabels) = stmtListToIlList ctx stmt
-        Ctx.resolveSysLabels (List.tryHead condition) whileLabels
+        Ctx.ResolveSysLabels (List.tryHead condition) whileLabels
         ctx.loop.Pop() |> ignore
         ([
             yield! repeatBranch
@@ -183,7 +191,7 @@ module rec Lang =
                                     | _ -> condition.[0]),nullRef())))
         ],[breakLabel])
 
-    let doForStm (ctx: Ctx) (ident, initExpr, delta, finiExpr, stmt) =
+    let doForStm (ident, initExpr, delta, finiExpr, stmt) (ctx: Ctx) =
         let var, varType = ctx.FindSymbol ident |> function
                              | ChainLoad([VariableLoad(vs, vt)], _) -> vs, vt
                              | _ -> failwith "IE"
@@ -223,7 +231,7 @@ module rec Lang =
               +Ldloc varFinal
               IlBranch(IlBne_Un, stmtLabel)
             ]
-        Ctx.resolveSysLabels (List.tryHead incLoopVar) forLabels
+        Ctx.ResolveSysLabels (List.tryHead incLoopVar) forLabels
         ctx.loop.Pop() |> ignore
         ([
             yield! loopInitializeVariables
@@ -233,42 +241,37 @@ module rec Lang =
             yield! condition
         ],[breakLabel])
 
-    let rec stmtToIl (ctx: Ctx) sysLabels (s: Statement): (MetaInstruction * BranchLabel ref list) =
-        let stmtToIlList = stmtListToIlList ctx
-        let exprToIl = ctx.ExprToIl
+    let doCallStm ce (ctx: Ctx) = (fst (ctx.DoCall ce true), [])
+    let doIdentStm i = doCallStm (CallExpr(i,[]))
+    let doLabelStm l (ctx: Ctx) = ([],[ctx.FindLabelUnsafe l])
+    let doGotoStm s (ctx: Ctx) = ([IlBranch(IlBr,ctx.FindLabelUnsafe s)],[]) // will do LazyLabel
+    let doEmptyStm = fun _ -> ([],[])
 
+    let rec stmtToMeta (ctx: Ctx) sysLabels (s: Statement): (MetaInstruction * BranchLabel ref list) =
         let (instructions, newSysLabels) =
-                match s with
-                | CallStm ce -> (fst (ctx.DoCall ce true), [])
-                | IdentStm i -> (fst (ctx.DoCall (CallExpr(i,[])) true), [])
-                | AssignStm(ident, expr) -> (getVar4Assign ctx ident (exprToIl expr), [])
-                | IfStm stm -> doIfStm ctx stm
-                | LabelStm l -> ([],[ctx.findLabelUnsafe l])
-                | GotoStm s -> ([IlBranch(IlBr,ctx.findLabelUnsafe s)],[]) // will do LazyLabel
-                | CaseStm stm -> doCaseStm ctx stm
-                | WhileStm stm -> doWhileStm ctx stm
-                | RepeatStm stm -> doRepeatStm ctx stm
-                | ForStm stm -> doForStm ctx stm
-                | WithStm (idents, stmt) ->
-                    let (withSymbols, ils) = getVar4With ctx idents
-                    let newCtx = { ctx with symbols = withSymbols }
-                    // TODO check if some part is unused in ils
-                    let (branch, labels) = stmtListToIlList newCtx stmt
-                    ([
-                        for i in ils do yield! i
-                        yield! branch
-                    ],labels)
-                | EmptyStm -> ([],[])
-                | _ -> ([],[])
+            ctx |>
+            match s with
+            | CallStm stm -> doCallStm stm
+            | IdentStm stm -> doIdentStm stm
+            | AssignStm stm -> doAssignStm stm
+            | IfStm stm -> doIfStm stm
+            | LabelStm stm -> doLabelStm stm
+            | GotoStm stm -> doGotoStm stm
+            | CaseStm stm -> doCaseStm stm
+            | WhileStm stm -> doWhileStm stm
+            | RepeatStm stm -> doRepeatStm stm
+            | ForStm stm -> doForStm stm
+            | WithStm stm -> doWithStm stm
+            | EmptyStm -> doEmptyStm
         // TODO fix peepholes about jump to next opcode
-        Ctx.resolveSysLabels (List.tryHead instructions) sysLabels
+        Ctx.ResolveSysLabels (List.tryHead instructions) sysLabels
         (instructions |> InstructionList, newSysLabels)
 
     let stmtListToIlList (ctx: Ctx) sl: (IlInstruction list * BranchLabel ref list) =
         let lastSysLabels = ref []
         let instructions = [
               for s in sl do
-                let (instructions, sysLabels) = stmtToIl ctx !lastSysLabels s
+                let (instructions, sysLabels) = stmtToMeta ctx !lastSysLabels s
                 lastSysLabels := sysLabels
                 yield! metaToIlList instructions
             ]
@@ -311,11 +314,11 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         ]
         let finallyBlock = match finalizeVariables with
                            | [] ->
-                               Ctx.resolveSysLabels (Some returnBlock.Head) labels
+                               Ctx.ResolveSysLabels (Some returnBlock.Head) labels
                                None
                            | _ ->
                                let finallyBlock = [yield! finalizeVariables; +Endfinally]
-                               Ctx.resolveSysLabels (Some finallyBlock.Head) labels
+                               Ctx.ResolveSysLabels (Some finallyBlock.Head) labels
                                Some finallyBlock
         (instructions, finallyBlock, returnBlock)
         |> HandleFunction

@@ -122,15 +122,15 @@ type Ctx = {
         (snd self.symbols.Head).Add(StringName key, VariableSym(varKind, varType))
         (key, varDef)
 
-    member self.findLabel name =
+    member self.FindLabel name =
         self.labels |> List.tryPick (fun l -> match l.TryGetValue name with | true, bl-> Some bl | _ -> None)
 
-    member self.findLabelUnsafe name =
-        match self.findLabel name with
+    member self.FindLabelUnsafe name =
+        match self.FindLabel name with
         | Some bl -> bl
         | _ -> failwithf "IE cannot find label %s" name
 
-    static member resolveSysLabels head labels =
+    static member ResolveSysLabels head labels =
         match head with
         | Some((IlResolvedEx(_,_,rex)) as h) ->
             rex := labels |> List.fold (fun s l -> let ll = LazyLabel(h, nullRef()) in (l := ll; ll::s)) !rex
