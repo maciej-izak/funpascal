@@ -130,13 +130,6 @@ type Ctx = {
         | Some bl -> bl
         | _ -> failwithf "IE cannot find label %s" name
 
-    static member ResolveSysLabels head labels =
-        match head with
-        | Some((IlResolvedEx(_,_,rex)) as h) ->
-            rex := labels |> List.fold (fun s l -> let ll = LazyLabel(h, nullRef()) in (l := ll; ll::s)) !rex
-        | Some h -> for l in labels do l := LazyLabel(h, nullRef())
-        | _ -> ()
-
     // Types module
     member self.AddTypeSetForEnum = TypesDef.addTypeSetForEnum self
     member self.AddTypeSet = TypesDef.addTypeSet self

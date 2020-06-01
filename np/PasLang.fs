@@ -10,6 +10,13 @@ open Mono.Cecil.Rocks
 [<AutoOpen>]
 module rec LangStmt =
 
+    let resolveSysLabels head labels =
+        match head with
+        | Some((IlResolvedEx(_,_,rex)) as h) ->
+            rex := labels |> List.fold (fun s l -> let ll = LazyLabel(h, nullRef()) in (l := ll; ll::s)) !rex
+        | Some h -> for l in labels do l := LazyLabel(h, nullRef())
+        | _ -> ()
+
     let doAssignStm (ident, expr) (ctx: Ctx) =
         // add param for findSymbol to set purpose (like this `assign`)
         match ctx.FindSymbol ident with
@@ -161,7 +168,7 @@ module rec LangStmt =
         let continueLabel = ref (LazyLabel (condition.Head, nullRef()))
         ctx.loop.Push(continueLabel, breakLabel)
         let (whileBranch, whileLabels) = stmtListToIlList ctx stmt
-        Ctx.ResolveSysLabels (List.tryHead condition) whileLabels
+        resolveSysLabels (List.tryHead condition) whileLabels
         ctx.loop.Pop() |> ignore
         ([
             yield IlBranch(IlBr,conditionLabel)
@@ -180,7 +187,7 @@ module rec LangStmt =
         let continueLabel = ref (LazyLabel(condition.Head,nullRef()))
         ctx.loop.Push(continueLabel, breakLabel)
         let (repeatBranch, whileLabels) = stmtListToIlList ctx stmt
-        Ctx.ResolveSysLabels (List.tryHead condition) whileLabels
+        resolveSysLabels (List.tryHead condition) whileLabels
         ctx.loop.Pop() |> ignore
         ([
             yield! repeatBranch
@@ -231,7 +238,7 @@ module rec LangStmt =
               +Ldloc varFinal
               IlBranch(IlBne_Un, stmtLabel)
             ]
-        Ctx.ResolveSysLabels (List.tryHead incLoopVar) forLabels
+        resolveSysLabels (List.tryHead incLoopVar) forLabels
         ctx.loop.Pop() |> ignore
         ([
             yield! loopInitializeVariables
@@ -246,32 +253,31 @@ module rec LangStmt =
     let doLabelStm l (ctx: Ctx) = ([],[ctx.FindLabelUnsafe l])
     let doGotoStm s (ctx: Ctx) = ([IlBranch(IlBr,ctx.FindLabelUnsafe s)],[]) // will do LazyLabel
     let doEmptyStm = fun _ -> ([],[])
+    let doStm = function
+        | CallStm stm -> doCallStm stm
+        | IdentStm stm -> doIdentStm stm
+        | AssignStm stm -> doAssignStm stm
+        | IfStm stm -> doIfStm stm
+        | LabelStm stm -> doLabelStm stm
+        | GotoStm stm -> doGotoStm stm
+        | CaseStm stm -> doCaseStm stm
+        | WhileStm stm -> doWhileStm stm
+        | RepeatStm stm -> doRepeatStm stm
+        | ForStm stm -> doForStm stm
+        | WithStm stm -> doWithStm stm
+        | EmptyStm -> doEmptyStm
 
-    let rec stmtToMeta (ctx: Ctx) sysLabels (s: Statement): (MetaInstruction * BranchLabel ref list) =
-        let (instructions, newSysLabels) =
-            ctx |>
-            match s with
-            | CallStm stm -> doCallStm stm
-            | IdentStm stm -> doIdentStm stm
-            | AssignStm stm -> doAssignStm stm
-            | IfStm stm -> doIfStm stm
-            | LabelStm stm -> doLabelStm stm
-            | GotoStm stm -> doGotoStm stm
-            | CaseStm stm -> doCaseStm stm
-            | WhileStm stm -> doWhileStm stm
-            | RepeatStm stm -> doRepeatStm stm
-            | ForStm stm -> doForStm stm
-            | WithStm stm -> doWithStm stm
-            | EmptyStm -> doEmptyStm
+    let rec stmtToMeta sysLabels (s: Statement) (ctx: Ctx): (MetaInstruction * BranchLabel ref list) =
+        let instructions, newSysLabels = doStm s ctx
         // TODO fix peepholes about jump to next opcode
-        Ctx.ResolveSysLabels (List.tryHead instructions) sysLabels
+        resolveSysLabels (List.tryHead instructions) sysLabels
         (instructions |> InstructionList, newSysLabels)
 
     let stmtListToIlList (ctx: Ctx) sl: (IlInstruction list * BranchLabel ref list) =
         let lastSysLabels = ref []
         let instructions = [
               for s in sl do
-                let (instructions, sysLabels) = stmtToMeta ctx !lastSysLabels s
+                let (instructions, sysLabels) = stmtToMeta !lastSysLabels s ctx
                 lastSysLabels := sysLabels
                 yield! metaToIlList instructions
             ]
@@ -314,11 +320,11 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         ]
         let finallyBlock = match finalizeVariables with
                            | [] ->
-                               Ctx.ResolveSysLabels (Some returnBlock.Head) labels
+                               resolveSysLabels (Some returnBlock.Head) labels
                                None
                            | _ ->
                                let finallyBlock = [yield! finalizeVariables; +Endfinally]
-                               Ctx.ResolveSysLabels (Some finallyBlock.Head) labels
+                               resolveSysLabels (Some finallyBlock.Head) labels
                                Some finallyBlock
         (instructions, finallyBlock, returnBlock)
         |> HandleFunction
