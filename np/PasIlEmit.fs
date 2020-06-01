@@ -157,11 +157,6 @@ let private instr = function
 let (~+) (i: AtomInstruction) = IlResolved(i, i |> atomInstr)
 let (~+.) (i: AtomInstruction) = IlResolvedEx(i, i |> atomInstr, ref [])
 
-let metaToIlList = function
-    | InstructionList l -> l
-    // may be extended for inline variables in the future
-    | _ -> failwith "IE not supported metaToIlList"
-
 let emit (ilg : Cil.ILProcessor) inst =
     match inst with
     | DeclareLocal t -> t |> ilg.Body.Variables.Add
