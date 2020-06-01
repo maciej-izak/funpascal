@@ -223,15 +223,15 @@ type CaseLabel =
 
 type Statement =
     | EmptyStm
-    | AssignStm of DIdent * ExprEl
+    | AssignStm of (DIdent * ExprEl)
     | CallStm of CallExpr
     | IdentStm of DIdent
-    | IfStm of ExprEl * Statement list * Statement list
-    | CaseStm of ExprEl * (CaseLabel list * Statement list) list * Statement list
-    | WhileStm of ExprEl * Statement list
-    | RepeatStm of Statement list * ExprEl
-    | ForStm of DIdent * ExprEl * int * ExprEl * Statement list
-    | WithStm of DIdent list * Statement list
+    | IfStm of (ExprEl * Statement list * Statement list)
+    | CaseStm of (ExprEl * (CaseLabel list * Statement list) list * Statement list)
+    | WhileStm of (ExprEl * Statement list)
+    | RepeatStm of (Statement list * ExprEl)
+    | ForStm of (DIdent * ExprEl * int * ExprEl * Statement list)
+    | WithStm of (DIdent list * Statement list)
     | GotoStm of string
     | LabelStm of string
 

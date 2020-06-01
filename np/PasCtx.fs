@@ -478,6 +478,7 @@ module TypesDef =
         //(doArrayDef dimensions tname (ref []) name).Name <- name
 
 module SymSearch =
+
     let findSymbol (ctx: Ctx) (DIdent ident) =
         let mainSym = ident.Head |> function | Ident n -> ctx.FindSym(StringName n)
 
