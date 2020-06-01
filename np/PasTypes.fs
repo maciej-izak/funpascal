@@ -1,29 +1,5 @@
 ﻿[<AutoOpen>]
-module NP.PasTypes
-
-[<AutoOpen>]
-module PasIntrinsics =
-    type Intrinsic =
-        | IncProc
-        | DecProc
-        | SuccProc
-        | PredProc
-        | ExitProc
-        | HaltProc
-        | ContinueProc
-        | BreakProc
-        | WriteProc
-        | WriteLnProc
-        | ReadProc
-        | ReadLnProc
-        | WriteLineProc
-        | NewProc
-        | DisposeProc
-        | OrdFunc
-        | ChrFunc
-        | TruncFunc
-        | RoundFunc
-        | SizeOfFunc
+module Pas.Types
 
 open System
 open System.Text

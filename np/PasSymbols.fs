@@ -1,8 +1,8 @@
-﻿[<AutoOpen>]
-module NP.PasSymbols
+﻿namespace Pas
 
 open Mono.Cecil
 open Mono.Cecil.Cil
+open NP
 
 [<AutoOpen>]
 module ConstSymbols =
@@ -23,110 +23,141 @@ module ConstSymbols =
         | ConstTempValue of byte[] * PasType
         | ConstValue of FieldDefinition * PasType
 
-open System
-open System.Collections.Generic
+[<AutoOpen>]
+module IntrinsicSymbols =
 
-type MethodParam = {
-    typ: PasType
-    ref: bool
-}
+    type IntrinsicSym =
+        | IncProc
+        | DecProc
+        | SuccProc
+        | PredProc
+        | ExitProc
+        | HaltProc
+        | ContinueProc
+        | BreakProc
+        | WriteProc
+        | WriteLnProc
+        | ReadProc
+        | ReadLnProc
+        | WriteLineProc
+        | NewProc
+        | DisposeProc
+        | OrdFunc
+        | ChrFunc
+        | TruncFunc
+        | RoundFunc
+        | SizeOfFunc
 
-type MethodInfo = {
-    paramList: MethodParam array
-    result: PasType option
-    raw: MethodReference
-}
+[<AutoOpen>]
+module Symbols =
 
-type VariableKind =
-     | LocalVariable of VariableDefinition
-     | GlobalVariable of FieldDefinition
-     | ParamVariable of ParamRefKind * ParameterDefinition
-with
-    member self.Type() =
-        match self with
-        | LocalVariable v -> v.VariableType
-        | GlobalVariable v -> v.FieldType
-        | ParamVariable (_, v) -> v.ParameterType
+    open System
+    open System.Collections.Generic
 
-type LastTypePoint =
-    | LTPVar of VariableKind * PasType
-    | LTPDeref of PasType * bool
-    | LTPStruct of FieldDefinition * PasType
-    | LTPNone
-with
-    member self.ToTypeRef =
-        match self with
-        | LTPVar(_,tr) -> tr
-        | LTPDeref(tr, _) -> tr
-        | LTPStruct(_, tr) -> tr
+    type MethodParam = {
+        typ: PasType
+        ref: bool
+    }
+
+    type MethodInfo = {
+        paramList: MethodParam array
+        result: PasType option
+        raw: MethodReference
+    }
+
+    type VariableKind =
+         | LocalVariable of VariableDefinition
+         | GlobalVariable of FieldDefinition
+         | ParamVariable of ParamRefKind * ParameterDefinition
+    with
+        member self.Type() =
+            match self with
+            | LocalVariable v -> v.VariableType
+            | GlobalVariable v -> v.FieldType
+            | ParamVariable (_, v) -> v.ParameterType
+
+    type LastTypePoint =
+        | LTPVar of VariableKind * PasType
+        | LTPDeref of PasType * bool
+        | LTPStruct of FieldDefinition * PasType
+        | LTPNone
+    with
+        member self.ToTypeRef =
+            match self with
+            | LTPVar(_,tr) -> tr
+            | LTPDeref(tr, _) -> tr
+            | LTPStruct(_, tr) -> tr
+            | _ -> failwith "IE"
+
+        member self.PasType =
+            match self with
+            | LTPVar(_, pt) -> pt
+            | LTPDeref(pt, _) -> pt
+            | LTPStruct(_, pt) -> pt
+            | _ -> failwith "IE"
+
+    type ReferencedDef = MethodInfo * (Symbol * Symbol) list ref
+
+    and MethodSym =
+        | Referenced of ReferencedDef
+        | Intrinsic of IntrinsicSym
+    with
+        member self.ReturnType =
+            match self with
+            | Referenced({result = result},_) -> result
+            | Intrinsic _ -> None
+
+    and Symbol =
+        | VariableSym of (VariableKind * PasType)
+        | MethodSym of MethodSym
+        | TypeSym of PasType
+        | EnumValueSym of int * PasType
+        | WithSym of (VariableKind * PasType)
+        | ConstSym of ConstSym
+        | UnknownSym
+
+    let (|NestedRoutineId|) = function
+        | VariableSym(LocalVariable vd, _), _ -> vd :> obj
+        | VariableSym(ParamVariable (_, pd), _), _ -> pd :> obj
         | _ -> failwith "IE"
 
-    member self.PasType =
-        match self with
-        | LTPVar(_, pt) -> pt
-        | LTPDeref(pt, _) -> pt
-        | LTPStruct(_, pt) -> pt
+    let (|NestedRoutineSym|_|) = function
+        | VariableSym(LocalVariable _, t) | VariableSym(ParamVariable _, t) as vs -> Some(NestedRoutineSym(vs, t))
+        | _ -> None
+
+    type ValueLoad =
+        | ValueInt of int
+        | ValueFloat of single
+
+    type SymbolLoad =
+        | DerefLoad
+        | ElemLoad of (ExprEl * ArrayDim) list * PasType
+        | StructLoad of (FieldDefinition * PasType) list
+        | VariableLoad of (VariableKind * PasType)
+        | ValueLoad of ValueLoad
+        | CallableLoad of MethodSym
+        | TypeCastLoad of PasType
+
+    let (|VariableSymLoad|) = function
+        | VariableSym((_,t) as vs), _ -> [VariableLoad vs], Some t
         | _ -> failwith "IE"
 
-type ReferencedDef = MethodInfo * (Symbol * Symbol) list ref
+    type ChainLoad =
+        | ChainLoad of (SymbolLoad list * PasType option)
+        | SymbolLoadError
 
-and MethodSym =
-    | Referenced of ReferencedDef
-    | Intrinsic of Intrinsic
-with
-    member self.ReturnType =
-        match self with
-        | Referenced({result = result},_) -> result
-        | Intrinsic _ -> None
+    let chainToSLList = function
+        | ChainLoad sl -> sl
+        | SymbolLoadError -> [],None // failwith "IE"
 
-and Symbol =
-    | VariableSym of (VariableKind * PasType)
-    | MethodSym of MethodSym
-    | TypeSym of PasType
-    | EnumValueSym of int * PasType
-    | WithSym of (VariableKind * PasType)
-    | ConstSym of ConstSym
-    | UnknownSym
+    let caseSensitive = HashIdentity.Structural<TypeName>
+    let caseInsensitive =
+        HashIdentity.FromFunctions
+            (function
+             | StringName s -> s.GetHashCode(StringComparison.InvariantCultureIgnoreCase)
+             | TypedName t -> t.GetHashCode()
+             | AnonName -> failwith "IE")
+            (fun a b -> String.Equals(string a, string b, StringComparison.InvariantCultureIgnoreCase))
 
-let (|NestedRoutineId|) = function
-    | VariableSym(LocalVariable vd, _), _ -> vd :> obj
-    | VariableSym(ParamVariable (_, pd), _), _ -> pd :> obj
-
-let (|NestedRoutineSym|_|) = function
-    | VariableSym(LocalVariable _, t) | VariableSym(ParamVariable _, t) as vs -> Some(NestedRoutineSym(vs, t))
-    | _ -> None
-
-type ValueLoad =
-    | ValueInt of int
-    | ValueFloat of single
-
-type SymbolLoad =
-    | DerefLoad
-    | ElemLoad of (ExprEl * ArrayDim) list * PasType
-    | StructLoad of (FieldDefinition * PasType) list
-    | VariableLoad of (VariableKind * PasType)
-    | ValueLoad of ValueLoad
-    | CallableLoad of MethodSym
-    | TypeCastLoad of PasType
-
-let (|VariableSymLoad|) = function | VariableSym((_,t) as vs), _ -> [VariableLoad vs], Some t
-
-type ChainLoad =
-    | ChainLoad of (SymbolLoad list * PasType option)
-    | SymbolLoadError
-
-let chainToSLList = function
-    | ChainLoad sl -> sl
-    | SymbolLoadError -> [],None // failwith "IE"
-
-let caseSensitive = HashIdentity.Structural<TypeName>
-let caseInsensitive =
-    HashIdentity.FromFunctions
-        (function
-         | StringName s -> s.GetHashCode(StringComparison.InvariantCultureIgnoreCase)
-         | TypedName t -> t.GetHashCode()
-         | AnonName -> failwith "IE")
-        (fun a b -> String.Equals(string a, string b, StringComparison.InvariantCultureIgnoreCase))
-
-type SymbolsDict<'T>() =
-    inherit Dictionary<string, 'T>()
+    type SymbolsDict<'T>() =
+        inherit Dictionary<string, 'T>()

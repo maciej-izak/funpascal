@@ -1,8 +1,7 @@
 [<AutoOpen>]
-module NP.PasOperators
+module Pas.Operators
 
 open FParsec
-open PasAst
 
 type InfixOperators = {
     priority: int

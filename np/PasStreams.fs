@@ -6,11 +6,7 @@ open System.IO
 open System.Runtime
 open System.Text.Json
 open System.Text.Json.Serialization
-open NP.PasVar
-open NP.PasAst
-open NP.BasicParsers
-open NP.PasParser
-open NP.PasIl
+open Pas
 open FParsec
 open FParsec.Primitives
 open FParsec.CharParsers
@@ -21,7 +17,6 @@ open MBrace.FsPickler
 open Mono.Cecil
 open Mono.Cecil.Cil
 open Mono.Cecil.Rocks
-open Pas
 
 let applyParser (parser: Parser<'Result,'UserState>) (stream: CharStream<'UserState>) =
     let reply = parser stream
@@ -81,7 +76,7 @@ let private compileModule (ProgramAst(name, block)) state = //, methods: Method 
         | CompilerFatalError ctx -> Seq.iter (printfn "%s") ctx.errors; null
         | _ -> reraise()
     if bb <> null then
-        let mainBlock = compileBlock methodBuilder typeBuilder bb
+        let mainBlock = IlBuilder.CompileBlock methodBuilder typeBuilder bb
         mainBlock.Body.InitLocals <- true
         // https://github.com/jbevain/cecil/issues/365
         mainBlock.Body.OptimizeMacros()

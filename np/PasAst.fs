@@ -1,8 +1,5 @@
 [<AutoOpen>]
-module NP.PasAst
-
-open FParsec
-open System
+module Pas.Ast
 
 let equalsOn f x (yobj:obj) =
     match yobj with

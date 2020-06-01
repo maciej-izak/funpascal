@@ -1,5 +1,5 @@
 ﻿[<AutoOpen>]
-module NP.PasInstructions
+module Pas.Instructions
 
 open Mono.Cecil
 open Mono.Cecil.Cil

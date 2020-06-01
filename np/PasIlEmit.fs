@@ -1,5 +1,5 @@
 ﻿[<AutoOpen>]
-module NP.PasIlEmit
+module Pas.IlEmit
 
 open Mono.Cecil
 open Mono.Cecil.Cil
@@ -219,3 +219,20 @@ let typeRefToConv (r: TypeReference) =
     | MetadataType.UInt32  -> +Conv Conv_U4
     | MetadataType.UInt64  -> +Conv Conv_U8
     | _ -> failwith "IE"
+
+// TODO for further optimizations
+let (|IlNotEqual|_|) (items: IlInstruction list) =
+    if items.Length < 3 then
+        None
+    else
+        let last3 = items.[items.Length-4..]
+                    (*
+    | NotEqual(a, b) -> [|yield! add2OpIl a b Ceq; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
+    | StrictlyLessThan(a, b) -> add2OpIl a b Clt
+    | StrictlyGreaterThan(a, b) -> add2OpIl a b Cgt
+    | LessThanOrEqual(a, b) -> [|yield! add2OpIl a b Cgt ; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
+    | GreaterThanOrEqual(a, b) -> [|yield! add2OpIl a b Clt; ilResolve (Ldc_I4(0)); ilResolve Ceq|]
+                    *)
+        match ilToAtom last3 with
+        | [Ceq;Ldc(LdcI4 _);Ceq] -> Some(IlNotEqual)
+        | _ -> None

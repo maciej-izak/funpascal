@@ -1,15 +1,11 @@
-module NP.PasParser
+[<AutoOpen>]
+module Pas.Parser
 
 open System.Collections.Generic
-
 open FParsec
-open FParsec.Primitives
-open FParsec.CharParsers
-//open FParsec.Pipes
-//open FParsec.Pipes.Precedence
 
 let inline (!^) (a: Parser<'a list option,_>) = a |>> Option.defaultValue []
-let inline (!^^) (a: Parser<'a list option option,_>) = 
+let inline (!^^) (a: Parser<'a list option option,_>) =
     a |>> function Some v -> defaultArg v [] | None -> []
 let inline castAs f (a, b) = (f a, f b)
 let inline toList a = [a]
@@ -115,24 +111,24 @@ let isKeyword s = keywordsSet.Contains s
 
 let numeralOrDecimal : Parser<_, PasState> =
     // note: doesn't parse a float exponent suffix
-    numberLiteral NumberLiteralOptions.AllowFraction "number" 
+    numberLiteral NumberLiteralOptions.AllowFraction "number"
     |>> function // raises an exception on overflow
         | v when v.IsInteger -> v.String |> int |> VInteger
         | v -> v.String |> float |> VFloat
 
 let numeral : Parser<_, PasState> =
     // note: doesn't parse a float exponent suffix
-    numberLiteral NumberLiteralOptions.None "integer" 
+    numberLiteral NumberLiteralOptions.None "integer"
     |>> fun v ->  // raises an exception on overflow
           v.String |> int |> VInteger
 
-let hexNumber =    
+let hexNumber =
     pstring "$" >>. many1SatisfyL isHex "hex digit"
     |>> fun s -> System.Convert.ToInt32(s, 16) |> VInteger // raises an exception on overflow
 
-// let binaryNumber =    
+// let binaryNumber =
 //     pstring "#b" >>. many1SatisfyL (fun c -> c = '0' || c = '1') "binary digit"
-//     |>> fun hexStr -> 
+//     |>> fun hexStr ->
 //             // raises an exception on overflow
 //             Binary(System.Convert.ToInt32(hexStr, 2))
 
@@ -150,7 +146,7 @@ let numberOrDecimal =
 
 let stringLiteral =
     let normalCharSnippet = manySatisfy ((<>) ''')
-    let escapedChar = pstring "'" >>? (pstring "'" >>% "'") 
+    let escapedChar = pstring "'" >>? (pstring "'" >>% "'")
     many1Strings ((between (pstring "'") (pstring "'") (stringsSepBy normalCharSnippet escapedChar))
                  <|> ((pstring "#" >>. number) >>= function
                                                    | VInteger i -> i |> char |> string |> preturn
@@ -161,7 +157,7 @@ let tkIdentifier =
     let isProperChar c = isLetter c || c = '_' || isDigit c
     many1Satisfy2L isProperFirstChar isProperChar "ident"
     .>> wsc
-    
+
 let identifier : Parser<string, PasState> =
     let expectedIdentifier = expected "identifier"
     fun stream ->
@@ -174,9 +170,9 @@ let identifier : Parser<string, PasState> =
 
 let constRangeExpression =
     (expr .>> wsc)
-    .>>. (``.. `` >>. expr  .>> wsc) 
+    .>>. (``.. `` >>. expr  .>> wsc)
     |>> (castAs ConstExpr >> ConstExprRange)
- 
+
 let constType =
     identifier |>> DimensionType
 
@@ -197,12 +193,12 @@ let designator =
     pipe2   identifier_p
             (manyTill
                 (choice[
-                        ``^ `` >>% Deref; 
+                        ``^ `` >>% Deref;
                         (``[ `` >>. (sepEndBy1 expr ``, ``) .>> ``] ``)
                         |>> Designator.Array;
                         ``. `` >>. identifier_p
                       ])
-                (lookAhead(followedBy (next2CharsSatisfy 
+                (lookAhead(followedBy (next2CharsSatisfy
                               (fun c1 c2 ->
                                 match (c1, c2) with
                                 | '.', '.' -> true
@@ -221,7 +217,7 @@ let arrayDecl =
         (``array `` >>. arrayIndexes)
         (``of `` >>. typeIdentifier)
 
-let typeSetDef = 
+let typeSetDef =
   ``?packed `` .>>.? (``set `` >>. ``of `` >>. typeIdentifier)
 
 typeIdentifierRef :=
@@ -242,12 +238,12 @@ let fieldsList  =
 
 let recordDef =
       ``?packed `` .>>.? (between ``record `` ``end `` (sepEndBy fieldsList ``; ``))
-      
+
 let structType =
     recordDef |>> Record
-     
+
 let typeAlias =
-    ``?type `` .>>. typeIdentifier 
+    ``?type `` .>>. typeIdentifier
     |>> TypeAlias
 
 let paramListDecl p =
@@ -256,7 +252,7 @@ let paramListDecl p =
 let paramList1 =
     paramListDecl sepBy1
 
-let formalParam  = 
+let formalParam  =
         choice
             [
                 attempt(``const|`` >>% Some ParamKind.Const)
@@ -264,23 +260,23 @@ let formalParam  =
                 preturn None
             ]
         .>>. paramList1
-        
-let formalParamsList =
-    between ``( `` ``) `` (sepEndBy formalParam ``; ``)  
 
-let procDecl = 
+let formalParamsList =
+    between ``( `` ``) `` (sepEndBy formalParam ``; ``)
+
+let procDecl =
     tuple3
-        ((``procedure `` >>. preturn Procedure) 
-         <|> (``function `` >>. preturn Function)) 
+        ((``procedure `` >>. preturn Procedure)
+         <|> (``function `` >>. preturn Function))
         (opt identifier)
         (opt formalParamsList)
      >>= fun (k, n, p) -> match k with
                           | Function -> (``: `` >>. typeIdentifier) |>> fun i -> (n, Some(i), p)
                           | Procedure -> preturn(n, None, p)
-                          
+
 let typeProc =
     procDecl |>> ProcType
-    
+
 let typeRange =
     expr .>>. (``.. `` >>. expr) |>> ((castAs ConstExpr) >> SimpleRange)
 
@@ -297,27 +293,27 @@ let typeDeclarations =
         many1 (
             (identifier .>> ``= ``)
             .>>. ((choice[structType;attempt(arrayType);typePtr;attempt(typeRange);attempt(typeSet);attempt(typeProc);typeAlias;attempt(typeEnum)]).>> ``; ``)
-            |>> Type)) 
+            |>> Type))
     |>> Types
- 
+
 let exprInt =
-    pint32 .>> wsc .>> lookAhead(followedBy (next2CharsSatisfy 
+    pint32 .>> wsc .>> lookAhead(followedBy (next2CharsSatisfy
                                   (fun c1 c2 ->
                                     match (c1, c2) with
                                     | '.', '.' -> true
                                     | '.', _ -> false
-                                    | _, _ -> true))) 
+                                    | _, _ -> true)))
     |>> VInteger
-    // 
+    //
 
 let exprFloat =
-    //lookAhead(pint32 .>> wsc .>> notFollowedBy (pstring "..")) >>. 
+    //lookAhead(pint32 .>> wsc .>> notFollowedBy (pstring "..")) >>.
     //pfloat |>> Float
     numberOrDecimal
 
-let exprString = 
+let exprString =
     stringLiteral |>> VString
-    
+
 let exprIdent =
     designator |>> VIdent
 
@@ -325,7 +321,7 @@ let exprNil =
     ``nil `` >>% VNil
 
 let exprSet =
-    ``[ `` >>. (sepEndBy (attempt(expr .>>. (``.. `` >>. expr) |>> SRange) <|> (expr |>> SValue)) ``, ``) .>> ``] `` 
+    ``[ `` >>. (sepEndBy (attempt(expr .>>. (``.. `` >>. expr) |>> SRange) <|> (expr |>> SValue)) ``, ``) .>> ``] ``
     |>> VSet
 
 let callExpr =
@@ -335,7 +331,7 @@ let callExpr =
                    | pe -> ParamExpr pe
     let actualParamsList =
         between ``( `` ``) `` (sepEndBy actualParam ``, ``)
-    designator .>>.? actualParamsList 
+    designator .>>.? actualParamsList
     |>> CallExpr
 
 let exprCall = callExpr |>> VCallResult
@@ -348,7 +344,7 @@ let exprAtom =
           | e -> TupleExpr e
 
 let exprExpr =
-    between ``( `` ``) `` expr 
+    between ``( `` ``) `` expr
 
 opp.TermParser <- (exprExpr <|> basicExprAtom) .>> wsc
 popp.TermParser <- (exprExpr <|> exprAtom) .>> wsc
@@ -356,11 +352,11 @@ popp.TermParser <- (exprExpr <|> exprAtom) .>> wsc
 addOperators()
 
 let varDeclarations =
-    ``var `` 
+    ``var ``
     >>. many1 (tuple2 ((sepEndBy1 identifier ``, ``) .>> ``: ``)
-              (typeIdentifier .>> ``; ``)) 
+              (typeIdentifier .>> ``; ``))
     |>> Variables
-    
+
 let typedConstConstr, typedConstConstrRef = createParserForwardedToRef()
 
 let constConstr =
@@ -373,7 +369,7 @@ let constConstr =
 typedConstConstrRef := constConstr
 
 let constDeclarations =
-    ``const `` 
+    ``const ``
     >>. many1 (
             tuple3
                 (identifier)
@@ -409,8 +405,8 @@ let compoundStatement, compoundStatementRef = createParserForwardedToRef()
 let ifStatement =
     tuple3 (``if `` >>. expr .>> ``then ``)
            !^(opt compoundStatement)
-           !^(opt(``else `` >>. !^(opt(compoundStatement)))) 
-    |>> IfStm  
+           !^(opt(``else `` >>. !^(opt(compoundStatement))))
+    |>> IfStm
 
 let caseLabel =
     sepBy1 ((attempt(constRangeExpression |>> CaseRange))
@@ -419,9 +415,9 @@ let caseLabel =
 
 let statementList, statementListRef = createParserForwardedToRef()
 
-let innerStatementList = 
+let innerStatementList =
         (statementList
-         .>>. many(identifier .>>? (``: `` .>> many ``; ``) |>> LabelStm) 
+         .>>. many(identifier .>>? (``: `` .>> many ``; ``) |>> LabelStm)
          |>> function
              | (s, []) -> s |> List.concat
              | (s, l) -> [l] |> List.append s |> List.concat
@@ -435,7 +431,7 @@ let caseStatement =
            |>> CaseStm
 
 let forStatement =
-    tuple5 
+    tuple5
         (``for `` >>. designator)
         (``:= `` >>. expr)
         ((``to `` >>% 1) <|> (``downto `` >>% -1))
@@ -444,9 +440,9 @@ let forStatement =
     |>> ForStm
 
 let repeatStatement =
-    (between 
-        ``repeat `` 
-        ``until `` 
+    (between
+        ``repeat ``
+        ``until ``
         (sepEndBy compoundStatement ``; ``) |>> List.concat)
     .>>. expr
     |>> RepeatStm
@@ -465,7 +461,7 @@ let gotoStatement =
     ``goto `` >>. identifier |>> GotoStm
 
 let statement =
-    many(identifier .>>? (lookAhead(notFollowedBy (pstring ":=")) >>. ``: ``) |>> LabelStm) 
+    many(identifier .>>? (lookAhead(notFollowedBy (pstring ":=")) >>. ``: ``) |>> LabelStm)
     .>>.
     choice[
             simpleStatement
@@ -479,32 +475,32 @@ let statement =
             withStatement
             gotoStatement
             emptyStatement
-        ] 
+        ]
     |>> function
         | ([], s) -> [s]
         | (l, s) -> l @ [s]
-    
+
 let procFuncDeclarations, procFuncDeclarationsRef = createParserForwardedToRef()
 
 let declarations =
-    many (choice[typeDeclarations; varDeclarations; constDeclarations; labelDeclarations; procFuncDeclarations]) 
+    many (choice[typeDeclarations; varDeclarations; constDeclarations; labelDeclarations; procFuncDeclarations])
 
-let beginEnd = 
-    between ``begin `` ``end `` 
+let beginEnd =
+    between ``begin `` ``end ``
             (statementList
-             .>>. many(identifier .>>? (``: `` .>> many ``; ``) |>> LabelStm) 
+             .>>. many(identifier .>>? (``: `` .>> many ``; ``) |>> LabelStm)
              |>> function
                  | (s, []) -> s |> List.concat
                  | (s, l) -> [l] |> List.append s |> List.concat
             )
 
 statementListRef := (sepEndBy (statement <|> compoundStatement) (many1 ``; ``))
-    
+
 let block = declarations .>>. beginEnd
 
 let stdCompoundStatement = beginEnd <|> statement
 
-compoundStatementRef := stdCompoundStatement 
+compoundStatementRef := stdCompoundStatement
 
 type FuncNonDeclaredKind =
     | ForwardKind
@@ -523,7 +519,7 @@ procFuncDeclarationsRef :=
               | Some ForwardKind -> preturn(d, ForwardDeclr)
               | Some (ExternalKind es) -> preturn(d, ExternalDeclr es)
               | None -> ((block .>> ``; ``) |>> fun b -> (d, BodyDeclr(b)))
-    )        
+    )
     |>> ProcAndFunc
 
 let program =
@@ -533,6 +529,6 @@ let program =
 
 let pascalModule =
     wsc >>. program .>> (skipManyTill skipAnyChar eof)
-    
+
 let pGrammar: Parser<_, PasState> =  // one type annotation is enough for the whole parser
     pascalModule

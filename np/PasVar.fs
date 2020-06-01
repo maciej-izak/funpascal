@@ -1,11 +1,10 @@
 [<AutoOpen>]
-module NP.PasVar
+module Pas.Var
 
 open System.IO
 open System.Text
 open System.Collections.Generic
 open FParsec
-open PasAst
 
 [<Literal>]
 let DefaultBlockSize = 4096L;//196608L // 3*2^16 = 200k

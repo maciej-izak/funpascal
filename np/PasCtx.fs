@@ -5,7 +5,6 @@ open System.Collections.Generic
 open System.Runtime.CompilerServices
 open Mono.Cecil
 open Mono.Cecil.Cil
-open NP
 
 exception CompilerFatalError of Ctx
 
@@ -30,6 +29,11 @@ module Utils =
            | IntType, IntType -> true
            | PointerType, PointerType -> true // Todo better pointer types check
            | _ -> false
+
+    let inline toMap kvps =
+        kvps
+        |> Seq.map (|KeyValue|)
+        |> Map.ofSeq
 
 type SymOwner =
     | GlobalSpace
@@ -134,12 +138,12 @@ type Ctx = {
         | _ -> ()
 
     // Types module
-    member self.AddTypeSetForEnum = Types.addTypeSetForEnum self
-    member self.AddTypeSet = Types.addTypeSet self
-    member self.AddType = Types.addType self
-    member self.AddTypePointer = Types.addTypePointer self
-    member self.GetInternalType = Types.getInternalType self
-    member self.AddTypeArray = Types.addTypeArray self
+    member self.AddTypeSetForEnum = TypesDef.addTypeSetForEnum self
+    member self.AddTypeSet = TypesDef.addTypeSet self
+    member self.AddType = TypesDef.addType self
+    member self.AddTypePointer = TypesDef.addTypePointer self
+    member self.GetInternalType = TypesDef.getInternalType self
+    member self.AddTypeArray = TypesDef.addTypeArray self
 
     // SymSearch module
     member self.FindSymbol = SymSearch.findSymbol self
@@ -384,7 +388,7 @@ module Ctx =
             sysProc = Ctx.createSystemProc details
         } |> addSystemRoutines
 
-module Types =
+module TypesDef =
 
     let addTypeSetForEnum ctx pasType name =
         let setType = Utils.addMetaType (snd ctx.symbols.Head) name {name=name;kind=TkSet(pasType);raw=ctx.sysTypes.setStorage.raw}
