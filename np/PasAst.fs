@@ -249,7 +249,7 @@ and Declarations =
     | Variables of (string list * TypeIdentifier) list
     | Constants of (string * TypeIdentifier option * ConstExpr) list
     | Labels of string list
-    | ProcAndFunc of ProcHeader * ProcDeclaration
+    | ProcAndFunc of (ProcHeader * ProcDeclaration)
 
 type Program =
     | Unit of string

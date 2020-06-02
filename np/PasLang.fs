@@ -1,4 +1,4 @@
-namespace Pas
+namespace rec Pas
 
 open System
 open System.Collections.Generic
@@ -7,8 +7,12 @@ open Mono.Cecil
 open Mono.Cecil.Cil
 open Mono.Cecil.Rocks
 
+type BuildScope =
+    | MainScope of (string * TypeDefinition * PasState * ModuleDefinition)
+    | LocalScope of Ctx
+
 [<AutoOpen>]
-module rec LangStmt =
+module LangStmt =
 
     let resolveLabels inst labels =
         match List.tryHead inst with
@@ -325,12 +329,177 @@ module LangDecl =
         | TypeArray(ArrayDef decl) -> declTypeArray decl
         | _ -> failwith "IE"
 
-type BuildScope =
-    | MainScope of (string * TypeDefinition * PasState)
-    | LocalScope of Ctx
+    let declTypes types ctx = List.iter (fun (n, t) -> declType t n ctx |> ignore) types
 
-type IlBuilder(moduleBuilder: ModuleDefinition) = class
-    let mb = moduleBuilder
+    let declVar (ctx: Ctx) nt =
+        let addVar vk = vk |> ctx.variables.Head.Add
+        match ctx.SymOwner with
+        | StandaloneMethod _ -> fun (vn, t) ->
+                            VariableDefinition (t: PasType).raw
+                            |> LocalVariable
+                            |> fun vk ->
+                                ctx.NewSymbols.Add(StringName vn, VariableSym(vk, t))
+                                addVar vk
+        | GlobalSpace -> fun (vn, t) ->
+                            let fd = FieldDefinition(vn, FieldAttributes.Public ||| FieldAttributes.Static, t.raw)
+                            fd |> GlobalVariable
+                            |> fun vk ->
+                                ctx.NewSymbols.Add(StringName vn, VariableSym(vk,t))
+                                ctx.details.tb.Fields.Add fd
+                                addVar vk
+        | _ -> failwith "IE"
+        |> fun declVar -> declVar nt
+
+    let declVariables variables (ctx: Ctx) =
+        let doTypedList (l, t) = let dt = ctx.GetInternalType t in l |> List.map (fun v -> v, dt)
+        variables
+        |> List.collect doTypedList
+        |> List.iter (declVar ctx)
+
+    let declConst (ctx: Ctx) (name, ctype, valueExpr) =
+        let ctype = match ctype with | Some t -> Some(ctx.GetInternalType t) | _ -> None
+        let rec addConstAtom pt ce =
+            match pt, ce with
+            | None, ConstExpr expr ->
+                match ctx.EvalConstExpr None expr with
+                | CERInt(i, _) -> ConstInt i
+                | CERFloat f -> ConstFloat f
+                | _ -> failwith "IE"
+            | Some t, ConstExpr expr ->
+                match t with
+                | SetType pt ->
+                    match ctx.EvalConstExpr (Some pt) expr with
+                    | CEROrdSet(b, _) -> ConstTempValue(b, t)
+                    | _ -> failwith "IE"
+                | OrdType ->
+                    match ctx.EvalConstExpr pt expr with
+                    | CERInt(i,_) -> ConstInt i
+                    | _ -> failwith "IE"
+                | StrType ->
+                    match ctx.EvalConstExpr pt expr with
+                    | CERString s -> ConstString s
+                    | _ -> failwith "IE"
+                | _ -> failwith "IE"
+            | Some t, ConstConstr exprs ->
+                match t.kind with
+                | TkArray (_,_,pt) ->
+                    let symToBytes = function
+                        | ConstInt i ->
+                            match pt.kind, pt.SizeOf with
+                            | TkOrd _, 1 -> [|byte i|]
+                            | TkOrd _, 2 -> BitConverter.GetBytes(uint16 i)
+                            | TkOrd _, 4 -> BitConverter.GetBytes(i)
+                            | TkOrd _, 8 -> BitConverter.GetBytes(uint64 i)
+                            | _ -> failwith "IE"
+                        | ConstFloat f -> BitConverter.GetBytes(f)
+                        | ConstString s ->
+                            match pt with
+                            | ChrType -> [|byte(s.Chars 0)|]
+                            | StrType -> strToSStr s
+                            | _ -> failwith "IE"
+                        | ConstBool b -> [|b|]
+                        | ConstTempValue(b,_) -> b
+                    (exprs |> List.map (addConstAtom (Some pt) >> symToBytes) |> Array.concat, t)
+                    |> ConstTempValue
+                //| Some t, ConstStructConstr exprs -> () // handle records
+                | _ -> failwith "IE"
+            | _ -> failwith "IE"
+        match addConstAtom ctype valueExpr with
+        | ConstTempValue(b, t) -> ConstValue(ctx.details.AddBytesConst b, t) // add final as static value
+        | c -> c
+        |> fun sym -> ctx.NewSymbols.Add(StringName name, ConstSym sym)
+
+    let declConstants constants ctx = List.iter (declConst ctx) constants
+
+    let declLabels labels ctx = List.iter (fun l -> ctx.labels.Head.Add(l, ref (UserLabel l))) labels
+
+    let declProcAndFunc ((name, mRes, mPara), d) ctx =
+        let name = match name with
+                   | Some n -> n
+                   | _ -> failwith "name expected"
+        let methodName = StringName name
+        let methodSym, newMethodSymbols, rVar =
+            match ctx.forward.TryGetValue name with
+            | true, md ->
+                // TODO check signature - must be identical
+                ctx.forward.Remove name |> ignore
+                md
+            | _ ->
+                let newMethodSymbols = Dictionary<_,_>(ctx.lang)
+                let mRes, rVar = match mRes with
+                                 | Some r ->
+                                       let res = match ctx.FindTypeId r with | Some t -> t | _ -> failwith "IE"
+                                       let resultVar = VariableDefinition res.raw |> LocalVariable
+                                       newMethodSymbols.Add(StringName "result", (resultVar, res) |> VariableSym)
+                                       res, Some resultVar
+                                 | _ -> ctx.sysTypes.net_void, None
+
+                let ps = defaultArg mPara []
+                         |> List.collect
+                            (fun (k, (ps, t)) ->
+                             let t = match t with Some t -> ctx.FindTypeId t | _ -> None
+                             [for p in ps do
+                                 let (typ, byref, t, isref) =
+                                     match k, t with
+                                     | Some Const, Some t -> t.raw, RefConst, t, false
+                                     | Some Var, Some t -> ByReferenceType(t.raw) :> TypeReference, RefVar, t, true
+                                     | Some Const, None -> ctx.sysTypes.constParam.raw, RefUntypedConst, ctx.sysTypes.constParam, true
+                                     | Some Var, None -> ctx.sysTypes.varParam.raw, RefUntypedVar, ctx.sysTypes.varParam, true
+                                     | None, Some t -> t.raw, RefNone, t, false
+                                     | _ -> failwith "IE"
+                                 let pd = ParameterDefinition(p, ParameterAttributes.None, typ)
+                                 newMethodSymbols.Add(StringName p, VariableSym(ParamVariable(byref, pd), t))
+                                 yield (pd, {typ=t;ref=isref})]
+                            )
+                let ps, mp = ps |> List.unzip
+                let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
+                let md = MethodDefinition(name, methodAttributes, mRes.raw)
+                List.iter md.Parameters.Add ps
+                let methodInfo = {
+                    paramList = Array.ofList mp
+                    result = if rVar.IsSome then Some mRes else None
+                    raw = md
+                }
+                let ms = methodInfo, ref []
+                ctx.NewSymbols.Add(methodName, ms |> Referenced |> MethodSym)
+                ms, newMethodSymbols, rVar
+        let methodBuilder = (fst methodSym).raw :?> MethodDefinition
+        match d with
+        | BodyDeclr (decls, stmts) ->
+            let scope = LocalScope(ctx.Inner (StandaloneMethod methodSym, newMethodSymbols))
+            let mainBlock: MethodDefinition =
+                Ctx.BuildIl(Block.Create(decls, stmts),scope,("result",rVar))
+                |> Ctx.CompileBlock methodBuilder ctx.details.tb
+            mainBlock.Body.InitLocals <- true
+            // https://github.com/jbevain/cecil/issues/365
+            mainBlock.Body.OptimizeMacros()
+        | ExternalDeclr (lib, procName) ->
+            let libRef = ModuleReference(lib)
+            ctx.details.moduleBuilder.ModuleReferences.Add(libRef)
+            let externalAttributes = MethodAttributes.HideBySig ||| MethodAttributes.PInvokeImpl
+            methodBuilder.Attributes <- methodBuilder.Attributes ||| externalAttributes
+            methodBuilder.IsPreserveSig <- true // as is
+
+            // https://stackoverflow.com/questions/7255936/how-to-create-exported-functions-in-mono-cecil
+            methodBuilder.PInvokeInfo <-
+                         let flags = PInvokeAttributes.CharSetAnsi
+                                 ||| PInvokeAttributes.SupportsLastError ||| PInvokeAttributes.CallConvWinapi
+                         PInvokeInfo(flags, procName, libRef)
+            ctx.details.tb.Methods.Add(methodBuilder)
+        | ForwardDeclr ->
+            ctx.forward.Add(name, (methodSym, newMethodSymbols, rVar))
+
+    let doDecl ctx decl =
+        match decl with
+        | Types types -> declTypes types
+        | Variables variables -> declVariables variables
+        | Constants consts -> declConstants consts
+        | Labels labels -> declLabels labels
+        | ProcAndFunc proc -> declProcAndFunc proc
+        <| ctx
+
+[<AutoOpen>]
+module LangBuilder =
 
     let stmtListToIl sl (ctx: Ctx) (res: VariableDefinition) =
         let finalizeVariables =
@@ -373,193 +542,31 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         |> ctx.res.Add
         ctx.res
 
-    static member CompileBlock (methodBuilder: MethodDefinition) (typeBuilder : TypeDefinition) (instr: List<MetaInstruction>) =
-        let ilGenerator = methodBuilder.Body.GetILProcessor() |> emit
-        typeBuilder.Methods.Add(methodBuilder)
-        Seq.iter ilGenerator instr
-        methodBuilder
+    type Ctx with
+        static member CompileBlock (methodBuilder: MethodDefinition) (typeBuilder : TypeDefinition) (instr: List<MetaInstruction>) =
+            let ilGenerator = methodBuilder.Body.GetILProcessor() |> emit
+            typeBuilder.Methods.Add(methodBuilder)
+            Seq.iter ilGenerator instr
+            methodBuilder
 
-    member self.BuildIl(block: Block, buildScope, ?resVar) =
-        let ctx = match buildScope with
-                  | MainScope (ns, tb, s) -> Ctx.Create moduleBuilder ns tb GlobalSpace s.posMap
-                  | LocalScope ctx -> ctx
-        let newSymbols = snd ctx.symbols.Head
-        let result = match resVar with
-                     | Some (name, Some(v)) ->
-                        ctx.variables.Head.Add v
-                        match v with
-                        | LocalVariable v -> v
-                        | _ -> null
-                     | Some (_, None) -> null // no result (void)
-                     | _ -> null // main p`rogram
+        static member BuildIl(block: Block, buildScope, ?resVar) =
+            let ctx = match buildScope with
+                      | MainScope (ns, tb, s, mb) -> Ctx.Create mb ns tb GlobalSpace s.posMap
+                      | LocalScope ctx -> ctx
+            let result = match resVar with
+                         | Some (name, Some(v)) ->
+                            ctx.variables.Head.Add v
+                            match v with
+                            | LocalVariable v -> v
+                            | _ -> null
+                         | Some (_, None) -> null // no result (void)
+                         | _ -> null // main p`rogram
 
-        let pint32 = ctx.sysTypes.int32
-
-        let addConst typ ce =
-            let rec addConstAtom pt ce =
-                match pt, ce with
-                | None, ConstExpr expr ->
-                    match ctx.EvalConstExpr None expr with
-                    | CERInt(i, _) -> ConstInt i
-                    | CERFloat f -> ConstFloat f
-                    | _ -> failwith "IE"
-                | Some t, ConstExpr expr ->
-                    match t with
-                    | SetType pt ->
-                        match ctx.EvalConstExpr (Some pt) expr with
-                        | CEROrdSet(b, _) -> ConstTempValue(b, t)
-                        | _ -> failwith "IE"
-                    | OrdType ->
-                        match ctx.EvalConstExpr pt expr with
-                        | CERInt(i,_) -> ConstInt i
-                        | _ -> failwith "IE"
-                    | StrType ->
-                        match ctx.EvalConstExpr pt expr with
-                        | CERString s -> ConstString s
-                        | _ -> failwith "IE"
-                    | _ -> failwith "IE"
-                | Some t, ConstConstr exprs ->
-                    match t.kind with
-                    | TkArray (_,_,pt) ->
-                        let symToBytes = function
-                            | ConstInt i ->
-                                match pt.kind, pt.SizeOf with
-                                | TkOrd _, 1 -> [|byte i|]
-                                | TkOrd _, 2 -> BitConverter.GetBytes(uint16 i)
-                                | TkOrd _, 4 -> BitConverter.GetBytes(i)
-                                | TkOrd _, 8 -> BitConverter.GetBytes(uint64 i)
-                                | _ -> failwith "IE"
-                            | ConstFloat f -> BitConverter.GetBytes(f)
-                            | ConstString s ->
-                                match pt with
-                                | ChrType -> [|byte(s.Chars 0)|]
-                                | StrType -> strToSStr s
-                                | _ -> failwith "IE"
-                            | ConstBool b -> [|b|]
-                            | ConstTempValue(b,_) -> b
-                        (exprs |> List.map (addConstAtom (Some pt) >> symToBytes) |> Array.concat, t)
-                        |> ConstTempValue
-                    //| Some t, ConstStructConstr exprs -> () // handle records
-                    | _ -> failwith "IE"
-                | _ -> failwith "IE"
-            match addConstAtom typ ce with
-            | ConstTempValue(b, t) -> ConstValue(ctx.details.AddBytesConst b, t) // add final as static value
-            | c -> c
-            |> ConstSym
-
-        block.decl
-        |> List.iter 
-               (function
-               | Types types -> List.iter (fun (n, t) -> declType t n ctx |> ignore) types
-               | Variables v ->
-                   let addVar =
-                        let addVar vk = vk |> ctx.variables.Head.Add
-                        match buildScope with
-                        | LocalScope _ -> fun (vn, t: PasType) ->
-                                            VariableDefinition t.raw
-                                            |> LocalVariable
-                                            |> fun vk ->
-                                                newSymbols.Add(StringName vn, VariableSym(vk, t))
-                                                addVar vk
-                        | MainScope _ -> fun (v, t) ->
-                                            let fd = FieldDefinition(v, FieldAttributes.Public ||| FieldAttributes.Static, t.raw)
-                                            fd |> GlobalVariable
-                                            |> fun vk ->
-                                                newSymbols.Add(StringName v, VariableSym(vk,t))
-                                                ctx.details.tb.Fields.Add fd
-                                                addVar vk
-                   v
-                   |> List.collect
-                          (fun (l, t) ->
-                       let dt = ctx.GetInternalType t
-                       l |> List.map (fun v -> v, dt))
-                   |> List.iter addVar
-               | Constants consts ->
-                    for (name, ctype, value) in consts do
-                        let typ = match ctype with | Some t -> Some(ctx.GetInternalType t) | _ -> None
-                        newSymbols.Add(StringName name, addConst typ value)
-               | Labels labels -> (for l in labels do ctx.labels.Head.Add(l, ref (UserLabel l)))
-               | ProcAndFunc((name, mRes, mPara), d) ->
-                   let name = match name with
-                              | Some n -> n
-                              | _ -> failwith "name expected"
-                   let methodName = StringName name
-                   let methodSym, newMethodSymbols, rVar =
-                       match ctx.forward.TryGetValue name with
-                       | true, md ->
-                           // TODO check signature - must be identical
-                           ctx.forward.Remove name |> ignore
-                           md
-                       | _ ->
-                           let newMethodSymbols = Dictionary<_,_>(ctx.lang)
-                           let mRes, rVar = match mRes with
-                                            | Some r ->
-                                                  let res = match ctx.FindTypeId r with | Some t -> t | _ -> failwith "IE"
-                                                  let resultVar = VariableDefinition res.raw |> LocalVariable
-                                                  newMethodSymbols.Add(StringName "result", (resultVar, res) |> VariableSym)
-                                                  res, Some resultVar
-                                            | _ -> ctx.sysTypes.net_void, None
-
-                           let ps = defaultArg mPara []
-                                    |> List.collect
-                                       (fun (k, (ps, t)) ->
-                                        let t = match t with Some t -> ctx.FindTypeId t | _ -> None
-                                        [for p in ps do
-                                            let (typ, byref, t, isref) =
-                                                match k, t with
-                                                | Some Const, Some t -> t.raw, RefConst, t, false
-                                                | Some Var, Some t -> ByReferenceType(t.raw) :> TypeReference, RefVar, t, true
-                                                | Some Const, None -> ctx.sysTypes.constParam.raw, RefUntypedConst, ctx.sysTypes.constParam, true
-                                                | Some Var, None -> ctx.sysTypes.varParam.raw, RefUntypedVar, ctx.sysTypes.varParam, true
-                                                | None, Some t -> t.raw, RefNone, t, false
-                                                | _ -> failwith "IE"
-                                            let pd = ParameterDefinition(p, ParameterAttributes.None, typ)
-                                            newMethodSymbols.Add(StringName p, VariableSym(ParamVariable(byref, pd), t))
-                                            yield (pd, {typ=t;ref=isref})]
-                                       )
-                           let ps, mp = ps |> List.unzip
-                           let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
-                           let md = MethodDefinition(name, methodAttributes, mRes.raw)
-                           List.iter md.Parameters.Add ps
-                           let methodInfo = {
-                               paramList = Array.ofList mp
-                               result = if rVar.IsSome then Some mRes else None
-                               raw = md
-                           }
-                           let ms = methodInfo, ref []
-                           newSymbols.Add(methodName, ms |> Referenced |> MethodSym)
-                           ms, newMethodSymbols, rVar
-                   let methodBuilder = (fst methodSym).raw :?> MethodDefinition
-                   match d with
-                   | BodyDeclr (decls, stmts) ->
-                       let scope = LocalScope(ctx.Inner (StandaloneMethod methodSym, newMethodSymbols))
-                       let mainBlock = self.BuildIl(Block.Create(decls, stmts),scope,("result",rVar))
-                                       |> IlBuilder.CompileBlock methodBuilder ctx.details.tb
-                       mainBlock.Body.InitLocals <- true
-                       // https://github.com/jbevain/cecil/issues/365
-                       mainBlock.Body.OptimizeMacros()
-                   | ExternalDeclr (lib, procName) ->
-                       let libRef = ModuleReference(lib)
-                       mb.ModuleReferences.Add(libRef)
-                       let externalAttributes = MethodAttributes.HideBySig ||| MethodAttributes.PInvokeImpl
-                       methodBuilder.Attributes <- methodBuilder.Attributes ||| externalAttributes
-                       methodBuilder.IsPreserveSig <- true // as is
-
-                       // https://stackoverflow.com/questions/7255936/how-to-create-exported-functions-in-mono-cecil
-                       methodBuilder.PInvokeInfo <-
-                                    let flags = PInvokeAttributes.CharSetAnsi
-                                            ||| PInvokeAttributes.SupportsLastError ||| PInvokeAttributes.CallConvWinapi
-                                    PInvokeInfo(flags, procName, libRef)
-                       ctx.details.tb.Methods.Add(methodBuilder)
-                   | ForwardDeclr ->
-                       ctx.forward.Add(name, (methodSym, newMethodSymbols, rVar))
-                   | _ -> failwith "no body def"
-               | _ -> ())
-        let res = stmtListToIl block.stmt ctx result
-        match buildScope with
-        | MainScope _ ->
-            if ctx.errors.Count > 0 then
-                raise (CompilerFatalError ctx)
-            else res
-        | _ -> res
-end
+            block.decl |> List.iter (doDecl ctx)
+            let res = stmtListToIl block.stmt ctx result
+            match buildScope with
+            | MainScope _ ->
+                if ctx.errors.Count > 0 then
+                    raise (CompilerFatalError ctx)
+                else res
+            | _ -> res

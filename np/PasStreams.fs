@@ -68,15 +68,14 @@ let private compileModule (ProgramAst(name, block)) state = //, methods: Method 
         let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static 
         let methodName = "Main"
         MethodDefinition(methodName, methodAttributes, moduleBuilder.TypeSystem.Void)
-    let ilBuilder = IlBuilder(moduleBuilder)
     let bb =
         try
-            ilBuilder.BuildIl(block, MainScope(moduleName, typeBuilder, state))
+            Ctx.BuildIl(block, MainScope(moduleName, typeBuilder, state, moduleBuilder))
         with
         | CompilerFatalError ctx -> Seq.iter (printfn "%s") ctx.errors; null
         | _ -> reraise()
     if bb <> null then
-        let mainBlock = IlBuilder.CompileBlock methodBuilder typeBuilder bb
+        let mainBlock = Ctx.CompileBlock methodBuilder typeBuilder bb
         mainBlock.Body.InitLocals <- true
         // https://github.com/jbevain/cecil/issues/365
         mainBlock.Body.OptimizeMacros()

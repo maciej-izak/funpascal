@@ -65,6 +65,7 @@ type Ctx = {
     static member Create = Ctx.createCtx
 
     member self.NewSymbols = snd self.symbols.Head
+    member self.SymOwner = fst self.symbols.Head
 
     member self.Inner symbolsEntry =
         { self with
