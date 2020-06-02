@@ -316,6 +316,15 @@ module LangDecl =
 
     let declTypeArray (packed, dimensions, tname) name (ctx: Ctx) = ctx.AddTypeArray dimensions tname (StringName name)
 
+    let declType = function
+        | TypeAlias decl -> declTypeAlias decl
+        | TypePtr decl -> declTypePtr decl
+        | TypeSet decl -> declTypeSet decl
+        | TypeEnum decl -> declTypeEnum decl
+        | TypeRecord decl -> declTypeRecord decl
+        | TypeArray(ArrayDef decl) -> declTypeArray decl
+        | _ -> failwith "IE"
+
 type BuildScope =
     | MainScope of (string * TypeDefinition * PasState)
     | LocalScope of Ctx
@@ -441,20 +450,7 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
         block.decl
         |> List.iter 
                (function
-               | Types types ->
-                   (
-                       for (name, typeDecl) in types do
-                           (name, ctx) ||>
-                           match typeDecl with
-                           | TypeAlias decl -> declTypeAlias decl
-                           | TypePtr decl -> declTypePtr decl
-                           | TypeSet decl -> declTypeSet decl
-                           | TypeEnum decl -> declTypeEnum decl
-                           | TypeRecord decl -> declTypeRecord decl
-                           | TypeArray(ArrayDef decl) -> declTypeArray decl
-                           | _ -> failwith "IE"
-                           |> ignore
-                   )
+               | Types types -> List.iter (fun (n, t) -> declType t n ctx |> ignore) types
                | Variables v ->
                    let addVar =
                         let addVar vk = vk |> ctx.variables.Head.Add
