@@ -240,7 +240,7 @@ let recordDef =
       ``?packed `` .>>.? (between ``record `` ``end `` (sepEndBy fieldsList ``; ``))
 
 let structType =
-    recordDef |>> Record
+    recordDef |>> TypeRecord
 
 let typeAlias =
     ``?type `` .>>. typeIdentifier
@@ -284,7 +284,7 @@ let typeEnum = between ``( `` ``) `` (sepEndBy1 identifier ``, ``) |>> TypeEnum
 
 let typeSet = typeSetDef |>> TypeSet
 
-let arrayType = arrayDecl |>> (ArrayDef >> Array)
+let arrayType = arrayDecl |>> (ArrayDef >> TypeArray)
 
 let typePtr = typePtrDef |>> TypePtr
 

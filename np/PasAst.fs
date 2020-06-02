@@ -174,7 +174,7 @@ type ArrayDimension =
 
 type ParamKind = Var | Const
 
-type ArrayDef = ArrayDef of packed: bool * dimensions: ArrayDimension list * tname: TypeIdentifier
+type ArrayDef = ArrayDef of (bool * ArrayDimension list * TypeIdentifier)
 with
     override self.ToString() =
         match self with | ArrayDef (_, _, t) -> "array of " + t.ToString()
@@ -206,11 +206,11 @@ type ParamList = (ParamKind option * (string list * TypeIdentifier option)) list
 type ProcHeader = string option * TypeIdentifier option * ParamList
 
 type TypeDecl =
-    | Record of packed: bool * fields: (string list * TypeIdentifier) list
-    | Array of ArrayDef
-    | TypePtr of int * TypeIdentifier
-    | TypeAlias of strong: bool * origin: TypeIdentifier
-    | TypeSet of packed: bool * TypeIdentifier
+    | TypeRecord of (bool * (string list * TypeIdentifier) list)
+    | TypeArray of ArrayDef
+    | TypePtr of (int * TypeIdentifier)
+    | TypeAlias of (bool * TypeIdentifier)
+    | TypeSet of (bool * TypeIdentifier)
     | TypeEnum of string list
     | SimpleRange of ConstExprRange
     | ProcType of ProcHeader

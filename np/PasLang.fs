@@ -273,6 +273,49 @@ module rec LangStmt =
         let doStmt labels stmt = resolveLabels(doStm stmt ctx, labels)
         stmtList |> List.mapFold doStmt [] |> fun (i, l) -> List.concat i, l
 
+[<AutoOpen>]
+module LangDecl =
+
+    let declTypeAlias (isStrong, origin) name (ctx: Ctx) =
+        let name = StringName name
+        let originType = match ctx.FindTypeId origin with | Some t -> t | _ -> failwith "IE not found"
+        {originType with name = name} |> ctx.AddType name
+
+    let declTypePtr (count, typeId) name (ctx: Ctx) =
+        let typ = match ctx.FindTypeId typeId with | Some t -> t | _ -> failwith "IE not found"
+        ctx.AddTypePointer count typ.name (StringName name)
+
+    let declTypeSet (packed, typeId) name (ctx: Ctx) =
+        let typ = match ctx.FindTypeId typeId with | Some t -> t | _ -> failwith "IE not found"
+        ctx.AddTypeSet typ.name (StringName name)
+
+    let declTypeEnum enumValues name (ctx: Ctx) =
+        let name = StringName name
+        let max = (enumValues: string list).Length // TODO get explicit max value
+        let enumType = ctx.AddType name {name=name;kind=TkOrd(OkEnumeration, OtULong(0, max));raw=ctx.sysTypes.int32.raw}
+        enumValues |> List.iteri (fun i v -> ctx.NewSymbols.Add (StringName v, EnumValueSym(i, enumType)))
+        enumType
+
+    let declTypeRecord (packed, fields) name ctx =
+        let mutable size = 0;
+        let td = TypeDefinition(ctx.details.ns, ctx.details.UniqueTypeName(), TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout)
+        td.ClassSize <- 0
+        td.BaseType <- ctx.sysTypes.value.raw
+        td.PackingSize <- 1s // if packed then 1s else 0s
+        let fieldsMap = Dictionary<_,_>()
+        for (names, typeName) in fields do
+            for name in names do
+                let typ = ctx.GetInternalType typeName
+                let fd = FieldDefinition(name, FieldAttributes.Public, typ.raw)
+                td.Fields.Add fd
+                fieldsMap.Add(name, (fd,typ))
+                size <- size + typ.SizeOf
+        ctx.details.moduleBuilder.Types.Add(td)
+        let name = StringName name
+        ctx.AddType name {name=name;kind=TkRecord(fieldsMap, size);raw=td}
+
+    let declTypeArray (packed, dimensions, tname) name (ctx: Ctx) = ctx.AddTypeArray dimensions tname (StringName name)
+
 type BuildScope =
     | MainScope of (string * TypeDefinition * PasState)
     | LocalScope of Ctx
@@ -400,42 +443,15 @@ type IlBuilder(moduleBuilder: ModuleDefinition) = class
                (function
                | Types types ->
                    (
-                       for (name, decl) in types do
-                           match decl with
-                           | TypeAlias (_, origin) ->
-                               let name = StringName name
-                               let originType = match ctx.FindTypeId origin with | Some t -> t | _ -> failwith "IE not found"
-                               {originType with name = name} |> ctx.AddType name
-                           | TypePtr (count, typeId) ->
-                               let typ = match ctx.FindTypeId typeId with | Some t -> t | _ -> failwith "IE not found"
-                               ctx.AddTypePointer count typ.name (StringName name)
-                           | TypeSet (_, typeId) ->
-                               let typ = match ctx.FindTypeId typeId with | Some t -> t | _ -> failwith "IE not found"
-                               ctx.AddTypeSet typ.name (StringName name)
-                           | TypeEnum enumValues ->
-                               let name = StringName name
-                               let max = enumValues.Length // TODO get explicit max value
-                               let enumType = ctx.AddType name {name=name;kind=TkOrd(OkEnumeration, OtULong(0, max));raw=pint32.raw}
-                               enumValues |> List.iteri (fun i v -> newSymbols.Add (StringName v, EnumValueSym(i, enumType)))
-                               enumType
-                           | Record (packed, fields) ->
-                                let mutable size = 0;
-                                let td = TypeDefinition(ctx.details.ns, ctx.details.UniqueTypeName(), TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout)
-                                td.ClassSize <- 0
-                                td.BaseType <- ctx.sysTypes.value.raw
-                                td.PackingSize <- 1s // if packed then 1s else 0s
-                                let fieldsMap = Dictionary<_,_>()
-                                for (names, typeName) in fields do
-                                  for name in names do
-                                    let typ = ctx.GetInternalType typeName
-                                    let fd = FieldDefinition(name, FieldAttributes.Public, typ.raw)
-                                    td.Fields.Add fd
-                                    fieldsMap.Add(name, (fd,typ))
-                                    size <- size + typ.SizeOf
-                                mb.Types.Add(td)
-                                let name = StringName name
-                                ctx.AddType name {name=name;kind=TkRecord(fieldsMap, size);raw=td}
-                           | Array(ArrayDef(_, dimensions, tname)) -> ctx.AddTypeArray dimensions tname (StringName name)
+                       for (name, typeDecl) in types do
+                           (name, ctx) ||>
+                           match typeDecl with
+                           | TypeAlias decl -> declTypeAlias decl
+                           | TypePtr decl -> declTypePtr decl
+                           | TypeSet decl -> declTypeSet decl
+                           | TypeEnum decl -> declTypeEnum decl
+                           | TypeRecord decl -> declTypeRecord decl
+                           | TypeArray(ArrayDef decl) -> declTypeArray decl
                            | _ -> failwith "IE"
                            |> ignore
                    )

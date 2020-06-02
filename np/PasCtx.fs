@@ -64,6 +64,8 @@ type Ctx = {
 
     static member Create = Ctx.createCtx
 
+    member self.NewSymbols = snd self.symbols.Head
+
     member self.Inner symbolsEntry =
         { self with
             symbols = symbolsEntry::self.symbols
@@ -242,14 +244,14 @@ module Ctx =
     }
 
     type SystemProc = {
-            GetMem: MethodReference
-            FreeMem: MethodReference
-            WriteLine: MethodReference
-            Exit: MethodReference
-            ConvertU1ToChar: MethodReference
-            PtrToStringAnsi: MethodReference
-            Round: MethodReference
-        }
+        GetMem: MethodReference
+        FreeMem: MethodReference
+        WriteLine: MethodReference
+        Exit: MethodReference
+        ConvertU1ToChar: MethodReference
+        PtrToStringAnsi: MethodReference
+        Round: MethodReference
+    }
 
     let private createSystemTypes details (symbols: Dictionary<TypeName, Symbol>) =
         let mb = details.moduleBuilder
