@@ -6,8 +6,6 @@ open System.Runtime.CompilerServices
 open Mono.Cecil
 open Mono.Cecil.Cil
 
-exception CompilerFatalError of Ctx
-
 module Utils =
     let stdIdent = Ident >> List.singleton >> DIdent
 
@@ -422,7 +420,7 @@ module TypesDef =
             | TIdPointer(count, typeId) -> addTypePointer ctx count (TypeName.FromTypeId typeId) (TypedName t)
             | TIdArray(ArrayDef(_, dimensions, tname)) -> addTypeArray ctx dimensions tname (TypedName t)
             | TIdSet(_, typeId) -> addTypeSet ctx (TypeName.FromTypeId typeId) (TypedName t)
-            | _ -> ctx.NewError t (sprintf "Cannot find type identifier \"%O\"" t); ctx.sysTypes.unknown // raise (CompilerFatalError ctx)
+            | _ -> ctx.NewError t (sprintf "Cannot find type identifier \"%O\"" t); ctx.sysTypes.unknown
 
     let addTypeArray ctx dimensions tname name =
         let newSubType (dims, size) (typ: PasType, typSize) name =
@@ -729,7 +727,7 @@ module EvalExpr =
                     if popResult && mr.result.IsSome then
                         yield +Pop
                  ], mr.result)
-            | Intrinsic i, _ -> handleIntrinsic ctx ident popResult (i, cp)
+            | Intrinsic i, _ -> handleIntrinsic i {ctx=ctx;ident=ident;cp=cp;popResult=popResult}
             | _ -> failwith "IE"
         | _ -> failwith "IE"
 
@@ -1096,7 +1094,35 @@ module Intrinsics =
          +AddInst
         ], Some typ)
 
-    let handleIntrinsic ctx ident popResult = function
+
+    type CallInfo = { ctx: Ctx; ident: DIdent; cp: CallParam list; popResult: bool }
+
+    let private callFloatFunToInt64 ci f =
+        let ctx = ci.ctx
+        match ci.cp with
+        | [cp] ->
+            let callInstr, typ = callParamToIl ctx cp None
+            match typ with
+            | FloatType | IntType ->
+                ([
+                    yield! callInstr
+                    if (f: MethodReference voption).IsSome then +Call f.Value
+                    match ci.popResult with
+                    | true  -> +Pop
+                    | false -> +Conv Conv_I8
+                 ], Some ctx.sysTypes.int64)
+            | _ ->
+                ctx.NewError cp (sprintf "Expected float type but '%O' found" typ.name)
+                ([], Some ctx.sysTypes.int64)
+        | _ ->
+            ctx.NewError ci.ident (sprintf "Expected 1 parameter but found %d" (ci.cp.Length))
+            ([], Some ctx.sysTypes.int64)
+
+    let handleIntrinsic intrinsicSym ci =
+        let ctx = ci.ctx
+        let popResult = ci.popResult
+        let ident = ci.ident
+        match (intrinsicSym, ci.cp) with
         | IncProc, [ParamIdent id] -> deltaModify ctx +1 id
         | DecProc, [ParamIdent id] -> deltaModify ctx -1 id
         | SuccProc, [cp] -> deltaAdd ctx +1 cp
@@ -1209,43 +1235,8 @@ module Intrinsics =
                 yield! callInstr
                 if popResult then yield +Pop // TODO or not generate call ?
              ], Some ctx.sysTypes.int32)
-        | TruncFunc, cp ->
-            match cp with
-            | [cp] ->
-                let callInstr, typ = callParamToIl ctx cp None
-                match typ with
-                | FloatType | IntType ->
-                    ([
-                        yield! callInstr
-                        match popResult with
-                        | true  -> +Pop
-                        | false -> +Conv Conv_I8
-                     ], Some ctx.sysTypes.int64)
-                | _ ->
-                    ctx.NewError cp (sprintf "Expected float type but '%O' found" typ.name)
-                    ([], Some ctx.sysTypes.int64)
-            | _ ->
-                ctx.NewError ident (sprintf "Expected 1 parameter but found %d" (cp.Length))
-                ([], Some ctx.sysTypes.int64)
-        | RoundFunc, cp ->
-            match cp with
-            | [cp] ->
-                let callInstr, typ = callParamToIl ctx cp None
-                match typ with
-                | FloatType | IntType ->
-                    ([
-                        yield! callInstr
-                        +Call ctx.sysProc.Round
-                        match popResult with
-                        | true  -> +Pop
-                        | false -> +Conv Conv_I8
-                     ], Some ctx.sysTypes.int64)
-                | _ ->
-                    ctx.NewError cp (sprintf "Expected float type but '%O' found" typ.name)
-                    ([], Some ctx.sysTypes.int64)
-            | _ ->
-                ctx.NewError ident (sprintf "Expected 1 parameter but found %d" (cp.Length))
-                ([], Some ctx.sysTypes.int64)
+        | TruncFunc, cp -> callFloatFunToInt64 ci ValueNone
+        | RoundFunc, cp -> callFloatFunToInt64 ci (ValueSome ctx.sysProc.Round)
         | SizeOfFunc, [ParamIdent id] ->
             let t = match id with
                     | VariablePasType ctx t -> t
