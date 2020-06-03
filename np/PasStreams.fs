@@ -68,14 +68,10 @@ let private compileModule (ProgramAst(name, block)) state = //, methods: Method 
         let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static 
         let methodName = "Main"
         MethodDefinition(methodName, methodAttributes, moduleBuilder.TypeSystem.Void)
-    let bb =
-        try
-            Ctx.BuildIl(block, MainScope(moduleName, typeBuilder, state, moduleBuilder))
-        with
-        | CompilerFatalError ctx -> Seq.iter (printfn "%s") ctx.errors; null
-        | _ -> reraise()
-    if bb <> null then
-        let mainBlock = Ctx.CompileBlock methodBuilder typeBuilder bb
+    match Ctx.BuildIl(block, MainScope(moduleName, typeBuilder, state, moduleBuilder)) with
+    | Microsoft.FSharp.Core.Error ctx -> Seq.iter (printfn "%s") ctx.errors ; None
+    | Microsoft.FSharp.Core.Ok res ->
+        let mainBlock = Ctx.CompileBlock methodBuilder typeBuilder res
         mainBlock.Body.InitLocals <- true
         // https://github.com/jbevain/cecil/issues/365
         mainBlock.Body.OptimizeMacros()
@@ -94,7 +90,6 @@ let private compileModule (ProgramAst(name, block)) state = //, methods: Method 
         c.ConstructorArguments.Add(ca)
         assemblyBuilder.CustomAttributes.Add(c)*)
         Some assemblyBuilder
-    else None
 
 let testAll fn s =
     let strToStream (s: string) = s |> Encoding.Unicode.GetBytes |> fun s -> new MemoryStream(s)

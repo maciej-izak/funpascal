@@ -467,12 +467,13 @@ module LangDecl =
         match d with
         | BodyDeclr (decls, stmts) ->
             let scope = LocalScope(ctx.Inner (StandaloneMethod methodSym, newMethodSymbols))
-            let mainBlock: MethodDefinition =
-                Ctx.BuildIl(Block.Create(decls, stmts),scope,("result",rVar))
-                |> Ctx.CompileBlock methodBuilder ctx.details.tb
-            mainBlock.Body.InitLocals <- true
-            // https://github.com/jbevain/cecil/issues/365
-            mainBlock.Body.OptimizeMacros()
+            match Ctx.BuildIl(Block.Create(decls, stmts),scope,("result",rVar)) with
+            | Ok res ->
+                let mainBlock: MethodDefinition = Ctx.CompileBlock methodBuilder ctx.details.tb res
+                mainBlock.Body.InitLocals <- true
+                // https://github.com/jbevain/cecil/issues/365
+                mainBlock.Body.OptimizeMacros()
+            | Error _ -> ()
         | ExternalDeclr (lib, procName) ->
             let libRef = ModuleReference(lib)
             ctx.details.moduleBuilder.ModuleReferences.Add(libRef)
@@ -560,13 +561,14 @@ module LangBuilder =
                             | LocalVariable v -> v
                             | _ -> null
                          | Some (_, None) -> null // no result (void)
-                         | _ -> null // main p`rogram
+                         | _ -> null // main program
 
             block.decl |> List.iter (doDecl ctx)
-            let res = stmtListToIl block.stmt ctx result
-            match buildScope with
-            | MainScope _ ->
-                if ctx.errors.Count > 0 then
-                    raise (CompilerFatalError ctx)
-                else res
-            | _ -> res
+            // do implementation section only if interface section has no error
+            let res = match ctx.errors.Count with
+                      | 0 -> ValueSome(stmtListToIl block.stmt ctx result)
+                      | _ -> ValueNone
+            match ctx.errors.Count, res with
+            | 0, ValueSome res -> Ok res
+            | _, ValueNone -> Error ctx
+            | _ -> failwith "IE"
