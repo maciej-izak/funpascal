@@ -5,7 +5,6 @@ open System.IO
 open NP.CommandLineHandle
 open Pas
 open Argu
-open FParsec
 open NP
 
 [<EntryPoint>]
@@ -23,9 +22,12 @@ let main argv =
         | [f] -> f
         | _ -> failwith "Multiply files not supported"
 
+    let mainFileName = Path.GetFileName(mainFile)
     System.IO.File.ReadAllText(mainFile)
-    |> PasStreams.testAll (Path.GetFileName(mainFile))
+    |> PasStreams.testAll mainFileName
     |> function
-       | Success _ -> printfn "Compilation success!"
-       | Failure(s,_,_) -> printfn "%s" s
+       | Ok() -> printfn "Compilation success!"
+       | Error e ->
+           Seq.iter (printfn "%s") e
+           printfn "[Fatal Error] Cannot compile module '%s'" mainFileName
     0

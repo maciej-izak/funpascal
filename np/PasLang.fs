@@ -572,3 +572,47 @@ module LangBuilder =
             | 0, ValueSome res -> Ok res
             | _, ValueNone -> Error ctx
             | _ -> failwith "IE"
+
+        static member BuildModule (ProgramAst(name, block)) state = //, methods: Method list) =
+            let moduleName = match name with | Some n -> n | None -> "Program"
+            let moduleNameWithoutExtension = System.IO.Path.GetFileNameWithoutExtension moduleName
+            let assemblyBuilder =
+                let assemblyName = AssemblyNameDefinition(moduleName, Version(0,0,0,0))
+                AssemblyDefinition.CreateAssembly(assemblyName, moduleNameWithoutExtension, ModuleKind.Console)
+            let moduleBuilder = assemblyBuilder.MainModule
+            // for 32 bit assembly
+            // moduleBuilder.Attributes <- ModuleAttributes.Required32Bit ||| moduleBuilder.Attributes
+
+            let typeBuilder =
+                let className = moduleName
+                let typeAttributes =
+                        TypeAttributes.Public
+                        ||| TypeAttributes.Abstract
+                        ||| TypeAttributes.Sealed
+                        ||| TypeAttributes.AutoLayout
+                        ||| TypeAttributes.AnsiClass
+                        ||| TypeAttributes.BeforeFieldInit
+                TypeDefinition(moduleName, className, typeAttributes, moduleBuilder.TypeSystem.Object)
+            moduleBuilder.Types.Add(typeBuilder)
+            let methodBuilder =
+                let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
+                let methodName = "Main"
+                MethodDefinition(methodName, methodAttributes, moduleBuilder.TypeSystem.Void)
+            match Ctx.BuildIl(block, MainScope(moduleName, typeBuilder, state, moduleBuilder)) with
+            | Error ctx -> Error ctx.errors
+            | Ok res ->
+                let mainBlock = Ctx.CompileBlock methodBuilder typeBuilder res
+                mainBlock.Body.InitLocals <- true
+                // https://github.com/jbevain/cecil/issues/365
+                mainBlock.Body.OptimizeMacros()
+                assemblyBuilder.EntryPoint <- mainBlock
+                Ok assemblyBuilder
+                // TODO version of target framework
+                (*
+                let v = moduleBuilder.ImportReference(typeof<TargetFrameworkAttribute>.GetConstructor([|typeof<string>|]));
+                let c = CustomAttribute(v);
+                let sr = moduleBuilder.ImportReference(typeof<string>)
+                let ca = CustomAttributeArgument(sr, box ".NETCoreApp,Version=v3.0")
+                c.ConstructorArguments.Add(ca)
+                assemblyBuilder.CustomAttributes.Add(c)
+                *)
