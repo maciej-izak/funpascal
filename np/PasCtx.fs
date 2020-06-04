@@ -473,7 +473,7 @@ module TypesDef =
 
 module SymSearch =
 
-    let findSymbol (ctx: Ctx) (DIdent ident) =
+    let findSymbol (ctx: Ctx) (DIdent ident as dident) =
         let mainSym = ident.Head |> function | Ident n -> ctx.FindSym(StringName n)
 
         let rec findSym ref acc = function
@@ -516,26 +516,28 @@ module SymSearch =
 
         let varLoadChain vt dlist vd =
             let (tail, finalType) = resolveTail [] vt dlist
-            ChainLoad(VariableLoad(vd)::tail, Some finalType)
+            Ok(VariableLoad(vd)::tail, Some finalType)
 
         let mainSym = defaultArg mainSym UnknownSym
 
         match mainSym with
         | VariableSym (v, t as vt) -> vt |> varLoadChain t ident.Tail
         | WithSym (v, t as vt) -> vt |> varLoadChain t ident
-        | EnumValueSym(i, t) when ident.Tail = [] -> ChainLoad([ValueLoad(ValueInt(i))], Some t)
-        | MethodSym m ->  ChainLoad([CallableLoad m], m.ReturnType)
+        | EnumValueSym(i, t) when ident.Tail = [] -> Ok([ValueLoad(ValueInt(i))], Some t)
+        | MethodSym m ->  Ok([CallableLoad m], m.ReturnType)
         | ConstSym v ->
             match v with
-            | ConstInt i -> ChainLoad([ValueLoad(ValueInt i)], Some ctx.sysTypes.int32)
-            | ConstFloat f -> ChainLoad([ValueLoad(ValueFloat f)], Some ctx.sysTypes.single)
+            | ConstInt i -> Ok([ValueLoad(ValueInt i)], Some ctx.sysTypes.int32)
+            | ConstFloat f -> Ok([ValueLoad(ValueFloat f)], Some ctx.sysTypes.single)
             | ConstValue(fd, pt) -> (GlobalVariable fd, pt) |> varLoadChain pt ident.Tail
             | ConstBool b ->
                 let i = int b
-                ChainLoad([ValueLoad(ValueInt i)], Some ctx.sysTypes.boolean)
+                Ok([ValueLoad(ValueInt i)], Some ctx.sysTypes.boolean)
             | _ -> failwith "IE"
-        | TypeSym t -> ChainLoad([TypeCastLoad t], Some t)
-        | _ -> SymbolLoadError
+        | TypeSym t -> Ok([TypeCastLoad t], Some t)
+        | _ ->
+            ctx.NewError dident (sprintf "Cannot find symbol '%O'" dident)
+            Error()
 
     type FoundFunction =
         | RealFunction of (MethodSym * IlInstruction option)
@@ -545,11 +547,11 @@ module SymSearch =
             let callChain = findSymbol ctx ident
             // TODO more advanced calls like foo().x().z^ := 10
             match callChain with
-            | ChainLoad([CallableLoad cl], _) ->
+            | Ok([CallableLoad cl], _) ->
                match cl with
                | Referenced ({raw=mr}, _) -> RealFunction(cl, +Call(mr) |> Some)
                | Intrinsic _ -> RealFunction(cl, None)
-            | ChainLoad([TypeCastLoad t], _) -> TypeCast t
+            | Ok([TypeCastLoad t], _) -> TypeCast t
             | _ -> failwith "Not supported"
 
 module EvalExpr =
@@ -1074,59 +1076,123 @@ module Intrinsics =
             | _ -> failwith "IE"
         file, cp |> List.collect doParam
 
-    let private deltaModify ctx delta id =
-        let inst, typ = findSymbolAndGetPtr ctx id
-        let indKind = typ.IndKind
-        ([ // TODO change indirect to normal load/store?
-         yield! inst
-         +Dup
-         +Ldind indKind
-         +Ldc_I4 delta
-         +AddInst
-         +Stind indKind
-        ], None)
-
-    let private deltaAdd ctx delta cp =
-        let inst, typ = callParamToIl ctx cp None
-        ([ // TODO check type -> should be ordinal
-         yield! inst
-         +Ldc_I4 delta
-         +AddInst
-        ], Some typ)
-
-
     type CallInfo = { ctx: Ctx; ident: DIdent; cp: CallParam list; popResult: bool }
 
-    let private callFloatFunToInt64 ci f =
-        let ctx = ci.ctx
+    let (|FloatOrOrdParam|_|) ci =
         match ci.cp with
-        | [cp] ->
-            let callInstr, typ = callParamToIl ctx cp None
+        | cp::t ->
+            let inst, typ = callParamToIl ci.ctx cp None
             match typ with
-            | FloatType | IntType ->
-                ([
-                    yield! callInstr
-                    if (f: MethodReference voption).IsSome then +Call f.Value
-                    match ci.popResult with
-                    | true  -> +Pop
-                    | false -> +Conv Conv_I8
-                 ], Some ctx.sysTypes.int64)
+            // TODO ? Convert to float id needed ?
+            | FloatType | IntType -> Some(inst, typ, {ci with cp=t})
             | _ ->
-                ctx.NewError cp (sprintf "Expected float type but '%O' found" typ.name)
-                ([], Some ctx.sysTypes.int64)
-        | _ ->
-            ctx.NewError ci.ident (sprintf "Expected 1 parameter but found %d" (ci.cp.Length))
-            ([], Some ctx.sysTypes.int64)
+                ci.ctx.NewError cp (sprintf "Expected ordinal or float type but '%O' found" typ.name)
+                None
+        | [] ->
+            ci.ctx.NewError ci.ident ("Expected ordinal or float type parameter but nothing found")
+            None
+
+    let (|FloatOrOrdParamIdent|_|) ci =
+        match ci.cp with
+        | ((ParamIdent id) as cp)::t ->
+            // TODO : IDENT NOT FOUND?
+            let inst, typ = findSymbolAndGetPtr ci.ctx id
+            match typ with
+            // TODO ? Convert to float id needed ?
+            | FloatType | IntType -> Some(inst, typ, {ci with cp=t})
+            | _ ->
+                ci.ctx.NewError cp (sprintf "Expected ordinal or float type but '%O' found" typ.name)
+                None
+        | cp::_ ->
+            ci.ctx.NewError cp ("Expected ident parameter but expression found")
+            None
+        | [] ->
+            ci.ctx.NewError ci.ident ("Expected ident parameter but nothing found")
+            None
+
+    let (|EofOptFloatOrOrdParamValue|_|) ci =
+        match ci.cp with
+        | cp::t ->
+            let inst, typ = callParamToIl ci.ctx cp None
+            match typ, t with
+            // TODO ? Convert to float id needed ?
+            | FloatType, [] | IntType, [] -> Some(Some inst)
+            | _, [] ->
+                ci.ctx.NewError cp (sprintf "Expected ordinal or float type but '%O' found" typ.name)
+                None
+            | _, cp::_ ->
+                ci.ctx.NewError cp "Unexpected parameter"
+                None
+        | [] -> Some(None)
+
+    let (|EofParam|_|) ci =
+        match ci.cp with
+        | [] -> Some()
+        | cp::_ -> ci.ctx.NewError cp "Unexpected parameter"; None
+
+    type DeltaKind =
+        | NegativeDelta
+        | PositiveDelta
+
+    let deltaToIl dInst delta =
+        [
+            match dInst with
+            | Some inst ->
+                yield! inst
+                match delta with
+                | PositiveDelta -> ()
+                | NegativeDelta -> +NegInst
+            | None ->
+                match delta with
+                | PositiveDelta -> +Ldc_I4 +1 // TODO ? Convert to float id needed ?
+                | NegativeDelta -> +Ldc_I4 -1 // TODO ? Convert to float id needed ?
+        ]
+
+    let private deltaModify delta ci =
+        match ci with
+        | FloatOrOrdParamIdent(inst, typ, EofOptFloatOrOrdParamValue(dInst)) ->
+            let indKind = typ.IndKind
+            ([
+                yield! inst
+                +Dup
+                +Ldind indKind
+                yield! deltaToIl dInst delta
+                +AddInst
+                +Stind indKind
+            ], None)
+        | _ -> ([], None)
+
+    let private deltaAdd delta ci =
+        match ci with
+        | FloatOrOrdParam(inst, typ, EofOptFloatOrOrdParamValue(dInst)) ->
+            ([
+                 yield! inst
+                 yield! deltaToIl dInst delta
+                 +AddInst
+            ], Some typ)
+        | _ -> ([], None)
+
+    let private callFloatFunToInt64 f ci =
+        let ctx = ci.ctx
+        match ci with
+        | FloatOrOrdParam(ils,_,EofParam) ->
+            ([
+                yield! ils
+                if (f: MethodReference voption).IsSome then +Call f.Value
+                match ci.popResult with
+                | true  -> +Pop
+                | false -> +Conv Conv_I8
+             ], Some ctx.sysTypes.int64)
+        | _ -> ([], Some ctx.sysTypes.int64)
 
     let handleIntrinsic intrinsicSym ci =
         let ctx = ci.ctx
         let popResult = ci.popResult
-        let ident = ci.ident
         match (intrinsicSym, ci.cp) with
-        | IncProc, [ParamIdent id] -> deltaModify ctx +1 id
-        | DecProc, [ParamIdent id] -> deltaModify ctx -1 id
-        | SuccProc, [cp] -> deltaAdd ctx +1 cp
-        | PredProc, [cp] -> deltaAdd  ctx -1 cp
+        | IncProc, _ -> deltaModify PositiveDelta ci
+        | DecProc, _ -> deltaModify NegativeDelta ci
+        | SuccProc, _ -> deltaAdd PositiveDelta ci
+        | PredProc, _ -> deltaAdd NegativeDelta ci
         | ContinueProc, [] -> match ctx.loop.TryPeek() with
                               | true, (continueLabel, _) ->
                                 ([IlBranch(IlBr, continueLabel)], None)
@@ -1235,8 +1301,8 @@ module Intrinsics =
                 yield! callInstr
                 if popResult then yield +Pop // TODO or not generate call ?
              ], Some ctx.sysTypes.int32)
-        | TruncFunc, cp -> callFloatFunToInt64 ci ValueNone
-        | RoundFunc, cp -> callFloatFunToInt64 ci (ValueSome ctx.sysProc.Round)
+        | TruncFunc, _ -> callFloatFunToInt64 ValueNone ci
+        | RoundFunc, _ -> callFloatFunToInt64 (ValueSome ctx.sysProc.Round) ci
         | SizeOfFunc, [ParamIdent id] ->
             let t = match id with
                     | VariablePasType ctx t -> t

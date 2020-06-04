@@ -142,13 +142,11 @@ module Symbols =
         | VariableSym((_,t) as vs), _ -> [VariableLoad vs], Some t
         | _ -> failwith "IE"
 
-    type ChainLoad =
-        | ChainLoad of (SymbolLoad list * PasType option)
-        | SymbolLoadError
+    type ChainLoad = SymbolLoad list * PasType option
 
     let chainToSLList = function
-        | ChainLoad sl -> sl
-        | SymbolLoadError -> [],None // failwith "IE"
+        | Ok sl -> sl
+        | Error() -> [],None
 
     let caseSensitive = HashIdentity.Structural<TypeName>
     let caseInsensitive =

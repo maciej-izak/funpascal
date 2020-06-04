@@ -24,7 +24,7 @@ module LangStmt =
     let doAssignStm (ident, expr) (ctx: Ctx) =
         // add param for findSymbol to set purpose (like this `assign`)
         match ctx.FindSymbol ident with
-        | ChainLoad(symbols,_) ->
+        | Ok(symbols,_) -> // TODO type chceck
             let ltp = ref LTPNone
             let loadDest =
                 let load = List.collect (ctx.ChainLoadToIl ltp (ctx.ChainReaderFactory false false)) symbols
@@ -40,7 +40,7 @@ module LangStmt =
                 yield! expr
                 yield! ctx.ChainWriterFactory ltp
             ]
-        | _ -> failwith "IE"
+        | Error() -> []
         |> fun ils -> (ils, [])
 
     let doWithStm (idents, stmt) (ctx: Ctx) =
@@ -48,7 +48,7 @@ module LangStmt =
         let foldWithSymbols symbols i =
             let loadVarW =
                 match ctx.FindSymbol i with
-                | ChainLoad (symbols, _) ->
+                | Ok (symbols, _) ->
                     let ltp = ref LTPNone
                     let cl = List.collect (ctx.ChainLoadToIl ltp (ctx.ChainReaderFactory false false)) symbols
                     let vt = match !ltp with // TODO allow structs only ? (ValueType as records/classes only)
@@ -60,19 +60,22 @@ module LangStmt =
                     match vt.kind with | TkRecord _ -> () | _ -> failwithf "IE bad type for with %A" vt.kind
                     let pvt = PasType.NewPtr(vt)
                     let (_, vv) = ctx.EnsureVariable pvt
-                    ([
-                        yield! cl
-                        yield! ctx.ChainReaderFactory false true !ltp
-                        +Stloc vv
-                    ], (vv, vt.raw :?> TypeDefinition, pvt))
-                | _ -> failwith "IE"
+                    Some([
+                            yield! cl
+                            yield! ctx.ChainReaderFactory false true !ltp
+                            +Stloc vv
+                        ], (vv, vt.raw :?> TypeDefinition, pvt))
+                | Error() -> None
 
-            let newSymbols = Dictionary<_,_>()
-            let (v, td, ptd) = snd loadVarW
-            for f in td.Fields do
-                newSymbols.Add(StringName f.Name, WithSym(LocalVariable v, ptd))
-            ils.Add(fst loadVarW)
-            (WithSpace, newSymbols)::symbols
+            match loadVarW with
+            | Some loadVarW ->
+                let newSymbols = Dictionary<_,_>()
+                let (v, td, ptd) = snd loadVarW
+                for f in td.Fields do
+                    newSymbols.Add(StringName f.Name, WithSym(LocalVariable v, ptd))
+                ils.Add(fst loadVarW)
+                (WithSpace, newSymbols)::symbols
+            | None -> symbols
 
         let withSymbols = List.fold foldWithSymbols ctx.symbols idents
         let newCtx = { ctx with symbols = withSymbols }
@@ -204,7 +207,7 @@ module LangStmt =
 
     let doForStm (ident, initExpr, delta, finiExpr, stmt) (ctx: Ctx) =
         let var, varType = ctx.FindSymbol ident |> function
-                             | ChainLoad([VariableLoad(vs, vt)], _) -> vs, vt
+                             | Ok([VariableLoad(vs, vt)], _) -> vs, vt
                              | _ -> failwith "IE"
         // TODO allow only specified kind of variables for loops
         let (varFinalName, varFinal) = ctx.EnsureVariable varType
