@@ -2,6 +2,7 @@
 
 open System
 open System.IO
+open Fake.Core
 open NP.CommandLineHandle
 open Pas
 open Argu
@@ -12,10 +13,13 @@ let tryCompileFile doTest mainFile =
     System.IO.File.ReadAllText(mainFile)
     |> PasStreams.testAll mainFileName doTest
     |> function
-       | Ok() -> printfn "Compilation success!"
+       | Ok(outName) ->
+           printfn "Compilation success!"
+           Some outName
        | Error e ->
            Seq.iter (printfn "%s") e
            printfn "[Fatal Error] Cannot compile module '%s'" mainFileName
+           None
 
 [<EntryPoint>]
 let main argv =
@@ -32,10 +36,31 @@ let main argv =
         | [f] -> f
         | _ -> failwith "Multiply files not supported"
         |> tryCompileFile false
+        |> ignore
     | None ->
         // only proper for tests
         match results.TryGetResult(Test) with
-        | Some testFile -> tryCompileFile true testFile
+        | Some testFile ->
+            match tryCompileFile true testFile with
+            | Some binFile ->
+                File.WriteAllText(Path.GetFileNameWithoutExtension(binFile) + ".runtimeconfig.json",
+                                  """
+{
+  "runtimeOptions": {
+    "tfm": "netcoreapp3.1",
+    "framework": {
+      "name": "Microsoft.NETCore.App",
+      "version": "3.1.3"
+    }
+  }
+}
+                                  """)
+                let result =
+                    CreateProcess.fromRawCommand @"C:\_projects\newpascal\core32\dotnet.exe" ["exec"; binFile]
+                    |> Proc.run
+                printfn "test result = %A" result.ExitCode
+                ()
+            | None -> ()
         | _ -> failwith "No proper command found"
 
     0

@@ -19,7 +19,7 @@ let testPas p s i fn doTests =
     let us = PasState.Create (new PasStream(s)) i doTests
     use stream1 = new CharStream<PasState>(us.stream, Encoding.Unicode)
     stream1.UserState <- us
-    stream1.Name <- "test"
+    stream1.Name <- fn
     us.stream.AddInc "system.inc" @"C:\_projects\newpascal\np\npcli\test\xdpw"
     let result = applyParser pass1Parser stream1
 //    match result with
@@ -38,8 +38,12 @@ let testAll fn doTests s =
     match ast with
     | Success (r,u,_) ->
         match Ctx.BuildModule(ProgramAst(fst r, Block.Create(snd r))) u with
-        | Microsoft.FSharp.Core.Ok ad -> ad.Write("test.dll"); Microsoft.FSharp.Core.Ok()
-        | Microsoft.FSharp.Core.Error e -> Microsoft.FSharp.Core.Error e
+        | Microsoft.FSharp.Core.Ok ad ->
+            let outName = Path.ChangeExtension(fn, ".dll")
+            ad.Write(outName)
+            Microsoft.FSharp.Core.Ok(outName)
+        | Microsoft.FSharp.Core.Error e ->
+            Microsoft.FSharp.Core.Error e
     | Failure(s,_,_) -> Microsoft.FSharp.Core.Error([s] |> List<_>)
 
 let toString (x:'a) = 
