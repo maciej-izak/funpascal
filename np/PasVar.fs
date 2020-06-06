@@ -36,6 +36,7 @@ type PasState = {
   moduled: ModuleDef
   posMap: Dictionary<obj, Position>
   errors: (string * ParserError) list
+  testsEnv: Dictionary<string, string list>
 } 
 
 and IncludeHandle = string -> CharStream<PasState> -> Reply<unit>
@@ -147,7 +148,7 @@ let pass2IncludeHandler s =
         Reply(())
 
 type PasState with
-    static member Create s ip =
+    static member Create s ip doTest =
         {
             stream = s
             incPath = ip
@@ -156,6 +157,7 @@ type PasState with
             moduled = ModuleDef()
             posMap = Dictionary<_,_>()
             errors = []
+            testsEnv = if doTest then Dictionary<_,_>() else null
         }
 
 let opp = OperatorPrecedenceParser<ExprEl,unit,PasState>()

@@ -7,10 +7,10 @@ open Pas
 open Argu
 open NP
 
-let tryCompileFile mainFile =
+let tryCompileFile doTest mainFile =
     let mainFileName = Path.GetFileName(mainFile: string)
     System.IO.File.ReadAllText(mainFile)
-    |> PasStreams.testAll mainFileName
+    |> PasStreams.testAll mainFileName doTest
     |> function
        | Ok() -> printfn "Compilation success!"
        | Error e ->
@@ -31,9 +31,11 @@ let main argv =
         match pasFiles with
         | [f] -> f
         | _ -> failwith "Multiply files not supported"
-        |> tryCompileFile
+        |> tryCompileFile false
     | None ->
         // only proper for tests
-        if not(results.Contains(Test)) then failwith "No proper command found"
+        match results.TryGetResult(Test) with
+        | Some testFile -> tryCompileFile true testFile
+        | _ -> failwith "No proper command found"
 
     0

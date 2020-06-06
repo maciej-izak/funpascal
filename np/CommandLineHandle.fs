@@ -4,7 +4,7 @@ open Argu
 
 type CLIArguments =
     | [<MainCommand>] Files of FILES:string list
-    | Test
+    | Test of string
 with
     interface IArgParserTemplate with
         member arg.Usage =

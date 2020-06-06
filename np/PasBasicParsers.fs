@@ -13,6 +13,7 @@ type Directive =
 
 type Comment =
      | Directive of Directive
+     | TestEnv of string * string list
      | Regular
 
 exception InternalErrorException of string
@@ -29,9 +30,22 @@ let directiveIdentifier =
     many1Satisfy2L isProperFirstChar isProperChar "directive ident"
     .>>. (pchar '+' <|> pchar '-' <|> (mws >>% ' '))
 
+let testEnvVar =
+    let isProperFirstChar c = isLetter c || c = '_'
+    let isProperChar c = isLetter c || c = '_' || isDigit c
+    let isProperValChar c = isProperChar c || c = '-' || c = ' '
+    let simpleIdentName = many1Satisfy2L isProperFirstChar isProperChar "test ident"
+    let simpleIdent = many1SatisfyL isProperValChar "test value"
+    simpleIdentName .>>.
+    (mws >>. opt( pchar '=' >>. sepEndBy simpleIdent (pchar ','))
+     >>= function
+         | Some x -> preturn x
+         | _ -> preturn []
+     )
+
 // TODO: escape for ~ in inc files ?
 
-let manySatisfyWith0 (commentParser: Parser<_,_>) = 
+let manySatisfyWith0 (commentParser: Parser<_,_>) =
     fun (stream: CharStream<_>) ->
       if stream.Skip '$' then
         let idReply = directiveIdentifier stream
@@ -59,8 +73,29 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
         else
           Reply(Error, Unchecked.defaultof<_>, idReply.Error)
       else
-        let inReply = commentParser stream
-        Reply(inReply.Status, Regular, inReply.Error)
+        if stream.UserState.testsEnv <> null then
+            mws stream |> ignore
+            if stream.Skip '#' then
+                mws stream |> ignore
+                let idReply = testEnvVar stream
+                if idReply.Status = Ok then
+                    let inReply = commentParser stream
+                    if inReply.Status = Ok then
+                        Reply(inReply.Status, TestEnv(idReply.Result), inReply.Error)
+                    else
+                        let e = sprintf "Invalid '%s' directive declaration" (fst idReply.Result)
+                               |> messageError
+                               |> mergeErrors inReply.Error
+                        Reply(Error, e)
+                else
+                    let inReply = commentParser stream
+                    Reply(inReply.Status, Regular, inReply.Error)
+            else
+                let inReply = commentParser stream
+                Reply(inReply.Status, Regular, inReply.Error)
+        else
+            let inReply = commentParser stream
+            Reply(inReply.Status, Regular, inReply.Error)
         
 let commentBlock =
     let was0 = ref false
