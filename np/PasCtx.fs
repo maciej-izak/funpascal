@@ -726,6 +726,7 @@ module EvalExpr =
                     |> List.map (fun (VariableSymLoad vlt) -> loadSymList ctx false true vlt |> fst)
                     |> List.concat
                     yield f
+                    // TODO error/IE ? for popResult && mr.result.IsNone
                     if popResult && mr.result.IsSome then
                         yield +Pop
                  ], mr.result)
@@ -1084,7 +1085,7 @@ module Intrinsics =
             let inst, typ = callParamToIl ci.ctx cp None
             match typ with
             // TODO ? Convert to float id needed ?
-            | FloatType | IntType -> Some(inst, typ, {ci with cp=t})
+            | FloatType | IntType -> Some(inst, (typ, {ci with cp=t}))
             | _ ->
                 ci.ctx.NewError cp (sprintf "Expected ordinal or float type but '%O' found" typ.name)
                 None
@@ -1099,7 +1100,7 @@ module Intrinsics =
             let inst, typ = findSymbolAndGetPtr ci.ctx id
             match typ with
             // TODO ? Convert to float id needed ?
-            | FloatType | IntType -> Some(inst, typ, {ci with cp=t})
+            | FloatType | IntType -> Some(inst, (typ, {ci with cp=t}))
             | _ ->
                 ci.ctx.NewError cp (sprintf "Expected ordinal or float type but '%O' found" typ.name)
                 None
@@ -1110,22 +1111,26 @@ module Intrinsics =
             ci.ctx.NewError ci.ident ("Expected ident parameter but nothing found")
             None
 
-    let (|EofOptFloatOrOrdParamValue|_|) ci =
+    let (|EofOptFloatOrOrdParamValue|_|) (expectedType, ci) =
         match ci.cp with
         | cp::t ->
             let inst, typ = callParamToIl ci.ctx cp None
-            match typ, t with
+            match expectedType, typ, t with
             // TODO ? Convert to float id needed ?
-            | FloatType, [] | IntType, [] -> Some(Some inst)
-            | _, [] ->
-                ci.ctx.NewError cp (sprintf "Expected ordinal or float type but '%O' found" typ.name)
+            | FloatType, FloatOrIntType, [] -> Some(expectedType, Some inst)
+            | IntType, IntType, [] -> Some(expectedType, Some inst)
+            | FloatType, _, [] ->
+                ci.ctx.NewError cp (sprintf "Expected integer or float type but '%O' found" typ.name)
                 None
-            | _, cp::_ ->
+            | IntType, _, [] ->
+                ci.ctx.NewError cp (sprintf "Expected integer type but '%O' found" typ.name)
+                None
+            | _, _, cp::_ ->
                 ci.ctx.NewError cp "Unexpected parameter"
                 None
-        | [] -> Some(None)
+        | [] -> Some(expectedType, None)
 
-    let (|EofParam|_|) ci =
+    let (|EofParam|_|) (_,ci) =
         match ci.cp with
         | [] -> Some()
         | cp::_ -> ci.ctx.NewError cp "Unexpected parameter"; None
@@ -1150,21 +1155,23 @@ module Intrinsics =
 
     let private deltaModify delta ci =
         match ci with
-        | FloatOrOrdParamIdent(inst, typ, EofOptFloatOrOrdParamValue(dInst)) ->
+        | FloatOrOrdParamIdent(inst, EofOptFloatOrOrdParamValue(typ, dInst)) ->
             let indKind = typ.IndKind
             ([
                 yield! inst
+                if ci.popResult = false then +Dup
                 +Dup
                 +Ldind indKind
                 yield! deltaToIl dInst delta
                 +AddInst
                 +Stind indKind
+                if ci.popResult = false then +Ldind indKind
             ], None)
         | _ -> ([], None)
 
     let private deltaAdd delta ci =
         match ci with
-        | FloatOrOrdParam(inst, typ, EofOptFloatOrOrdParamValue(dInst)) ->
+        | FloatOrOrdParam(inst, EofOptFloatOrOrdParamValue(typ, dInst)) ->
             ([
                  yield! inst
                  yield! deltaToIl dInst delta
@@ -1175,7 +1182,7 @@ module Intrinsics =
     let private callFloatFunToInt64 f ci =
         let ctx = ci.ctx
         match ci with
-        | FloatOrOrdParam(ils,_,EofParam) ->
+        | FloatOrOrdParam(ils,EofParam) ->
             ([
                 yield! ils
                 if (f: MethodReference voption).IsSome then +Call f.Value
