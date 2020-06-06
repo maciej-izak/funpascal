@@ -573,8 +573,7 @@ module LangBuilder =
                       | _ -> ValueNone
             match ctx.errors.Count, res with
             | 0, ValueSome res -> Ok res
-            | _, ValueNone -> Error ctx
-            | _ -> failwith "IE"
+            | _ -> Error ctx
 
         static member BuildModule (ProgramAst(name, block)) state = //, methods: Method list) =
             let moduleName = match name with | Some n -> n | None -> "Program"

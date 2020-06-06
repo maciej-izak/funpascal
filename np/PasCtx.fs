@@ -541,6 +541,7 @@ module SymSearch =
 
     type FoundFunction =
         | RealFunction of (MethodSym * IlInstruction option)
+        | UnknownFunction
         | TypeCast of PasType
 
     let findFunction (ctx: Ctx) ident =
@@ -552,7 +553,10 @@ module SymSearch =
                | Referenced ({raw=mr}, _) -> RealFunction(cl, +Call(mr) |> Some)
                | Intrinsic _ -> RealFunction(cl, None)
             | Ok([TypeCastLoad t], _) -> TypeCast t
-            | _ -> failwith "Not supported"
+            | _ ->
+                // TODO replace first error "Cannot find symbol" with
+                // ctx.NewError ident (sprintf "Unknown function '%O'" ident)
+                UnknownFunction
 
 module EvalExpr =
 
@@ -732,7 +736,7 @@ module EvalExpr =
                  ], mr.result)
             | Intrinsic i, _ -> handleIntrinsic i {ctx=ctx;ident=ident;cp=cp;popResult=popResult}
             | _ -> failwith "IE"
-        | _ -> failwith "IE"
+        | SymSearch.UnknownFunction -> ([], Some ctx.sysTypes.unknown)
 
     let valueToValueKind ctx v (expectedType: PasType option) byRef =
         match v, byRef with
@@ -1166,9 +1170,10 @@ module Intrinsics =
                 +AddInst
                 +Stind indKind
                 if ci.popResult = false then +Ldind indKind
-            ], None)
-        | _ -> ([], None)
+            ], if ci.popResult then None else Some typ)
+        | _ -> ([], if ci.popResult then None else Some ci.ctx.sysTypes.unknown)
 
+    // TODO do not generate if ci.popResult ?
     let private deltaAdd delta ci =
         match ci with
         | FloatOrOrdParam(inst, EofOptFloatOrOrdParamValue(typ, dInst)) ->
@@ -1177,7 +1182,7 @@ module Intrinsics =
                  yield! deltaToIl dInst delta
                  +AddInst
             ], Some typ)
-        | _ -> ([], None)
+        | _ -> ([], if ci.popResult then None else Some ci.ctx.sysTypes.unknown)
 
     let private callFloatFunToInt64 f ci =
         let ctx = ci.ctx
