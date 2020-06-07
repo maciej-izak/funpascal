@@ -117,17 +117,19 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
         else
           Reply(Error, Unchecked.defaultof<_>, idReply.Error)
       else
-        if stream.UserState.testsEnv <> null then
+        if stream.UserState.testsEnv <> null && stream.UserState.pass = 1 then
             mws stream |> ignore
-            if stream.Skip '#' then
+            if stream.Skip '%' then
                 mws stream |> ignore
                 let idReply = testEnvVar stream
                 if idReply.Status = Ok then
                     let inReply = commentParser stream
                     if inReply.Status = Ok then
+                        // TODO raise exception for duplicated test env ?
+                        stream.UserState.testsEnv.TryAdd(fst idReply.Result, snd idReply.Result) |> ignore
                         Reply(inReply.Status, TestEnv(idReply.Result), inReply.Error)
                     else
-                        let e = sprintf "Invalid '%s' directive declaration" (fst idReply.Result)
+                        let e = sprintf "Invalid '%s' test env declaration" (fst idReply.Result)
                                |> messageError
                                |> mergeErrors inReply.Error
                         Reply(Error, e)
@@ -179,7 +181,7 @@ let c0 =
         if us.incStack.Count > 0 then
           let pos, name, s = us.incStack.Pop()
           let i = us.stream.FindStream name
-          printfn "%s %i = %i" name (i.index + i.length + 1) stream.Index
+          // printfn "%s %i = %i" name (i.index + i.length + 1) stream.Index
           if i.index + i.length + 1 <> int stream.Index then
             raise (InternalErrorException("201909150"))
           stream.Seek pos

@@ -1,4 +1,3 @@
-{ # }
 var
   i: integer;
   s: single;

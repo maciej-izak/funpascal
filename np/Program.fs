@@ -9,18 +9,40 @@ open Argu
 open NP
 
 let tryCompileFile doTest mainFile =
+    let testResult u isError =
+        let ok() = printfn "TEST %s OK" mainFile
+        let fail() = printfn "FAIL: %s" mainFile
+        if doTest then
+           match isError, u.testsEnv.ContainsKey "FAIL" with
+           | false, false | true, true -> ok()
+           | true, false | false, true -> fail()
+
     let mainFileName = Path.GetFileName(mainFile: string)
     System.IO.File.ReadAllText(mainFile)
     |> PasStreams.testAll mainFileName doTest
     |> function
-       | Ok(outName, w) ->
-           Seq.iter (printfn "%s") w
+       | Ok(outName, u) ->
+           Seq.iter (printfn "%s") u.warnings
            printfn "Compilation success!"
+           File.WriteAllText(Path.GetFileNameWithoutExtension(outName) + ".runtimeconfig.json",
+                                  """
+{
+  "runtimeOptions": {
+    "tfm": "netcoreapp3.1",
+    "framework": {
+      "name": "Microsoft.NETCore.App",
+      "version": "3.1.3"
+    }
+  }
+}
+                                  """)
+           testResult u false
            Some outName
-       | Error (w, e) ->
-           Seq.iter (printfn "%s") w
-           Seq.iter (printfn "%s") e
+       | Error u ->
+           Seq.iter (printfn "%s") u.warnings
+           Seq.iter (printfn "%s") u.errors
            printfn "[Fatal Error] Cannot compile module '%s'" mainFileName
+           testResult u true
            None
 
 [<EntryPoint>]
@@ -42,27 +64,19 @@ let main argv =
     | None ->
         // only proper for tests
         match results.TryGetResult(Test) with
-        | Some testFile ->
-            match tryCompileFile true testFile with
-            | Some binFile ->
-                File.WriteAllText(Path.GetFileNameWithoutExtension(binFile) + ".runtimeconfig.json",
-                                  """
-{
-  "runtimeOptions": {
-    "tfm": "netcoreapp3.1",
-    "framework": {
-      "name": "Microsoft.NETCore.App",
-      "version": "3.1.3"
-    }
-  }
-}
-                                  """)
-                let result =
-                    CreateProcess.fromRawCommand @"C:\_projects\newpascal\core32\dotnet.exe" ["exec"; binFile]
-                    |> Proc.run
-                printfn "test result = %A" result.ExitCode
-                ()
-            | None -> ()
+        | Some testDir ->
+            for testFile in Directory.GetFiles(testDir, "*.pas") do
+                match tryCompileFile true testFile with
+                | Some binFile ->
+                    let result =
+                        CreateProcess.fromRawCommand @"C:\_projects\newpascal\core32\dotnet.exe" ["exec"; binFile]
+                        |> Proc.run
+                    if result.ExitCode = 0 then
+                        printfn "TEST RUN OK (%s)" binFile
+                    else
+                        printfn "FAIL RUN = %d (%s)" result.ExitCode binFile
+                    ()
+                | None -> ()
         | _ -> failwith "No proper command found"
 
     0

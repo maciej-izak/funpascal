@@ -601,7 +601,7 @@ module LangBuilder =
                 let methodName = "Main"
                 MethodDefinition(methodName, methodAttributes, moduleBuilder.TypeSystem.Void)
             match Ctx.BuildIl(block, MainScope(moduleName, typeBuilder, state, moduleBuilder)) with
-            | Error ctx -> Error ctx.errors
+            | Error _ -> Error()
             | Ok res ->
                 let mainBlock = Ctx.CompileBlock methodBuilder typeBuilder res
                 mainBlock.Body.InitLocals <- true

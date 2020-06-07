@@ -1,6 +1,7 @@
 [<AutoOpen>]
 module Pas.Var
 
+open System
 open System.IO
 open System.Text
 open System.Collections.Generic
@@ -109,13 +110,13 @@ and PasStream(s: Stream) = class
             stream.Close()
 
     member self.AddInc fileName searchPath =
-        printfn "AddInc %A %A" fileName searchPath
+        //printfn "AddInc %A %A" fileName searchPath
         if File.Exists fileName then fileName else Path.Combine(searchPath, fileName)
         |> File.ReadAllText
         |> self.AddStr fileName
 
     member _.AddStr strName str =
-        printfn "AddStr %s" str
+        //printfn "AddStr %s" str
         let addInc() =
             let pos = finalStream.Position
             finalStream.Seek(finalStream.Length, SeekOrigin.Begin) |> ignore
@@ -130,7 +131,7 @@ and PasStream(s: Stream) = class
             streams.Add(strName, subStream)
             lastSubStream <- subStream
             finalStream.Seek(pos, SeekOrigin.Begin) |> ignore
-            printfn "check %s = %A (%A)" strName (streams.ContainsKey(strName)) subStream
+            //printfn "check %s = %A (%A)" strName (streams.ContainsKey(strName)) subStream
         if streams.ContainsKey(strName) then
             () // TODO should be InternalError for macros
         else addInc()
@@ -189,7 +190,7 @@ type PasState with
             posMap = Dictionary<_,_>()
             errors = List<string>()
             warnings = List<string>()
-            testsEnv = if doTest then Dictionary<_,_>() else null
+            testsEnv = if doTest then Dictionary<_,_>(StringComparer.OrdinalIgnoreCase) else null
         }
 
 let opp = OperatorPrecedenceParser<ExprEl,unit,PasState>()
