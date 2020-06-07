@@ -25,7 +25,8 @@ let testPas p s i fn doTests =
 //    match result with
 //    | Success (_,s,_) -> s.stream.SaveToFile()
 //    | Failure (_,_,s) -> s.stream.SaveToFile()
-    us.handleInclude := pass2IncludeHandler
+    us.handleInclude := redirectParserTo
+    us.handleMacro := pass2MacroHandler
     printfn ">>> SECOND PASS"
     use stream2 = new CharStream<PasState>(us.stream, Encoding.Unicode)
     stream2.UserState <- us

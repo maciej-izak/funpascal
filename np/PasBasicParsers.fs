@@ -15,6 +15,7 @@ type Comment =
      | Directive of Directive
      | TestEnv of string * string list
      | Regular
+     | Macro of (MacroId * Macro)
 
 exception InternalErrorException of string
 
@@ -47,24 +48,57 @@ let testEnvVar =
 
 let manySatisfyWith0 (commentParser: Parser<_,_>) =
     fun (stream: CharStream<_>) ->
+      let commentPos = stream.Position;
       if stream.Skip '$' then
         let idReply = directiveIdentifier stream
         if idReply.Status = Ok then
           let inReply = commentParser stream
-          let r = if inReply.Status = Ok then inReply.Result
-                  else Unchecked.defaultof<_>
+          let r: string = (if inReply.Status = Ok then inReply.Result else "").Trim()
           match idReply.Result with
-          | "I", ' ' -> r |> Include |> Some
-          | "I", c when c = '+' || c = '-' -> c = '+' |> IOCheck |> Some
-          | "H", c when c = '+' || c = '-' -> c = '+' |> LongString |> Some
+          | "I", (' ' as firstIChar) | "I", ('%' as firstIChar) ->
+              // `{$I%` or `{$I %` or `{$I   %` is correct
+              if (firstIChar = '%' && r.Length > 0) || (r.Length > 1 && r.Chars(0) = '%') then
+                  // TODO optimize parsing
+                  // follow FPC logic, allow all below :
+                  // {$I %IDENT} -> 'IDENT'
+                  // {$I %IDENT%} -> 'IDENT'
+                  // {$I %IDENT %} -> 'IDENT'
+                  // {$I %IDENT% %} -> 'IDENT'
+                  // {$I %IDENT%X} -> 'IDENT%X'
+                  // {$I %%IDENT%%%} -> '%IDENT%%'
+                  let r =
+                      // {$I %IDENT%} version
+                      let r = if (firstIChar = ' ' && r.Chars(0) = '%') then r.Substring(1) else r
+                      let eof = r.IndexOf(' ')
+                      let r = if eof > -1 then r.Substring(0, eof) else r
+                      if r.Chars(r.Length-1) = '%' then
+                          r.Substring(0, r.Length-1)
+                      else r
+                  let macro = match r.ToUpper() with
+                              | "LINENUM" -> int stream.Line |> CompilerInfoInt
+                              // TODO warnings about lack of env variable
+                              | _ -> "" |> CompilerInfoStr
+                  let macroId =
+                      {
+                        name = sprintf "%s : Compiler Info %s" (commentPos.StreamName) r
+                        line = commentPos.Line
+                        column = commentPos.Column
+                      }
+                  Macro(macroId, macro)
+              else
+                  // TODO handle bad file names
+                  r |> Include |> Directive
+              |> Some
+          | "I", c when c = '+' || c = '-' -> c = '+' |> IOCheck |> Directive |> Some
+          | "H", c when c = '+' || c = '-' -> c = '+' |> LongString |> Directive |> Some
           | "APPTYPE", ' ' -> 
             match r with
-            | "CONSOLE" -> Console |> AppType |> Some
-            | "GUI" -> GUI |> AppType |> Some
+            | "CONSOLE" -> Console |> AppType |> Directive |> Some
+            | "GUI" -> GUI |> AppType |> Directive |> Some
             | _ -> None
           | _ -> None
           |> function
-             | Some d -> Reply(inReply.Status, Directive(d), inReply.Error)
+             | Some d -> Reply(inReply.Status, d, inReply.Error)
              | _ -> 
                let e = sprintf "Invalid '%s' directive declaration" (fst idReply.Result)
                        |> messageError 
@@ -168,6 +202,7 @@ let comments =
           | AppType _ -> preturn()
           | IOCheck _ -> preturn()
           | LongString _ -> preturn()
+        | Macro m -> fun stream -> !stream.UserState.handleMacro m stream
         | _ -> preturn()
     
 let wsc: Parser<unit, PasState> = skipMany comments

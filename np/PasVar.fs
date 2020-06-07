@@ -28,11 +28,20 @@ type ModuleDef() = class
     member val block = BlockDef()
   end
 
+type Macro =
+    | CompilerInfoStr of string
+    | CompilerInfoInt of int
+
+type MacroId =
+    { name: string; line: int64; column: int64 }
+    override self.ToString() = sprintf "%s (%d, %d)" self.name self.line self.column
+
 type PasState = {
   stream: PasStream
   incPath: string
   incStack: (int64 * string * CharStreamState<PasState>) Stack
   handleInclude: IncludeHandle ref
+  handleMacro: MacroHandle ref
   moduled: ModuleDef
   posMap: Dictionary<obj, Position>
   errors: (string * ParserError) list
@@ -40,6 +49,7 @@ type PasState = {
 } 
 
 and IncludeHandle = string -> CharStream<PasState> -> Reply<unit>
+and MacroHandle = MacroId * Macro -> CharStream<PasState> -> Reply<unit>
 
 (*
   ref (
@@ -96,26 +106,31 @@ and PasStream(s: Stream) = class
         else
             stream.Close()
 
-    member _.AddInc fileName searchPath =
+    member self.AddInc fileName searchPath =
         printfn "AddInc %A %A" fileName searchPath
-        let addInc() =    
+        if File.Exists fileName then fileName else Path.Combine(searchPath, fileName)
+        |> File.ReadAllText
+        |> self.AddStr fileName
+
+    member _.AddStr strName str =
+        printfn "AddStr %s" str
+        let addInc() =
             let pos = finalStream.Position
             finalStream.Seek(finalStream.Length, SeekOrigin.Begin) |> ignore
-            let fn= if File.Exists fileName then fileName else Path.Combine(searchPath, fileName)
-            let str = "\013" + File.ReadAllText(fn) + "\000"
+            let str = "\013" + str + "\000"
             let bytes = Encoding.Unicode.GetBytes(str)
             finalStream.Write(bytes, 0, bytes.Length)
-            let subStream = 
+            let subStream =
                 {
                     index = lastSubStream.index + lastSubStream.length + 2// if lastSubStream.index = 0 then 1 else 2
-                    length = str.Length - 2 
+                    length = str.Length - 2
                 }
-            streams.Add(fileName, subStream)
-            lastSubStream <- subStream 
+            streams.Add(strName, subStream)
+            lastSubStream <- subStream
             finalStream.Seek(pos, SeekOrigin.Begin) |> ignore
-            printfn "check %s = %A (%A)" fileName (streams.ContainsKey(fileName)) subStream
-        if streams.ContainsKey(fileName) then
-            ()
+            printfn "check %s = %A (%A)" strName (streams.ContainsKey(strName)) subStream
+        if streams.ContainsKey(strName) then
+            () // TODO should be InternalError for macros
         else addInc()
 
     member _.FindStream s = streams.[s]
@@ -132,20 +147,29 @@ let pass1IncludeHandler s =
         stream.UserState.stream.AddInc s stream.UserState.incPath
         Reply(())
 
-let pass2IncludeHandler s =  
+let pass1MacroHandler (mId: MacroId, m) =
     fun (stream: CharStream<PasState>) ->
-        //stream.Line
+        let addStr = stream.UserState.stream.AddStr (mId.ToString())
+        match m with
+        | CompilerInfoInt i -> addStr (string i)
+        | CompilerInfoStr s -> addStr s
+        Reply(())
+
+let redirectParserTo name =
+    fun (stream: CharStream<PasState>) ->
         let offset = stream.Position.Index;
-        stream.UserState.incStack.Push(offset, s, CharStreamState(stream))
-        s
+        stream.UserState.incStack.Push(offset, name, CharStreamState(stream))
+        name
         |> stream.UserState.stream.FindStream
         |> fun pss -> 
                     stream.Seek(int64 pss.index)
-                    stream.Name <- s
+                    stream.Name <- name
                     stream.SetLineBegin_WithoutCheckAndWithoutIncrementingTheStateTag 0L
                     stream.SetLine_WithoutCheckAndWithoutIncrementingTheStateTag 0L 
                     stream.RegisterNewline()
         Reply(())
+
+let pass2MacroHandler (mId: MacroId, _) = redirectParserTo (mId.ToString())
 
 type PasState with
     static member Create s ip doTest =
@@ -154,6 +178,7 @@ type PasState with
             incPath = ip
             incStack = Stack()
             handleInclude = {contents = pass1IncludeHandler}
+            handleMacro = {contents = pass1MacroHandler}
             moduled = ModuleDef()
             posMap = Dictionary<_,_>()
             errors = []
