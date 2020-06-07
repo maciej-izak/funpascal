@@ -91,7 +91,7 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
               |> Some
           | "I", c when c = '+' || c = '-' -> c = '+' |> IOCheck |> Directive |> Some
           | "H", c when c = '+' || c = '-' -> c = '+' |> LongString |> Directive |> Some
-          | "APPTYPE", ' ' -> 
+          | "APPTYPE", ' ' ->
             match r with
             | "CONSOLE" -> Console |> AppType |> Directive |> Some
             | "GUI" -> GUI |> AppType |> Directive |> Some

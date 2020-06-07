@@ -33,6 +33,7 @@ module IntrinsicSymbols =
         | PredProc
         | ExitProc
         | HaltProc
+        | HaltAtLineProc
         | ContinueProc
         | BreakProc
         | WriteProc

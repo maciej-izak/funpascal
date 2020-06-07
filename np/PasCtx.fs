@@ -337,7 +337,8 @@ module Ctx =
         intrinsic "Continue" ContinueProc 
         intrinsic "Exit" ExitProc 
         intrinsic "Halt" HaltProc 
-        intrinsic "SizeOf" SizeOfFunc 
+        intrinsic "HaltAtLine" HaltAtLineProc
+        intrinsic "SizeOf" SizeOfFunc
         intrinsic "Ord" OrdFunc 
         intrinsic "Chr" ChrFunc 
         intrinsic "Pred" PredProc 
@@ -1290,12 +1291,20 @@ module Intrinsics =
                 +Call ctx.sysProc.FreeMem
             ], None)
         | HaltProc, cp ->
+            // TODO errorcode global variable
             let exitCode = match cp with
                            | [] -> [+Ldc_I4 0]
                            | [cp] -> fst <| callParamToIl ctx cp None // TODO typecheck ?
                            | _ -> failwith "IE only one param allowed"
             ([
                  yield! exitCode
+                 +Call(ctx.FindMethodReference "EXITPROCESS")
+                 // +Call ctx.sysProc.Exit
+            ], None)
+        | HaltAtLineProc, [] ->
+            let exitCode = int (ci.ctx.posMap.[ci.ident.BoxPos]).Line
+            ([
+                 +Ldc_I4 exitCode
                  +Call(ctx.FindMethodReference "EXITPROCESS")
                  // +Call ctx.sysProc.Exit
             ], None)
