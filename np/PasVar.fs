@@ -33,19 +33,21 @@ type Macro =
     | CompilerInfoInt of int
 
 type MacroId =
-    { name: string; line: int64; column: int64 }
+    { name: string; line: int; column: int }
     override self.ToString() = sprintf "%s (%d, %d)" self.name self.line self.column
 
 type PasState = {
-  stream: PasStream
-  incPath: string
-  incStack: (int64 * string * CharStreamState<PasState>) Stack
-  handleInclude: IncludeHandle ref
-  handleMacro: MacroHandle ref
-  moduled: ModuleDef
-  posMap: Dictionary<obj, Position>
-  errors: (string * ParserError) list
-  testsEnv: Dictionary<string, string list>
+    pass: int
+    stream: PasStream
+    incPath: string
+    incStack: (int64 * string * CharStreamState<PasState>) Stack
+    handleInclude: IncludeHandle
+    handleMacro: MacroHandle
+    moduled: ModuleDef
+    posMap: Dictionary<obj, Position>
+    errors: List<string>
+    warnings: List<string>
+    testsEnv: Dictionary<string, string list>
 } 
 
 and IncludeHandle = string -> CharStream<PasState> -> Reply<unit>
@@ -142,6 +144,9 @@ and PasStream(s: Stream) = class
     member _.EndInc() = () 
   end
 
+let errorFmt = sprintf "[Error] %s(%d,%d) %s"
+let warningFmt = sprintf "[Warning] %s(%d,%d) %s"
+
 let pass1IncludeHandler s =  
     fun (stream: CharStream<PasState>) ->
         stream.UserState.stream.AddInc s stream.UserState.incPath
@@ -174,14 +179,16 @@ let pass2MacroHandler (mId: MacroId, _) = redirectParserTo (mId.ToString())
 type PasState with
     static member Create s ip doTest =
         {
+            pass = 1
             stream = s
             incPath = ip
             incStack = Stack()
-            handleInclude = {contents = pass1IncludeHandler}
-            handleMacro = {contents = pass1MacroHandler}
+            handleInclude = pass1IncludeHandler
+            handleMacro = pass1MacroHandler
             moduled = ModuleDef()
             posMap = Dictionary<_,_>()
-            errors = []
+            errors = List<string>()
+            warnings = List<string>()
             testsEnv = if doTest then Dictionary<_,_>() else null
         }
 

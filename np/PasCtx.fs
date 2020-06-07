@@ -40,6 +40,7 @@ type SymOwner =
 
 type Ctx = {
         errors: List<string>
+        warnings: List<string>
         variables: List<VariableKind> list
         labels: Dictionary<string, BranchLabel ref> list
         symbols: (SymOwner * Dictionary<TypeName, Symbol>) list
@@ -56,9 +57,9 @@ type Ctx = {
     } with
 
     member inline self.NewError(pos: ^T) s =
-        let fmtPos (pos: FParsec.Position) = sprintf "[Error] %s(%d,%d)" (pos.StreamName) (pos.Line) (pos.Column)
+        let fmtPos (pos: FParsec.Position) = errorFmt (pos.StreamName) (int pos.Line) (int pos.Column)
         let p = (^T : (member BoxPos : obj) pos)
-        self.errors.Add(fmtPos (self.posMap.[p]) + " " + s)
+        self.errors.Add(fmtPos (self.posMap.[p]) s)
 
     static member Create = Ctx.createCtx
 
@@ -362,12 +363,13 @@ module Ctx =
         symbols.Add(StringName "Ln", singleScalar mathLog)
         ctx
 
-    let createCtx moduleBuilder ns tb owner pm =
+    let createCtx moduleBuilder ns tb owner pm errors warnings =
         let lang = LangCtx()
         let details = ModuleDetails.Create moduleBuilder ns tb
         let symbols = Dictionary<TypeName,Symbol>(lang)
         {
-            errors = List<_>()
+            errors = errors
+            warnings = warnings
             variables = [List<VariableKind>()]
             labels = [Dictionary<_,_>()]
             symbols = [owner,symbols]

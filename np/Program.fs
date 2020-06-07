@@ -13,10 +13,12 @@ let tryCompileFile doTest mainFile =
     System.IO.File.ReadAllText(mainFile)
     |> PasStreams.testAll mainFileName doTest
     |> function
-       | Ok(outName) ->
+       | Ok(outName, w) ->
+           Seq.iter (printfn "%s") w
            printfn "Compilation success!"
            Some outName
-       | Error e ->
+       | Error (w, e) ->
+           Seq.iter (printfn "%s") w
            Seq.iter (printfn "%s") e
            printfn "[Fatal Error] Cannot compile module '%s'" mainFileName
            None

@@ -2,6 +2,7 @@
 module Pas.BasicParsers
 
 open FParsec
+open Fake.Runtime.Environment
 
 type AppType = | Console | GUI
 
@@ -74,16 +75,25 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
                       if r.Chars(r.Length-1) = '%' then
                           r.Substring(0, r.Length-1)
                       else r
-                  let macro = match r.ToUpper() with
-                              | "LINENUM" -> int stream.Line |> CompilerInfoInt
-                              // TODO warnings about lack of env variable
-                              | _ -> "" |> CompilerInfoStr
                   let macroId =
                       {
                         name = sprintf "%s : Compiler Info %s" (commentPos.StreamName) r
-                        line = commentPos.Line
-                        column = commentPos.Column
+                        line = int commentPos.Line
+                        column = int commentPos.Column
                       }
+                  let macro = match r.ToUpper() with
+                              | "LINENUM" -> int stream.Line |> CompilerInfoInt
+                              | var ->
+                                  match environVarOrNone var with
+                                  | Some value -> CompilerInfoStr value
+                                  | None ->
+                                      // report once
+                                      // TODO rework as handler ?
+                                      if stream.UserState.pass = 1 then
+                                          sprintf "Cannot find enviroment variable '%s'" var
+                                          |> warningFmt macroId.name macroId.line macroId.column
+                                          |> stream.UserState.warnings.Add
+                                      CompilerInfoStr ""
                   Macro(macroId, macro)
               else
                   // TODO handle bad file names
@@ -198,11 +208,11 @@ let comments =
     >>= function
         | Directive d ->
           match d with
-          | Include f -> fun stream -> !stream.UserState.handleInclude f stream
+          | Include f -> fun stream -> stream.UserState.handleInclude f stream
           | AppType _ -> preturn()
           | IOCheck _ -> preturn()
           | LongString _ -> preturn()
-        | Macro m -> fun stream -> !stream.UserState.handleMacro m stream
+        | Macro m -> fun stream -> stream.UserState.handleMacro m stream
         | _ -> preturn()
     
 let wsc: Parser<unit, PasState> = skipMany comments
@@ -220,6 +230,6 @@ let pass1Parser =
 
 let str_wsc s =
     pstringCI s .>> wsc
-let include_system_inc = (fun stream -> !stream.UserState.handleInclude "system.inc" stream) >>. wsc
+let include_system_inc = (fun stream -> stream.UserState.handleInclude "system.inc" stream) >>. wsc
 let wrd_wsc s =
     pstringCI s .>> (notFollowedBy (choice[letter; digit; pchar '_']) .>> wsc)

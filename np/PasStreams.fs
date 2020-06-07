@@ -25,8 +25,12 @@ let testPas p s i fn doTests =
 //    match result with
 //    | Success (_,s,_) -> s.stream.SaveToFile()
 //    | Failure (_,_,s) -> s.stream.SaveToFile()
-    us.handleInclude := redirectParserTo
-    us.handleMacro := pass2MacroHandler
+    let us =
+        { us with
+            pass = 2
+            handleInclude = redirectParserTo
+            handleMacro = pass2MacroHandler
+        }
     printfn ">>> SECOND PASS"
     use stream2 = new CharStream<PasState>(us.stream, Encoding.Unicode)
     stream2.UserState <- us
@@ -42,10 +46,10 @@ let testAll fn doTests s =
         | Microsoft.FSharp.Core.Ok ad ->
             let outName = Path.ChangeExtension(fn, ".dll")
             ad.Write(outName)
-            Microsoft.FSharp.Core.Ok(outName)
+            Microsoft.FSharp.Core.Ok(outName, u.warnings)
         | Microsoft.FSharp.Core.Error e ->
-            Microsoft.FSharp.Core.Error e
-    | Failure(s,_,_) -> Microsoft.FSharp.Core.Error([s] |> List<_>)
+            Microsoft.FSharp.Core.Error(u.warnings, e)
+    | Failure(s,_,u) -> Microsoft.FSharp.Core.Error(u.warnings, [s] |> List<_>)
 
 let toString (x:'a) = 
     match FSharpValue.GetUnionFields(x, typeof<'a>) with

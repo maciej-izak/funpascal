@@ -555,7 +555,7 @@ module LangBuilder =
 
         static member BuildIl(block: Block, buildScope, ?resVar) =
             let ctx = match buildScope with
-                      | MainScope (ns, tb, s, mb) -> Ctx.Create mb ns tb GlobalSpace s.posMap
+                      | MainScope (ns, tb, s, mb) -> Ctx.Create mb ns tb GlobalSpace s.posMap s.errors s.warnings
                       | LocalScope ctx -> ctx
             let result = match resVar with
                          | Some (name, Some(v)) ->
