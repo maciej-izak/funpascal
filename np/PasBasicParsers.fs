@@ -41,6 +41,13 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
         if stream.Skip '$' then
             let idReply = directiveIdentifier stream
             if idReply.Status = Ok then
+                let strDef (str: string) =
+                    if System.String.IsNullOrEmpty str then
+                        ""
+                    else
+                        let idx = str.IndexOfAny([|' ';'\t';'\r';'\n'|])
+                        if idx < 0 then str
+                        else str.Remove(idx)
                 let inReply = commentParser stream
                 let r: string = (if inReply.Status = Ok then inReply.Result else "").Trim()
                 match idReply.Result with
@@ -93,12 +100,11 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
                     | "GUI" -> GUI |> AppType |> Directive |> Some
                     | _ -> None
                 | "DEFINE", ' ' ->
-                    // TODO protect from r = null
-                    pass.Defines.Add (r.Trim()) |> ignore
+                    pass.Defines.Add(strDef r) |> ignore
                     Some Regular
                 | "IFDEF", ' ' ->
                     // TODO comment all after first ident
-                    match r.Trim() |> pass.Defines.Contains with
+                    match strDef r |> pass.Defines.Contains with
                     | true -> IfDef None |> Directive |> Some
                     | false -> IfDef(Some(commentPos.Line, commentPos.Column)) |> Directive |> Some
                 | "ENDIF", ' ' ->
