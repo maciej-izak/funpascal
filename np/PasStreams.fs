@@ -16,7 +16,7 @@ let applyParser (parser: Parser<'Result,'UserState>) (stream: CharStream<'UserSt
         Failure(error.ToString(stream), error, stream.UserState)
 
 let testPas p s i fn doTests =
-    let us = PasState.Create (new PasStream(s)) i doTests
+    let us = PasState.Create (InitialPass()) (new PasStream(s)) i doTests
     use stream1 = new CharStream<PasState>(us.stream, Encoding.Unicode)
     stream1.UserState <- us
     stream1.Name <- fn
@@ -25,12 +25,7 @@ let testPas p s i fn doTests =
 //    match result with
 //    | Success (_,s,_) -> s.stream.SaveToFile()
 //    | Failure (_,_,s) -> s.stream.SaveToFile()
-    let us =
-        { us with
-            pass = 2
-            handleInclude = redirectParserTo
-            handleMacro = pass2MacroHandler
-        }
+    let us = { us with pass = MainPass() }
     // printfn ">>> SECOND PASS"
     use stream2 = new CharStream<PasState>(us.stream, Encoding.Unicode)
     stream2.UserState <- us

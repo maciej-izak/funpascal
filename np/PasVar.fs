@@ -37,19 +37,52 @@ type MacroId =
     { name: string; line: int; column: int }
     override self.ToString() = sprintf "%s (%d, %d)" self.name self.line self.column
 
-type PasState = {
-    pass: int
+type AppType = | Console | GUI
+
+type Directive =
+     | Include of string
+     | IOCheck of bool
+     | LongString of bool
+     | IfDef of (int64 * int64) option
+     | EndIf
+     | AppType of AppType
+
+[<ReferenceEquality>]
+type Comment =
+     | Directive of Directive
+     | TestEnv of string * string list
+     | Regular
+     | Macro of (MacroId * Macro)
+
+
+type CompilerPassId =
+    | InitialPassId
+    | MainPassId
+
+type ICompilerPassGeneric =
+    abstract member PosMap: Dictionary<obj, Position>
+    abstract member Defines: HashSet<string>
+
+type ICompilerPass =
+    inherit ICompilerPassGeneric
+    abstract member Id: CompilerPassId
+    abstract member HandleComment: CharStream<PasState> * Comment -> unit
+
+and PasState = {
+    pass: ICompilerPass
     stream: PasStream
     incPath: string
     incStack: (int64 * string * CharStreamState<PasState>) Stack
-    handleInclude: IncludeHandle
-    handleMacro: MacroHandle
+    ifDefGoto: Dictionary<int64 * int64, int64>
     moduled: ModuleDef
-    posMap: Dictionary<obj, Position>
     errors: List<string>
     warnings: List<string>
     testsEnv: Dictionary<string, string list>
-} 
+}   with
+    // TODO as parser ?
+    static member HandleComment c = fun (stream: CharStream<PasState>) ->
+        stream.UserState.pass.HandleComment(stream, c)
+        Reply(())
 
 and IncludeHandle = string -> CharStream<PasState> -> Reply<unit>
 and MacroHandle = MacroId * Macro -> CharStream<PasState> -> Reply<unit>
@@ -148,46 +181,94 @@ and PasStream(s: Stream) = class
 let errorFmt = sprintf "[Error] %s(%d,%d) %s"
 let warningFmt = sprintf "[Warning] %s(%d,%d) %s"
 
-let pass1IncludeHandler s =  
-    fun (stream: CharStream<PasState>) ->
-        stream.UserState.stream.AddInc s stream.UserState.incPath
-        Reply(())
+type GenericPass() =
+    let defines = HashSet<_>(StringComparer.OrdinalIgnoreCase)
+    let posMap = Dictionary<_,_>()
+    interface ICompilerPassGeneric with
+        member _.Defines = defines
+        member _.PosMap = posMap
 
-let pass1MacroHandler (mId: MacroId, m) =
-    fun (stream: CharStream<PasState>) ->
-        let addStr = stream.UserState.stream.AddStr (mId.ToString())
+type InitialPass() =
+    inherit GenericPass()
+    let id = InitialPassId
+    let ifDefStack = Stack<int64 * int64>()
+
+    let includeFile us file = us.stream.AddInc file us.incPath
+
+    let macro us (mId, m) =
+        let addStr = us.stream.AddStr (mId.ToString())
         match m with
         | CompilerInfoInt i -> addStr (string i)
         | CompilerInfoStr s -> addStr s
-        Reply(())
 
-let redirectParserTo name =
-    fun (stream: CharStream<PasState>) ->
+    let ifDef = function
+        | Some pos -> ifDefStack.Push pos
+        | _ -> ()
+
+    let endIf posBox (stream: CharStream<PasState>) =
+            let us = stream.UserState
+            if ifDefStack.Count = 0 then
+                let pos = stream.UserState.pass.PosMap.[posBox]
+                us.errors.Add(errorFmt pos.StreamName (int pos.Line) (int pos.Column) "Unbalanced '{$ENDIF}'")
+            else
+                us.ifDefGoto.Add(ifDefStack.Pop(), stream.Index)
+
+    interface ICompilerPass with
+        member _.Id = id
+
+        member _.HandleComment(stream, comment) =
+            match comment with
+            | Directive d ->
+                match d with
+                | Include f -> includeFile stream.UserState f
+                | IfDef notDefined -> ifDef notDefined
+                | EndIf -> endIf (box comment) stream
+                | _ -> ()
+            | Macro m -> macro stream.UserState m
+            | _ -> ()
+
+type MainPass() =
+    inherit GenericPass()
+    let id = MainPassId
+
+    let redirectParserTo (stream: CharStream<PasState>) name =
         let offset = stream.Position.Index;
         stream.UserState.incStack.Push(offset, name, CharStreamState(stream))
         name
         |> stream.UserState.stream.FindStream
-        |> fun pss -> 
+        |> fun pss ->
                     stream.Seek(int64 pss.index)
                     stream.Name <- name
                     stream.SetLineBegin_WithoutCheckAndWithoutIncrementingTheStateTag 0L
-                    stream.SetLine_WithoutCheckAndWithoutIncrementingTheStateTag 0L 
+                    stream.SetLine_WithoutCheckAndWithoutIncrementingTheStateTag 0L
                     stream.RegisterNewline()
-        Reply(())
 
-let pass2MacroHandler (mId: MacroId, _) = redirectParserTo (mId.ToString())
+    let ifDef (stream: CharStream<PasState>) = function
+        | Some pos -> stream.Seek(stream.UserState.ifDefGoto.[pos])
+        | _ -> ()
+
+    interface ICompilerPass with
+        member _.Id: CompilerPassId = id
+
+        member _.HandleComment(stream, comment) =
+            match comment with
+            | Directive d ->
+                match d with
+                | Include f -> redirectParserTo stream f
+                | IfDef notDefined -> ifDef stream notDefined
+                | _ -> ()
+            | Macro (mId, _) -> redirectParserTo stream (mId.ToString())
+            | _ -> ()
 
 type PasState with
-    static member Create s ip doTest =
+    static member Create pass s ip doTest =
         {
-            pass = 1
+            pass = pass
             stream = s
             incPath = ip
             incStack = Stack()
-            handleInclude = pass1IncludeHandler
-            handleMacro = pass1MacroHandler
+            ifDefGoto = Dictionary<_,_>()
             moduled = ModuleDef()
-            posMap = Dictionary<_,_>()
             errors = List<string>()
             warnings = List<string>()
             testsEnv = if doTest then Dictionary<_,_>(StringComparer.OrdinalIgnoreCase) else null

@@ -4,20 +4,6 @@ module Pas.BasicParsers
 open FParsec
 open Fake.Runtime.Environment
 
-type AppType = | Console | GUI
-
-type Directive =
-     | Include of string
-     | IOCheck of bool
-     | LongString of bool
-     | AppType of AppType
-
-type Comment =
-     | Directive of Directive
-     | TestEnv of string * string list
-     | Regular
-     | Macro of (MacroId * Macro)
-
 exception InternalErrorException of string
 
 let ws = spaces
@@ -49,99 +35,119 @@ let testEnvVar =
 
 let manySatisfyWith0 (commentParser: Parser<_,_>) =
     fun (stream: CharStream<_>) ->
-      let commentPos = stream.Position;
-      if stream.Skip '$' then
-        let idReply = directiveIdentifier stream
-        if idReply.Status = Ok then
-          let inReply = commentParser stream
-          let r: string = (if inReply.Status = Ok then inReply.Result else "").Trim()
-          match idReply.Result with
-          | "I", (' ' as firstIChar) | "I", ('%' as firstIChar) ->
-              // `{$I%` or `{$I %` or `{$I   %` is correct
-              if (firstIChar = '%' && r.Length > 0) || (r.Length > 1 && r.Chars(0) = '%') then
-                  // TODO optimize parsing
-                  // follow FPC logic, allow all below :
-                  // {$I %IDENT} -> 'IDENT'
-                  // {$I %IDENT%} -> 'IDENT'
-                  // {$I %IDENT %} -> 'IDENT'
-                  // {$I %IDENT% %} -> 'IDENT'
-                  // {$I %IDENT%X} -> 'IDENT%X'
-                  // {$I %%IDENT%%%} -> '%IDENT%%'
-                  let r =
-                      // {$I %IDENT%} version
-                      let r = if (firstIChar = ' ' && r.Chars(0) = '%') then r.Substring(1) else r
-                      let eof = r.IndexOf(' ')
-                      let r = if eof > -1 then r.Substring(0, eof) else r
-                      if r.Chars(r.Length-1) = '%' then
-                          r.Substring(0, r.Length-1)
-                      else r
-                  let macroId =
-                      {
-                        name = sprintf "%s : Compiler Info %s" (commentPos.StreamName) r
-                        line = int commentPos.Line
-                        column = int commentPos.Column
-                      }
-                  let macro = match r.ToUpper() with
-                              | "LINENUM" -> int stream.Line |> CompilerInfoInt
-                              | var ->
-                                  match environVarOrNone var with
-                                  | Some value -> CompilerInfoStr value
-                                  | None ->
-                                      // report once
-                                      // TODO rework as handler ?
-                                      if stream.UserState.pass = 1 then
-                                          sprintf "Cannot find enviroment variable '%s'" var
-                                          |> warningFmt macroId.name macroId.line macroId.column
-                                          |> stream.UserState.warnings.Add
-                                      CompilerInfoStr ""
-                  Macro(macroId, macro)
-              else
-                  // TODO handle bad file names
-                  r |> Include |> Directive
-              |> Some
-          | "I", c when c = '+' || c = '-' -> c = '+' |> IOCheck |> Directive |> Some
-          | "H", c when c = '+' || c = '-' -> c = '+' |> LongString |> Directive |> Some
-          | "APPTYPE", ' ' ->
-            match r with
-            | "CONSOLE" -> Console |> AppType |> Directive |> Some
-            | "GUI" -> GUI |> AppType |> Directive |> Some
-            | _ -> None
-          | _ -> None
-          |> function
-             | Some d -> Reply(inReply.Status, d, inReply.Error)
-             | _ -> 
-               let e = sprintf "Invalid '%s' directive declaration" (fst idReply.Result)
-                       |> messageError 
-                       |> mergeErrors inReply.Error
-               Reply(Error, e)
-        else
-          Reply(Error, Unchecked.defaultof<_>, idReply.Error)
-      else
-        if stream.UserState.testsEnv <> null && stream.UserState.pass = 1 then
-            mws stream |> ignore
-            if stream.Skip '%' then
-                mws stream |> ignore
-                let idReply = testEnvVar stream
-                if idReply.Status = Ok then
-                    let inReply = commentParser stream
-                    if inReply.Status = Ok then
-                        // TODO raise exception for duplicated test env ?
-                        stream.UserState.testsEnv.TryAdd(fst idReply.Result, snd idReply.Result) |> ignore
-                        Reply(inReply.Status, TestEnv(idReply.Result), inReply.Error)
+        let commentPos = stream.Position
+        let pass = stream.UserState.pass
+        if stream.Skip '$' then
+            let idReply = directiveIdentifier stream
+            if idReply.Status = Ok then
+                let inReply = commentParser stream
+                let r: string = (if inReply.Status = Ok then inReply.Result else "").Trim()
+                match idReply.Result with
+                | "I", (' ' as firstIChar) | "I", ('%' as firstIChar) ->
+                    // `{$I%` or `{$I %` or `{$I   %` is correct
+                    if (firstIChar = '%' && r.Length > 0) || (r.Length > 1 && r.Chars(0) = '%') then
+                        // TODO optimize parsing
+                        // follow FPC logic, allow all below :
+                        // {$I %IDENT} -> 'IDENT'
+                        // {$I %IDENT%} -> 'IDENT'
+                        // {$I %IDENT %} -> 'IDENT'
+                        // {$I %IDENT% %} -> 'IDENT'
+                        // {$I %IDENT%X} -> 'IDENT%X'
+                        // {$I %%IDENT%%%} -> '%IDENT%%'
+                        let r =
+                            // {$I %IDENT%} version
+                            let r = if (firstIChar = ' ' && r.Chars(0) = '%') then r.Substring(1) else r
+                            let eof = r.IndexOf(' ')
+                            let r = if eof > -1 then r.Substring(0, eof) else r
+                            if r.Chars(r.Length-1) = '%' then
+                                r.Substring(0, r.Length-1)
+                            else r
+                        let macroId =
+                            {
+                              name = sprintf "%s : Compiler Info %s" (commentPos.StreamName) r
+                              line = int commentPos.Line
+                              column = int commentPos.Column
+                            }
+                        let macro = match r.ToUpper() with
+                                    | "LINENUM" -> int stream.Line |> CompilerInfoInt
+                                    | var ->
+                                        match environVarOrNone var with
+                                        | Some value -> CompilerInfoStr value
+                                        | None ->
+                                            // report once
+                                            // TODO rework as handler ?
+                                            match pass.Id with
+                                            | InitialPassId ->
+                                                sprintf "Cannot find enviroment variable '%s'" var
+                                                |> warningFmt macroId.name macroId.line macroId.column
+                                                |> stream.UserState.warnings.Add
+                                            | _ -> ()
+                                            CompilerInfoStr ""
+                        Macro(macroId, macro)
                     else
-                        let e = sprintf "Invalid '%s' test env declaration" (fst idReply.Result)
-                               |> messageError
-                               |> mergeErrors inReply.Error
-                        Reply(Error, e)
+                        // TODO handle bad file names
+                        r |> Include |> Directive
+                    |> Some
+                | "I", c when c = '+' || c = '-' -> c = '+' |> IOCheck |> Directive |> Some
+                | "H", c when c = '+' || c = '-' -> c = '+' |> LongString |> Directive |> Some
+                | "APPTYPE", ' ' ->
+                    match r with
+                    | "CONSOLE" -> Console |> AppType |> Directive |> Some
+                    | "GUI" -> GUI |> AppType |> Directive |> Some
+                    | _ -> None
+                | "DEFINE", ' ' ->
+                    // TODO protect from r = null
+                    pass.Defines.Add (r.Trim()) |> ignore
+                    Some Regular
+                | "IFDEF", ' ' ->
+                    // TODO comment all after first ident
+                    match r.Trim() |> pass.Defines.Contains with
+                    | true -> IfDef None |> Directive |> Some
+                    | false -> IfDef(Some(commentPos.Line, commentPos.Column)) |> Directive |> Some
+                | "ENDIF", ' ' ->
+                    EndIf |> Directive |> Some
+                // TODO better error for improper directives
+                | _ -> None
+                |> fun comment ->
+                        match comment with
+                        | Some comment ->
+                            pass.PosMap.Add(box comment, commentPos)
+                            Reply(inReply.Status, comment, inReply.Error)
+                        | _ ->
+                            let e =
+                                sprintf "Invalid '%s' directive declaration" (fst idReply.Result)
+                                |> messageError
+                                |> mergeErrors inReply.Error
+                            Reply(Error, e)
+            else
+                Reply(Error, Unchecked.defaultof<_>, idReply.Error)
+        else
+            match stream.UserState.pass.Id with
+            | InitialPassId when stream.UserState.testsEnv <> null ->
+                mws stream |> ignore
+                if stream.Skip '%' then
+                    mws stream |> ignore
+                    let idReply = testEnvVar stream
+                    if idReply.Status = Ok then
+                        let inReply = commentParser stream
+                        if inReply.Status = Ok then
+                            // TODO raise exception for duplicated test env ?
+                            stream.UserState.testsEnv.TryAdd(fst idReply.Result, snd idReply.Result) |> ignore
+                            Reply(inReply.Status, TestEnv(idReply.Result), inReply.Error)
+                        else
+                            let e = sprintf "Invalid '%s' test env declaration" (fst idReply.Result)
+                                   |> messageError
+                                   |> mergeErrors inReply.Error
+                            Reply(Error, e)
+                    else
+                        let inReply = commentParser stream
+                        Reply(inReply.Status, Regular, inReply.Error)
                 else
                     let inReply = commentParser stream
                     Reply(inReply.Status, Regular, inReply.Error)
-            else
+            | _ ->
                 let inReply = commentParser stream
                 Reply(inReply.Status, Regular, inReply.Error)
-        else
-            let inReply = commentParser stream
-            Reply(inReply.Status, Regular, inReply.Error)
         
 let commentBlock =
     let was0 = ref false
@@ -207,20 +213,12 @@ let comments =
       doubleSlashComment >>% Regular
       c0
     ] <?> ""
-    >>= function
-        | Directive d ->
-          match d with
-          | Include f -> fun stream -> stream.UserState.handleInclude f stream
-          | AppType _ -> preturn()
-          | IOCheck _ -> preturn()
-          | LongString _ -> preturn()
-        | Macro m -> fun stream -> stream.UserState.handleMacro m stream
-        | _ -> preturn()
+    >>= PasState.HandleComment
     
 let wsc: Parser<unit, PasState> = skipMany comments
 
 let pass1Parser =
-    many(
+    skipMany(
           (skipMany1 comments) 
           <|> (skipMany1Till anyChar (
                 next2CharsSatisfy (
@@ -232,6 +230,7 @@ let pass1Parser =
 
 let str_wsc s =
     pstringCI s .>> wsc
-let include_system_inc = (fun stream -> stream.UserState.handleInclude "system.inc" stream) >>. wsc
+let include_system_inc =
+    PasState.HandleComment(Include "system.inc" |> Directive) >>. wsc
 let wrd_wsc s =
     pstringCI s .>> (notFollowedBy (choice[letter; digit; pchar '_']) .>> wsc)
