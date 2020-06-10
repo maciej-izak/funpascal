@@ -56,10 +56,13 @@ type Ctx = {
         sysProc: Ctx.SystemProc
     } with
 
-    member inline self.NewError(pos: ^T) s =
-        let fmtPos (pos: FParsec.Position) = errorFmt (pos.StreamName) (int pos.Line) (int pos.Column)
+    member inline self.NewMessage (items: List<string>) fmt (pos: ^T) msg =
+        let addMsg = addMsg items fmt msg
         let p = (^T : (member BoxPos : obj) pos)
-        self.errors.Add(fmtPos (self.posMap.[p]) s)
+        addMsg (self.posMap.[p])
+
+    member inline self.NewError(pos: ^T) = self.NewMessage self.errors errorFmt pos
+    member inline self.NewWarning(pos: ^T) = self.NewMessage self.warnings warningFmt pos
 
     static member Create = Ctx.createCtx
 

@@ -14,6 +14,10 @@ let DefaultByteBufferLength = 4096L;
 [<Literal>]
 let MinimumByteBufferLength = 128L
 
+let errorFmt = sprintf "[Error] %s(%d,%d) %s"
+let warningFmt = sprintf "[Warning] %s(%d,%d) %s"
+let addMsg (items: List<string>) fmt msg (pos: Position) = items.Add(fmt pos.StreamName (int pos.Line) (int pos.Column) msg)
+
 type PasSubStream = {index: int; length: int} 
 
 type LabelDef = {name: string; mutable stmtPoint: bool}
@@ -59,9 +63,12 @@ type CompilerPassId =
     | InitialPassId
     | MainPassId
 
+exception InternalError of string
+
 type ICompilerPassGeneric =
-    abstract member PosMap: Dictionary<obj, Position>
     abstract member Defines: HashSet<string>
+    abstract member PosMap: Dictionary<obj, Position>
+    abstract member GetPos: obj -> Position option
 
 type ICompilerPass =
     inherit ICompilerPassGeneric
@@ -83,6 +90,23 @@ and PasState = {
     static member HandleComment c = fun (stream: CharStream<PasState>) ->
         stream.UserState.pass.HandleComment(stream, c)
         Reply(())
+
+    member self.NewMessage (items: List<string>) fmt (o: obj) msg =
+        let addMsg = addMsg items fmt msg
+        match o with
+        | :? Position -> unbox<Position> o |> addMsg
+        | _ ->
+            match self.pass.GetPos o with
+            | Some pos -> addMsg pos
+            | _ -> raise (InternalError "2020061001")
+
+    member self.NewInitialPassMessage (items: List<string>) fmt (o: obj) msg =
+        match self.pass.Id with
+        | InitialPassId -> self.NewMessage items fmt o msg
+        | _ -> ()
+
+    member self.NewError = self.NewInitialPassMessage self.errors errorFmt
+    member self.NewWarning = self.NewInitialPassMessage self.warnings warningFmt
 
 and IncludeHandle = string -> CharStream<PasState> -> Reply<unit>
 and MacroHandle = MacroId * Macro -> CharStream<PasState> -> Reply<unit>
@@ -178,15 +202,16 @@ and PasStream(s: Stream) = class
     member _.EndInc() = () 
   end
 
-let errorFmt = sprintf "[Error] %s(%d,%d) %s"
-let warningFmt = sprintf "[Warning] %s(%d,%d) %s"
-
 type GenericPass() =
     let defines = HashSet<_>(StringComparer.OrdinalIgnoreCase)
     let posMap = Dictionary<_,_>()
     interface ICompilerPassGeneric with
         member _.Defines = defines
         member _.PosMap = posMap
+        member _.GetPos o =
+            match posMap.TryGetValue o with
+            | true, v -> Some v
+            | _ -> None
 
 type InitialPass() =
     inherit GenericPass()
@@ -205,11 +230,10 @@ type InitialPass() =
         | Some pos -> ifDefStack.Push pos
         | _ -> ()
 
-    let endIf posBox (stream: CharStream<PasState>) =
+    let endIf comment (stream: CharStream<PasState>) =
             let us = stream.UserState
             if ifDefStack.Count = 0 then
-                let pos = stream.UserState.pass.PosMap.[posBox]
-                us.errors.Add(errorFmt pos.StreamName (int pos.Line) (int pos.Column) "Unbalanced '{$ENDIF}'")
+                us.NewError (box comment) "Unbalanced '{$ENDIF}'"
             else
                 us.ifDefGoto.Add(ifDefStack.Pop(), stream.Index)
 
@@ -222,7 +246,7 @@ type InitialPass() =
                 match d with
                 | Include f -> includeFile stream.UserState f
                 | IfDef notDefined -> ifDef notDefined
-                | EndIf -> endIf (box comment) stream
+                | EndIf -> endIf comment stream
                 | _ -> ()
             | Macro m -> macro stream.UserState m
             | _ -> ()

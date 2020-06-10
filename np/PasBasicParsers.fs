@@ -36,7 +36,8 @@ let testEnvVar =
 let manySatisfyWith0 (commentParser: Parser<_,_>) =
     fun (stream: CharStream<_>) ->
         let commentPos = stream.Position
-        let pass = stream.UserState.pass
+        let us = stream.UserState
+        let pass = us.pass
         if stream.Skip '$' then
             let idReply = directiveIdentifier stream
             if idReply.Status = Ok then
@@ -76,12 +77,8 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
                                         | None ->
                                             // report once
                                             // TODO rework as handler ?
-                                            match pass.Id with
-                                            | InitialPassId ->
-                                                sprintf "Cannot find enviroment variable '%s'" var
-                                                |> warningFmt macroId.name macroId.line macroId.column
-                                                |> stream.UserState.warnings.Add
-                                            | _ -> ()
+                                            sprintf "Cannot find enviroment variable '%s'" var
+                                            |> us.NewWarning (box commentPos)
                                             CompilerInfoStr ""
                         Macro(macroId, macro)
                     else
@@ -106,19 +103,15 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
                     | false -> IfDef(Some(commentPos.Line, commentPos.Column)) |> Directive |> Some
                 | "ENDIF", ' ' ->
                     EndIf |> Directive |> Some
-                // TODO better error for improper directives
                 | _ -> None
-                |> fun comment ->
-                        match comment with
-                        | Some comment ->
-                            pass.PosMap.Add(box comment, commentPos)
-                            Reply(inReply.Status, comment, inReply.Error)
-                        | _ ->
-                            let e =
-                                sprintf "Invalid '%s' directive declaration" (fst idReply.Result)
-                                |> messageError
-                                |> mergeErrors inReply.Error
-                            Reply(Error, e)
+                |>  function
+                    | Some comment ->
+                        pass.PosMap.Add(box comment, commentPos)
+                        Reply(inReply.Status, comment, inReply.Error)
+                    | _ ->
+                        "Invalid directive declaration"
+                        |> us.NewError (box commentPos)
+                        Reply(inReply.Status, Regular, inReply.Error)
             else
                 Reply(Error, Unchecked.defaultof<_>, idReply.Error)
         else
