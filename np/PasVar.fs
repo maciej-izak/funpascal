@@ -216,7 +216,7 @@ type GenericPass() =
 type InitialPass() =
     inherit GenericPass()
     let id = InitialPassId
-    let ifDefStack = Stack<int64 * int64>()
+    let ifDefStack = Stack<(int64 * int64) option>()
 
     let includeFile us file = us.stream.AddInc file us.incPath
 
@@ -226,16 +226,14 @@ type InitialPass() =
         | CompilerInfoInt i -> addStr (string i)
         | CompilerInfoStr s -> addStr s
 
-    let ifDef = function
-        | Some pos -> ifDefStack.Push pos
-        | _ -> ()
+    let ifDef = ifDefStack.Push
 
     let endIf comment (stream: CharStream<PasState>) =
-            let us = stream.UserState
-            if ifDefStack.Count = 0 then
-                us.NewError (box comment) "Unbalanced '{$ENDIF}'"
-            else
-                us.ifDefGoto.Add(ifDefStack.Pop(), stream.Index)
+        let us = stream.UserState
+        match ifDefStack.TryPop() with
+        | true, Some pos -> us.ifDefGoto.Add(pos, stream.Index)
+        | true, _ -> ()
+        | _ -> us.NewError (box comment) "Unbalanced '{$ENDIF}'"
 
     interface ICompilerPass with
         member _.Id = id
