@@ -22,7 +22,7 @@ let tryCompileFile doTest mainFile =
     |> PasStreams.testAll mainFileName doTest
     |> function
        | Ok(outName, u) ->
-           Seq.iter (printfn "%s") u.warnings
+           Seq.iter (printfn "%s") u.messages.warnings
            printfn "Compilation success!"
            File.WriteAllText(Path.GetFileNameWithoutExtension(outName) + ".runtimeconfig.json",
                                   """
@@ -39,8 +39,8 @@ let tryCompileFile doTest mainFile =
            testResult u false
            Some outName
        | Error u ->
-           Seq.iter (printfn "%s") u.warnings
-           Seq.iter (printfn "%s") u.errors
+           Seq.iter (printfn "%s") u.messages.warnings
+           Seq.iter (printfn "%s") u.messages.errors
            printfn "[Fatal Error] Cannot compile module '%s'" mainFileName
            testResult u true
            None

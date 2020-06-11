@@ -555,7 +555,7 @@ module LangBuilder =
 
         static member BuildIl(block: Block, buildScope, ?resVar) =
             let ctx = match buildScope with
-                      | MainScope (ns, tb, s, mb) -> Ctx.Create mb ns tb GlobalSpace s.pass.PosMap s.errors s.warnings
+                      | MainScope (ns, tb, s, mb) -> Ctx.Create mb ns tb GlobalSpace s.pass.PosMap s.messages
                       | LocalScope ctx -> ctx
             let result = match resVar with
                          | Some (name, Some(v)) ->
@@ -568,12 +568,11 @@ module LangBuilder =
 
             block.decl |> List.iter (doDecl ctx)
             // do implementation section only if interface section has no error
-            let res = match ctx.errors.Count with
-                      | 0 -> ValueSome(stmtListToIl block.stmt ctx result)
-                      | _ -> ValueNone
-            match ctx.errors.Count, res with
-            | 0, ValueSome res -> Ok res
-            | _ -> Error ctx
+            match ctx.HasError with
+            | true -> Error ctx
+            | _ -> // after implementation analise, check for errors again
+                let res = stmtListToIl block.stmt ctx result
+                if ctx.HasError then Error ctx else Ok res
 
         static member BuildModule (ProgramAst(name, block)) state = //, methods: Method list) =
             let moduleName = match name with | Some n -> n | None -> "Program"

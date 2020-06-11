@@ -45,7 +45,7 @@ let testAll fn doTests s =
         | Microsoft.FSharp.Core.Error() ->
             Microsoft.FSharp.Core.Error u
     | Failure(s,_,u) ->
-        u.errors.Add s
+        u.messages.errors.Add s
         Microsoft.FSharp.Core.Error u
 
 let toString (x:'a) = 

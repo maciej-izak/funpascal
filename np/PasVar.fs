@@ -18,7 +18,12 @@ let errorFmt = sprintf "[Error] %s(%d,%d) %s"
 let warningFmt = sprintf "[Warning] %s(%d,%d) %s"
 let addMsg (items: List<string>) fmt msg (pos: Position) = items.Add(fmt pos.StreamName (int pos.Line) (int pos.Column) msg)
 
-type PasSubStream = {index: int; length: int} 
+type PasSubStream = {index: int; length: int}
+
+type CompilerMessages = {
+    errors: List<string>
+    warnings: List<string>
+}
 
 type LabelDef = {name: string; mutable stmtPoint: bool}
 
@@ -58,7 +63,6 @@ type Comment =
      | Regular
      | Macro of (MacroId * Macro)
 
-
 type CompilerPassId =
     | InitialPassId
     | MainPassId
@@ -82,8 +86,7 @@ and PasState = {
     incStack: (int64 * string * CharStreamState<PasState>) Stack
     ifDefGoto: Dictionary<int64 * int64, int64>
     moduled: ModuleDef
-    errors: List<string>
-    warnings: List<string>
+    messages: CompilerMessages
     testsEnv: Dictionary<string, string list>
 }   with
     // TODO as parser ?
@@ -105,8 +108,8 @@ and PasState = {
         | InitialPassId -> self.NewMessage items fmt o msg
         | _ -> ()
 
-    member self.NewError = self.NewInitialPassMessage self.errors errorFmt
-    member self.NewWarning = self.NewInitialPassMessage self.warnings warningFmt
+    member self.NewError = self.NewInitialPassMessage self.messages.errors errorFmt
+    member self.NewWarning = self.NewInitialPassMessage self.messages.warnings warningFmt
 
 and IncludeHandle = string -> CharStream<PasState> -> Reply<unit>
 and MacroHandle = MacroId * Macro -> CharStream<PasState> -> Reply<unit>
@@ -291,8 +294,7 @@ type PasState with
             incStack = Stack()
             ifDefGoto = Dictionary<_,_>()
             moduled = ModuleDef()
-            errors = List<string>()
-            warnings = List<string>()
+            messages = { errors = List<string>(); warnings = List<string>() }
             testsEnv = if doTest then Dictionary<_,_>(StringComparer.OrdinalIgnoreCase) else null
         }
 

@@ -39,8 +39,7 @@ type SymOwner =
     | WithSpace
 
 type Ctx = {
-        errors: List<string>
-        warnings: List<string>
+        messages: CompilerMessages
         variables: List<VariableKind> list
         labels: Dictionary<string, BranchLabel ref> list
         symbols: (SymOwner * Dictionary<TypeName, Symbol>) list
@@ -56,13 +55,15 @@ type Ctx = {
         sysProc: Ctx.SystemProc
     } with
 
+    member self.HasError = self.messages.errors.Count > 0
+
     member inline self.NewMessage (items: List<string>) fmt (pos: ^T) msg =
         let addMsg = addMsg items fmt msg
         let p = (^T : (member BoxPos : obj) pos)
         addMsg (self.posMap.[p])
 
-    member inline self.NewError(pos: ^T) = self.NewMessage self.errors errorFmt pos
-    member inline self.NewWarning(pos: ^T) = self.NewMessage self.warnings warningFmt pos
+    member inline self.NewError(pos: ^T) = self.NewMessage self.messages.errors errorFmt pos
+    member inline self.NewWarning(pos: ^T) = self.NewMessage self.messages.warnings warningFmt pos
 
     static member Create = Ctx.createCtx
 
@@ -366,13 +367,12 @@ module Ctx =
         symbols.Add(StringName "Ln", singleScalar mathLog)
         ctx
 
-    let createCtx moduleBuilder ns tb owner pm errors warnings =
+    let createCtx moduleBuilder ns tb owner pm messages =
         let lang = LangCtx()
         let details = ModuleDetails.Create moduleBuilder ns tb
         let symbols = Dictionary<TypeName,Symbol>(lang)
         {
-            errors = errors
-            warnings = warnings
+            messages = messages
             variables = [List<VariableKind>()]
             labels = [Dictionary<_,_>()]
             symbols = [owner,symbols]
