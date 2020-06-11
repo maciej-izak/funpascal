@@ -9,23 +9,8 @@ open Pas
 open Argu
 open NP
 
-let tryCompileFile doTest mainFile =
-    let testResult (testEnv: Dictionary<string, string list>) isError =
-        let ok() = printfn "TEST %s OK" mainFile
-        let fail() = printfn "FAIL: %s" mainFile
-        if doTest then
-           match isError, testEnv.ContainsKey "FAIL" with
-           | false, false | true, true -> ok()
-           | true, false | false, true -> fail()
-
-    let mainFileName = Path.GetFileName(mainFile: string)
-    System.IO.File.ReadAllText(mainFile)
-    |> PasStreams.doPas mainFileName doTest
-    |> function
-       | Ok(outName, msg, testEnv) ->
-           Seq.iter (printfn "%s") msg.warnings
-           printfn "Compilation success!"
-           File.WriteAllText(Path.GetFileNameWithoutExtension(outName) + ".runtimeconfig.json",
+let writeRuntimeConfig outName =
+    File.WriteAllText(Path.GetFileNameWithoutExtension(outName: string) + ".runtimeconfig.json",
                                   """
 {
   "runtimeOptions": {
@@ -37,14 +22,61 @@ let tryCompileFile doTest mainFile =
   }
 }
                                   """)
-           testResult testEnv false
-           Some outName
-       | Error(msg, testEnv) ->
-           Seq.iter (printfn "%s") msg.warnings
-           Seq.iter (printfn "%s") msg.errors
-           printfn "[Fatal Error] Cannot compile module '%s'" mainFileName
-           testResult testEnv true
-           None
+
+
+let handleTest exeName (testEnv: Dictionary<string, string list>) isError =
+    let shortName = Path.GetFileName (exeName: string) |> Path.GetFileNameWithoutExtension
+    let failExpected = testEnv.ContainsKey "FAIL"
+    // TODO handle conversion errors ?
+    let runResult = match testEnv.TryGetValue "RESULT" with
+                    | true, [v] ->
+                        match Int32.TryParse v with
+                        | true, v -> v
+                        | _ -> 0
+                    | _ -> 0
+    match isError, failExpected with
+    | false, false | true, true -> Ok()
+    | true, false -> Error("compiler error")
+    | false, true -> Error("compiler success")
+    |> if failExpected then id
+       else
+        function
+        | Ok() ->
+            let result =
+                CreateProcess.fromRawCommand @"C:\_projects\newpascal\core32\dotnet.exe" ["exec"; exeName]
+                |> CreateProcess.redirectOutput
+                |> Proc.run
+            File.WriteAllText(Path.ChangeExtension(exeName, ".elg"), result.Result.Output)
+            if result.ExitCode = runResult then
+                Ok()
+            else
+                Error <| sprintf "exit code = %d (expected %d)" result.ExitCode runResult
+        | id -> id
+    |>  function
+        | Ok() -> printfn "OK\t%s" shortName
+        | Error(msg) -> printfn "FAIL\t%s\t\t%s" shortName msg
+
+let tryCompileFile doTest mainFile =
+    let mainFileName = Path.GetFileName(mainFile: string)
+    let handle =
+        if doTest then Some(new StreamWriter(path=Path.ChangeExtension(mainFile,".log")))
+        else None
+    let mprintfn fmt = if doTest then fprintfn handle.Value fmt else printfn fmt
+    try
+        System.IO.File.ReadAllText(mainFile)
+        |> PasStreams.doPas mainFileName doTest
+        |> function
+           | Ok(outName, msg, testEnv) ->
+               Seq.iter (mprintfn "%s") msg.warnings
+               mprintfn "Compilation success!"
+               if doTest then handleTest outName testEnv false
+           | Error(msg, testEnv) ->
+               Seq.iter (mprintfn "%s") msg.warnings
+               Seq.iter (mprintfn "%s") msg.errors
+               mprintfn "[Fatal Error] Cannot compile module '%s'" mainFileName
+               if doTest then handleTest mainFile testEnv true
+    finally
+        handle.Value.Close()
 
 [<EntryPoint>]
 let main argv =
@@ -61,22 +93,11 @@ let main argv =
         | [f] -> f
         | _ -> failwith "Multiply files not supported"
         |> tryCompileFile false
-        |> ignore
     | None ->
         // only proper for tests
         match results.TryGetResult(Test) with
         | Some testDir ->
             for testFile in Directory.GetFiles(testDir, "*.pas") do
-                match tryCompileFile true testFile with
-                | Some binFile ->
-                    let result =
-                        CreateProcess.fromRawCommand @"C:\_projects\newpascal\core32\dotnet.exe" ["exec"; binFile]
-                        |> Proc.run
-                    if result.ExitCode = 0 then
-                        printfn "TEST RUN OK (%s)" binFile
-                    else
-                        printfn "FAIL RUN = %d (%s)" result.ExitCode binFile
-                    ()
-                | None -> ()
+                tryCompileFile true testFile
         | _ -> failwith "No proper command found"
     0
