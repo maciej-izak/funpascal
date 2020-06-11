@@ -256,15 +256,9 @@ type Program =
     | Program of string
     | Library of string
     
-type Block = {decl: Declarations list; stmt: Statement list}
-     with 
-       static member Create (decl: Declarations list, stmt: Statement list) = 
-           {
-               decl = decl
-               stmt = stmt
-           }
+type Block = Block of decl: Declarations list * stmt: Statement list
 
-type ProgramAst = ProgramAst of name: string option * block: Block
+type ModuleAst = ModuleAst of name: string option * block: Block
 
 let (|UnitOp|_|) = function
     | TupleExpr[] -> Some UnitOp

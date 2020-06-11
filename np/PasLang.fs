@@ -470,7 +470,7 @@ module LangDecl =
         match d with
         | BodyDeclr (decls, stmts) ->
             let scope = LocalScope(ctx.Inner (StandaloneMethod methodSym, newMethodSymbols))
-            match Ctx.BuildIl(Block.Create(decls, stmts),scope,("result",rVar)) with
+            match Ctx.BuildIl(Block(decls, stmts),scope,("result",rVar)) with
             | Ok res ->
                 let mainBlock: MethodDefinition = Ctx.CompileBlock methodBuilder ctx.details.tb res
                 mainBlock.Body.InitLocals <- true
@@ -553,7 +553,7 @@ module LangBuilder =
             Seq.iter ilGenerator instr
             methodBuilder
 
-        static member BuildIl(block: Block, buildScope, ?resVar) =
+        static member BuildIl(Block(decl, stmt), buildScope, ?resVar) =
             let ctx = match buildScope with
                       | MainScope (ns, tb, s, mb) -> Ctx.Create mb ns tb GlobalSpace s.pass.PosMap s.messages
                       | LocalScope ctx -> ctx
@@ -566,15 +566,15 @@ module LangBuilder =
                          | Some (_, None) -> null // no result (void)
                          | _ -> null // main program
 
-            block.decl |> List.iter (doDecl ctx)
+            decl |> List.iter (doDecl ctx)
             // do implementation section only if interface section has no error
             match ctx.HasError with
             | true -> Error ctx
             | _ -> // after implementation analise, check for errors again
-                let res = stmtListToIl block.stmt ctx result
+                let res = stmtListToIl stmt ctx result
                 if ctx.HasError then Error ctx else Ok res
 
-        static member BuildModule (ProgramAst(name, block)) state = //, methods: Method list) =
+        static member BuildModule (ModuleAst(name, block)) state =
             let moduleName = match name with | Some n -> n | None -> "Program"
             let moduleNameWithoutExtension = System.IO.Path.GetFileNameWithoutExtension moduleName
             let assemblyBuilder =

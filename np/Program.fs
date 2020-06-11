@@ -19,7 +19,7 @@ let tryCompileFile doTest mainFile =
 
     let mainFileName = Path.GetFileName(mainFile: string)
     System.IO.File.ReadAllText(mainFile)
-    |> PasStreams.testAll mainFileName doTest
+    |> PasStreams.doPas mainFileName doTest
     |> function
        | Ok(outName, u) ->
            Seq.iter (printfn "%s") u.messages.warnings
@@ -78,5 +78,4 @@ let main argv =
                     ()
                 | None -> ()
         | _ -> failwith "No proper command found"
-
     0

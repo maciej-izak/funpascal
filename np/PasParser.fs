@@ -522,13 +522,16 @@ procFuncDeclarationsRef :=
     )
     |>> ProcAndFunc
 
-let program =
+let pasModule =
     (opt(``program `` >>. identifier .>> ``; ``))
     .>>.
-    (include_system_inc >>. block .>> pstring ".")
+    ((include_system_inc >>. block .>> pstring ".") |>> Block)
+    |>> ModuleAst
 
 let pascalModule =
-    wsc >>. program .>> (skipManyTill skipAnyChar eof)
+    wsc >>. pasModule .>> (skipManyTill skipAnyChar eof)
 
-let pGrammar: Parser<_, PasState> =  // one type annotation is enough for the whole parser
+let mainPassParser = pascalModule
+
+let pGrammar: Parser<ModuleAst, PasState> =  // one type annotation is enough for the whole parser
     pascalModule

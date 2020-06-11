@@ -216,7 +216,7 @@ let comments =
     
 let wsc: Parser<unit, PasState> = skipMany comments
 
-let pass1Parser =
+let initialPassParser =
     skipMany(
           (skipMany1 comments) 
           <|> (skipMany1Till anyChar (
@@ -224,8 +224,9 @@ let pass1Parser =
                   fun c1 c2 ->
                     match (c1, c2) with
                     | '{', _ | '(', '*' | '/', '/' | '\000', _ -> true
-                    | _, _ -> false
-          ))))
+                    | _, _ -> false)
+                <|> eof
+          )))
 
 let str_wsc s =
     pstringCI s .>> wsc
