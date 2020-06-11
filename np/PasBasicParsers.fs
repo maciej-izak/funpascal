@@ -122,7 +122,7 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
                 Reply(Error, Unchecked.defaultof<_>, idReply.Error)
         else
             match stream.UserState.pass.Id with
-            | InitialPassId when stream.UserState.testsEnv <> null ->
+            | InitialPassId when stream.UserState.testEnv <> null ->
                 mws stream |> ignore
                 if stream.Skip '%' then
                     mws stream |> ignore
@@ -131,7 +131,7 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
                         let inReply = commentParser stream
                         if inReply.Status = Ok then
                             // TODO raise exception for duplicated test env ?
-                            stream.UserState.testsEnv.TryAdd(fst idReply.Result, snd idReply.Result) |> ignore
+                            stream.UserState.testEnv.TryAdd(fst idReply.Result, snd idReply.Result) |> ignore
                             Reply(inReply.Status, TestEnv(idReply.Result), inReply.Error)
                         else
                             let e = sprintf "Invalid '%s' test env declaration" (fst idReply.Result)

@@ -55,8 +55,6 @@ type Ctx = {
         sysProc: Ctx.SystemProc
     } with
 
-    member self.HasError = self.messages.errors.Count > 0
-
     member inline self.NewMessage (items: List<string>) fmt (pos: ^T) msg =
         let addMsg = addMsg items fmt msg
         let p = (^T : (member BoxPos : obj) pos)

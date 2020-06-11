@@ -6,50 +6,50 @@ open System.IO
 open Pas
 open FParsec
 open Microsoft.FSharp.Reflection
-
-type CompilerPassResult =
-    | InitialPassResult of ParserResult<unit, PasState>
-    | MainPassResult of ParserResult<ModuleAst, PasState>
+open Microsoft.FSharp.Core
 
 let applyParser (parser: Parser<'Result,'UserState>) (stream: CharStream<'UserState>) =
     let reply = parser stream
-    if reply.Status = Ok then
+    if reply.Status = FParsec.Primitives.Ok then
         Success(reply.Result, stream.UserState, stream.Position)
     else
         let error = ParserError(stream.Position, stream.UserState, reply.Error)
-        Failure(error.ToString(stream), error, stream.UserState)
+        FParsec.CharParsers.Failure(error.ToString(stream), error, stream.UserState)
 
 let doPasStream s i fn doTests =
-    let us = PasState.Create (InitialPass()) (new PasStream(s)) i doTests
+    let addParserError (us: PasState) parserError =
+        us.messages.errors.Add parserError
+        Error us
+    let us = PasState.Create (InitialPass()) (new PasStream(s)) i
     use stream1 = new CharStream<PasState>(us.stream, Encoding.Unicode)
     stream1.UserState <- us
     stream1.Name <- fn
     us.stream.AddInc "system.inc" @"C:\_projects\newpascal\np\npcli\test\xdpw"
     match applyParser initialPassParser stream1 with
-    | Success _ -> // Do second pass
+    | Success _ when not us.messages.HasError -> // Do second pass, parsing success may means failure in AST
         let us = { us with pass = MainPass() }
         use stream2 = new CharStream<PasState>(us.stream, Encoding.Unicode)
         stream2.UserState <- us
         stream2.Name <- fn
-        applyParser mainPassParser stream2 |> MainPassResult
-    | res -> InitialPassResult res
+        match applyParser mainPassParser stream2 with
+        | Success(ast, _, _) when not us.messages.HasError -> Ok(ast, us)
+        | FParsec.CharParsers.Failure(s, _, _) -> addParserError us s
+        | _ -> Error us
+    | FParsec.CharParsers.Failure(s, _, _) -> addParserError us s
+    | _ -> Error us
 
 let doPas fn doTests s =
     let strToStream (s: string) = s |> Encoding.Unicode.GetBytes |> fun s -> new MemoryStream(s)
-    let ast = doPasStream (strToStream s) @"C:\_projects\newpascal\np\npcli\test\xdpw" fn doTests
-    match ast with
-    | MainPassResult(Success(pasModule,u,_)) ->
-        match Ctx.BuildModule pasModule u with
-        | Microsoft.FSharp.Core.Ok ad ->
+    let result = doPasStream (strToStream s) @"C:\_projects\newpascal\np\npcli\test\xdpw" fn doTests
+    match result with
+    | Ok(ast, us) ->
+        match Ctx.BuildModule ast us with
+        | Ok asmDef ->
             let outName = Path.ChangeExtension(fn, ".dll")
-            ad.Write(outName)
-            Microsoft.FSharp.Core.Ok(outName, u)
-        | Microsoft.FSharp.Core.Error() ->
-            Microsoft.FSharp.Core.Error u
-    | MainPassResult(Failure(s,_,u)) | InitialPassResult(Failure(s,_,u)) ->
-        u.messages.errors.Add s
-        Microsoft.FSharp.Core.Error u
-    | _ -> raise (InternalError "2020110601")
+            asmDef.Write(outName)
+            Ok(outName, us.messages, us.testEnv)
+        | Error() -> Error(us.messages, us.testEnv)
+    | Error us -> Error(us.messages, us.testEnv)
 
 let toString (x:'a) = 
     match FSharpValue.GetUnionFields(x, typeof<'a>) with

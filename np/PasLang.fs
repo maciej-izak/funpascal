@@ -568,11 +568,11 @@ module LangBuilder =
 
             decl |> List.iter (doDecl ctx)
             // do implementation section only if interface section has no error
-            match ctx.HasError with
+            match ctx.messages.HasError with
             | true -> Error ctx
             | _ -> // after implementation analise, check for errors again
                 let res = stmtListToIl stmt ctx result
-                if ctx.HasError then Error ctx else Ok res
+                if ctx.messages.HasError then Error ctx else Ok res
 
         static member BuildModule (ModuleAst(name, block)) state =
             let moduleName = match name with | Some n -> n | None -> "Program"

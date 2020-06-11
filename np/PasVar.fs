@@ -23,7 +23,8 @@ type PasSubStream = {index: int; length: int}
 type CompilerMessages = {
     errors: List<string>
     warnings: List<string>
-}
+}   with
+    member self.HasError = self.errors.Count > 0
 
 type LabelDef = {name: string; mutable stmtPoint: bool}
 
@@ -87,7 +88,7 @@ and PasState = {
     ifDefGoto: Dictionary<int64 * int64, int64>
     moduled: ModuleDef
     messages: CompilerMessages
-    testsEnv: Dictionary<string, string list>
+    testEnv: Dictionary<string, string list>
 }   with
     // TODO as parser ?
     static member HandleComment c = fun (stream: CharStream<PasState>) ->
@@ -286,7 +287,7 @@ type MainPass() =
             | _ -> ()
 
 type PasState with
-    static member Create pass s ip doTest =
+    static member Create pass s ip =
         {
             pass = pass
             stream = s
@@ -295,7 +296,7 @@ type PasState with
             ifDefGoto = Dictionary<_,_>()
             moduled = ModuleDef()
             messages = { errors = List<string>(); warnings = List<string>() }
-            testsEnv = if doTest then Dictionary<_,_>(StringComparer.OrdinalIgnoreCase) else null
+            testEnv = Dictionary<_,_>(StringComparer.OrdinalIgnoreCase)
         }
 
 let opp = OperatorPrecedenceParser<ExprEl,unit,PasState>()

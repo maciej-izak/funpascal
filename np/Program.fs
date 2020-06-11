@@ -2,6 +2,7 @@
 
 open System
 open System.IO
+open System.Collections.Generic
 open Fake.Core
 open NP.CommandLineHandle
 open Pas
@@ -9,11 +10,11 @@ open Argu
 open NP
 
 let tryCompileFile doTest mainFile =
-    let testResult u isError =
+    let testResult (testEnv: Dictionary<string, string list>) isError =
         let ok() = printfn "TEST %s OK" mainFile
         let fail() = printfn "FAIL: %s" mainFile
         if doTest then
-           match isError, u.testsEnv.ContainsKey "FAIL" with
+           match isError, testEnv.ContainsKey "FAIL" with
            | false, false | true, true -> ok()
            | true, false | false, true -> fail()
 
@@ -21,8 +22,8 @@ let tryCompileFile doTest mainFile =
     System.IO.File.ReadAllText(mainFile)
     |> PasStreams.doPas mainFileName doTest
     |> function
-       | Ok(outName, u) ->
-           Seq.iter (printfn "%s") u.messages.warnings
+       | Ok(outName, msg, testEnv) ->
+           Seq.iter (printfn "%s") msg.warnings
            printfn "Compilation success!"
            File.WriteAllText(Path.GetFileNameWithoutExtension(outName) + ".runtimeconfig.json",
                                   """
@@ -36,13 +37,13 @@ let tryCompileFile doTest mainFile =
   }
 }
                                   """)
-           testResult u false
+           testResult testEnv false
            Some outName
-       | Error u ->
-           Seq.iter (printfn "%s") u.messages.warnings
-           Seq.iter (printfn "%s") u.messages.errors
+       | Error(msg, testEnv) ->
+           Seq.iter (printfn "%s") msg.warnings
+           Seq.iter (printfn "%s") msg.errors
            printfn "[Fatal Error] Cannot compile module '%s'" mainFileName
-           testResult u true
+           testResult testEnv true
            None
 
 [<EntryPoint>]
