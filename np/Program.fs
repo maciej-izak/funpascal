@@ -5,6 +5,7 @@ open System.IO
 open System.Collections.Generic
 open Fake.Core
 open Fake.IO.FileSystemOperators
+open Fake.IO.Globbing.Operators
 open NP.CommandLineHandle
 open NP.PasStreams
 open Pas
@@ -12,7 +13,7 @@ open Argu
 open NP
 
 let writeRuntimeConfig proj =
-    File.WriteAllText(proj.FilePath @@ proj.Name + ".runtimeconfig.json",
+    File.WriteAllText(proj.OutPath </> proj.Name + ".runtimeconfig.json",
                                   """
 {
   "runtimeOptions": {
@@ -48,7 +49,7 @@ let handleTest proj (testEnv: TestEnvDict) isError =
                 CreateProcess.fromRawCommand @"C:\_projects\newpascal\core32\dotnet.exe" ["exec"; proj.Exe.Value]
                 |> CreateProcess.redirectOutput
                 |> Proc.run
-            File.WriteAllText(Path.ChangeExtension(proj.Exe.Value, ".elg"), result.Result.Output)
+            File.WriteAllText(proj.OutPath </> proj.Name + ".elg", result.Result.Output)
             if result.ExitCode = runResult then
                 Ok()
             else
@@ -88,7 +89,7 @@ let tryCompileFile doTest mainFile =
     let handle def =
         if doTest then
             let logSuffix = match def with | Some def -> "-" + def | _ -> ""
-            let logFile = proj.FilePath @@ sprintf "%s%s.log" proj.Name logSuffix
+            let logFile = proj.OutPath </> sprintf "%s%s.log" proj.Name logSuffix
             new StreamWriter(path=logFile) :> TextWriter
         else stdout
     let doCompile ho = using (handle ho) (doFullCompilation proj)
@@ -112,8 +113,6 @@ let main argv =
     | None ->
         // only proper for tests
         match results.TryGetResult(Test) with
-        | Some testDir ->
-            for testFile in Directory.GetFiles(testDir, "*.pas") do
-                tryCompileFile true testFile
+        | Some testDir -> !! (testDir </> "*.pas") |> Seq.iter (tryCompileFile true)
         | _ -> failwith "No proper command found"
     0

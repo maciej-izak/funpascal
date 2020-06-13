@@ -21,7 +21,7 @@ type PascalProject = {
 } with
     static member Create(mainFile, test) =
         let filePath = Path.GetDirectoryName (mainFile: string)
-        let outPath = filePath @@ "out"
+        let outPath = filePath </> "out"
         Directory.ensure outPath
         {
             File = mainFile
@@ -71,7 +71,7 @@ let doPas proj s =
     | Ok(ast, us) ->
         match Ctx.BuildModule ast us with
         | Ok asmDef ->
-            let outName = Path.ChangeExtension(proj.File, ".dll")
+            let outName = proj.OutPath </> proj.Name + ".dll"
             asmDef.Write(outName)
             Ok(outName, us.messages, us.testEnv)
         | Error() -> Error(us.messages, us.testEnv)
