@@ -5,12 +5,13 @@ open System.IO
 open System.Collections.Generic
 open Fake.Core
 open NP.CommandLineHandle
+open NP.PasStreams
 open Pas
 open Argu
 open NP
 
-let writeRuntimeConfig outName =
-    File.WriteAllText(Path.GetFileNameWithoutExtension(outName: string) + ".runtimeconfig.json",
+let writeRuntimeConfig proj =
+    File.WriteAllText(Path.Combine(proj.FilePath, proj.Name + ".runtimeconfig.json"),
                                   """
 {
   "runtimeOptions": {
@@ -24,8 +25,7 @@ let writeRuntimeConfig outName =
                                   """)
 
 
-let handleTest exeName (testEnv: Dictionary<string, string list>) isError =
-    let shortName = Path.GetFileName (exeName: string) |> Path.GetFileNameWithoutExtension
+let handleTest proj (testEnv: TestEnvDict) isError =
     let failExpected = testEnv.ContainsKey "FAIL"
     // TODO handle conversion errors ?
     let runResult = match testEnv.TryGetValue "RESULT" with
@@ -42,41 +42,57 @@ let handleTest exeName (testEnv: Dictionary<string, string list>) isError =
        else
         function
         | Ok() ->
+            if proj.Exe.IsNone then raise (InternalError "2020061301")
             let result =
-                CreateProcess.fromRawCommand @"C:\_projects\newpascal\core32\dotnet.exe" ["exec"; exeName]
+                CreateProcess.fromRawCommand @"C:\_projects\newpascal\core32\dotnet.exe" ["exec"; proj.Exe.Value]
                 |> CreateProcess.redirectOutput
                 |> Proc.run
-            File.WriteAllText(Path.ChangeExtension(exeName, ".elg"), result.Result.Output)
+            File.WriteAllText(Path.ChangeExtension(proj.Exe.Value, ".elg"), result.Result.Output)
             if result.ExitCode = runResult then
                 Ok()
             else
                 Error <| sprintf "exit code = %d (expected %d)" result.ExitCode runResult
         | id -> id
     |>  function
-        | Ok() -> printfn "OK\t%s" shortName
-        | Error(msg) -> printfn "FAIL\t%s\t\t%s" shortName msg
+        | Ok() -> printfn "OK\t%s" proj.Name
+        | Error(msg) -> printfn "FAIL\t%s\t\t%s" proj.Name msg
+    // for further tests (only first iteration has meaning)
+    match testEnv.TryGetValue "DEFINES" with
+    | true, defs -> defs
+    | _ -> []
+
+
+let doFullCompilation proj logh =
+    let handleTest(proj, testEnv, isError) =
+       if proj.Test then
+           handleTest proj testEnv isError
+        else []
+    System.IO.File.ReadAllText(proj.File)
+    |> PasStreams.doPas proj
+    |> function
+       | Ok(outName, msg, testEnv) ->
+           Seq.iter (fprintfn logh "%s") msg.warnings
+           fprintfn logh "Compilation success!"
+           writeRuntimeConfig proj
+           { proj with Exe = Some outName}, testEnv, false
+       | Error(msg, testEnv) ->
+           Seq.iter (fprintfn logh "%s") msg.warnings
+           Seq.iter (fprintfn logh "%s") msg.errors
+           fprintfn logh "[Fatal Error] Cannot compile module '%s'" proj.FileName
+           proj, testEnv, true
+    |> handleTest
 
 let tryCompileFile doTest mainFile =
-    let mainFileName = Path.GetFileName(mainFile: string)
-    let handle =
-        if doTest then Some(new StreamWriter(path=Path.ChangeExtension(mainFile,".log")))
-        else None
-    let mprintfn fmt = if doTest then fprintfn handle.Value fmt else printfn fmt
-    try
-        System.IO.File.ReadAllText(mainFile)
-        |> PasStreams.doPas mainFileName doTest
-        |> function
-           | Ok(outName, msg, testEnv) ->
-               Seq.iter (mprintfn "%s") msg.warnings
-               mprintfn "Compilation success!"
-               if doTest then handleTest outName testEnv false
-           | Error(msg, testEnv) ->
-               Seq.iter (mprintfn "%s") msg.warnings
-               Seq.iter (mprintfn "%s") msg.errors
-               mprintfn "[Fatal Error] Cannot compile module '%s'" mainFileName
-               if doTest then handleTest mainFile testEnv true
-    finally
-        handle.Value.Close()
+    let proj = PascalProject.Create(mainFile, doTest)
+    let handle def =
+        if doTest then
+            let logSuffix = match def with | Some def -> "-" + def | _ -> ""
+            let logFile = Path.Combine(proj.FilePath, sprintf "%s%s.log" proj.Name logSuffix)
+            new StreamWriter(path=logFile) :> TextWriter
+        else stdout
+    let fullCompile = doFullCompilation proj
+    using (handle None) fullCompile
+    |> List.iter (fun def -> using (handle (Some def)) fullCompile |> ignore) // first defines has meaning see handleTest
 
 [<EntryPoint>]
 let main argv =

@@ -132,7 +132,7 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
                         if inReply.Status = Ok then
                             // TODO raise exception for duplicated test env ?
                             stream.UserState.testEnv.TryAdd(fst idReply.Result, snd idReply.Result) |> ignore
-                            Reply(inReply.Status, TestEnv(idReply.Result), inReply.Error)
+                            Reply(inReply.Status, TestEnvVar(idReply.Result), inReply.Error)
                         else
                             let e = sprintf "Invalid '%s' test env declaration" (fst idReply.Result)
                                    |> messageError

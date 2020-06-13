@@ -60,7 +60,7 @@ type Directive =
 [<ReferenceEquality>]
 type Comment =
      | Directive of Directive
-     | TestEnv of string * string list
+     | TestEnvVar of string * string list
      | Regular
      | Macro of (MacroId * Macro)
 
@@ -75,6 +75,8 @@ type ICompilerPassGeneric =
     abstract member PosMap: Dictionary<obj, Position>
     abstract member GetPos: obj -> Position option
 
+type TestEnvDict = Dictionary<string, string list>
+
 type ICompilerPass =
     inherit ICompilerPassGeneric
     abstract member Id: CompilerPassId
@@ -88,7 +90,7 @@ and PasState = {
     ifDefGoto: Dictionary<int64 * int64, int64>
     moduled: ModuleDef
     messages: CompilerMessages
-    testEnv: Dictionary<string, string list>
+    testEnv: TestEnvDict
 }   with
     // TODO as parser ?
     static member HandleComment c = fun (stream: CharStream<PasState>) ->
@@ -296,7 +298,7 @@ type PasState with
             ifDefGoto = Dictionary<_,_>()
             moduled = ModuleDef()
             messages = { errors = List<string>(); warnings = List<string>() }
-            testEnv = Dictionary<_,_>(StringComparer.OrdinalIgnoreCase)
+            testEnv = TestEnvDict(StringComparer.OrdinalIgnoreCase)
         }
 
 let opp = OperatorPrecedenceParser<ExprEl,unit,PasState>()

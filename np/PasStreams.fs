@@ -8,6 +8,24 @@ open FParsec
 open Microsoft.FSharp.Reflection
 open Microsoft.FSharp.Core
 
+type PascalProject = {
+    File: string
+    FileName: string
+    FilePath: string
+    Exe: string option
+    Name: string
+    Test: bool
+} with
+    static member Create(mainFile, test) =
+        {
+            File = mainFile
+            FileName = Path.GetFileName mainFile
+            FilePath = Path.GetDirectoryName mainFile
+            Exe = None
+            Name = Path.GetFileNameWithoutExtension mainFile
+            Test = test
+        }
+
 let applyParser (parser: Parser<'Result,'UserState>) (stream: CharStream<'UserState>) =
     let reply = parser stream
     if reply.Status = FParsec.Primitives.Ok then
@@ -16,7 +34,7 @@ let applyParser (parser: Parser<'Result,'UserState>) (stream: CharStream<'UserSt
         let error = ParserError(stream.Position, stream.UserState, reply.Error)
         FParsec.CharParsers.Failure(error.ToString(stream), error, stream.UserState)
 
-let doPasStream s i fn doTests =
+let doPasStream s i fn =
     let addParserError (us: PasState) parserError =
         us.messages.errors.Add parserError
         Error us
@@ -38,14 +56,15 @@ let doPasStream s i fn doTests =
     | FParsec.CharParsers.Failure(s, _, _) -> addParserError us s
     | _ -> Error us
 
-let doPas fn doTests s =
+let doPas proj s =
     let strToStream (s: string) = s |> Encoding.Unicode.GetBytes |> fun s -> new MemoryStream(s)
-    let result = doPasStream (strToStream s) @"C:\_projects\newpascal\np\npcli\test\xdpw" fn doTests
+
+    let result = doPasStream (strToStream s) @"C:\_projects\newpascal\np\npcli\test\xdpw" proj.FileName
     match result with
     | Ok(ast, us) ->
         match Ctx.BuildModule ast us with
         | Ok asmDef ->
-            let outName = Path.ChangeExtension(fn, ".dll")
+            let outName = Path.ChangeExtension(proj.File, ".dll")
             asmDef.Write(outName)
             Ok(outName, us.messages, us.testEnv)
         | Error() -> Error(us.messages, us.testEnv)
