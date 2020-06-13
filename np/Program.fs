@@ -4,6 +4,7 @@ open System
 open System.IO
 open System.Collections.Generic
 open Fake.Core
+open Fake.IO.FileSystemOperators
 open NP.CommandLineHandle
 open NP.PasStreams
 open Pas
@@ -11,7 +12,7 @@ open Argu
 open NP
 
 let writeRuntimeConfig proj =
-    File.WriteAllText(Path.Combine(proj.FilePath, proj.Name + ".runtimeconfig.json"),
+    File.WriteAllText(proj.FilePath @@ proj.Name + ".runtimeconfig.json",
                                   """
 {
   "runtimeOptions": {
@@ -87,12 +88,11 @@ let tryCompileFile doTest mainFile =
     let handle def =
         if doTest then
             let logSuffix = match def with | Some def -> "-" + def | _ -> ""
-            let logFile = Path.Combine(proj.FilePath, sprintf "%s%s.log" proj.Name logSuffix)
+            let logFile = proj.FilePath @@ sprintf "%s%s.log" proj.Name logSuffix
             new StreamWriter(path=logFile) :> TextWriter
         else stdout
-    let fullCompile = doFullCompilation proj
-    using (handle None) fullCompile
-    |> List.iter (fun def -> using (handle (Some def)) fullCompile |> ignore) // first defines has meaning see handleTest
+    let doCompile ho = using (handle ho) (doFullCompilation proj)
+    doCompile None |> List.iter (Some >> doCompile >> ignore) // first defines has meaning see handleTest
 
 [<EntryPoint>]
 let main argv =

@@ -7,20 +7,27 @@ open Pas
 open FParsec
 open Microsoft.FSharp.Reflection
 open Microsoft.FSharp.Core
+open Fake.IO
+open Fake.IO.FileSystemOperators
 
 type PascalProject = {
     File: string
     FileName: string
     FilePath: string
+    OutPath: string
     Exe: string option
     Name: string
     Test: bool
 } with
     static member Create(mainFile, test) =
+        let filePath = Path.GetDirectoryName (mainFile: string)
+        let outPath = filePath @@ "out"
+        Directory.ensure outPath
         {
             File = mainFile
             FileName = Path.GetFileName mainFile
-            FilePath = Path.GetDirectoryName mainFile
+            FilePath = filePath
+            OutPath = outPath
             Exe = None
             Name = Path.GetFileNameWithoutExtension mainFile
             Test = test
