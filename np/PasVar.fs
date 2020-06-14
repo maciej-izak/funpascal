@@ -49,7 +49,18 @@ type MacroId =
 
 type AppType = | Console | GUI
 
-type IfDefPos = {Pos: Position ; Defined: bool; Else: bool }
+type IfDefBranch =
+    | IfDefBranch
+    | ElseBranch
+    | EndIfBranch
+
+    override self.ToString() =
+        match self with
+        | IfDefBranch -> "IFDEF"
+        | ElseBranch -> "ELSE"
+        | EndIfBranch -> "ENDIF"
+
+type IfDefPos = {Pos: Position ; Defined: bool; Branch: IfDefBranch }
 
 type Directive =
      | Include of string
@@ -237,24 +248,24 @@ type InitialPass() =
 
     let ifDef = ifDefStack.Push
 
-    let endIfElse comment (stream: CharStream<PasState>) isElse =
+    let endIfElse comment (stream: CharStream<PasState>) branch =
         let us = stream.UserState
         let handleElse defined =
             let pos = us.pass.GetPos(box comment).Value
-            ifDefStack.Push{ Pos=pos; Defined=defined; Else=true }
+            ifDefStack.Push{ Pos=pos; Defined=defined; Branch=ElseBranch }
         let doError() =
-            sprintf "Unbalanced '{$%s}'" (if isElse then "ELSE" else "ENDIF")
+            sprintf "Unbalanced '{$%O}'" branch
             |> us.NewError (box comment)
-        match ifDefStack.TryPop(), isElse with
-        | (true, {Pos=pos; Defined=false; Else=false}), false ->
+        match ifDefStack.TryPop(), branch with
+        | (true, {Pos=pos; Defined=false}), EndIfBranch ->
             us.defGoto.Add(pos, stream.Position)
-        | (true, {Pos=pos; Defined=false; Else=false}), true ->
+        | (true, {Pos=pos; Defined=false; Branch=IfDefBranch}), ElseBranch ->
             us.defGoto.Add(pos, stream.Position)
             handleElse true
-        | (true, {Defined=true; Else=false}), true -> handleElse false
-        | (true, {Defined=true}), false -> ()
-        | (true, ({Defined=_; Else=true} as idi)), true ->
-            ifDefStack.Push idi
+        | (true, {Defined=true; Branch=IfDefBranch}), ElseBranch -> handleElse false
+        | (true, {Defined=true}), EndIfBranch -> ()
+        | (true, ({Defined=_; Branch=ElseBranch} as idi)), ElseBranch ->
+            ifDefStack.Push idi // try generate less errors
             doError()
         | _ -> doError()
 
@@ -269,8 +280,8 @@ type InitialPass() =
                 match d with
                 | Include f -> includeFile stream.UserState f
                 | IfDef notDefined -> ifDef notDefined
-                | EndIf -> endIfElse comment stream false
-                | Else -> endIfElse comment stream true
+                | EndIf -> endIfElse comment stream EndIfBranch
+                | Else -> endIfElse comment stream ElseBranch
                 | _ -> ()
             | Macro m -> macro stream.UserState m
             | _ -> ()
@@ -278,6 +289,7 @@ type InitialPass() =
 type MainPass() =
     inherit GenericPass()
     let id = MainPassId
+    let ifDefStack = Stack<bool>()
 
     let redirectParserTo (stream: CharStream<PasState>) name =
         let offset = stream.Position.Index;
@@ -291,29 +303,33 @@ type MainPass() =
                     stream.SetLine_WithoutCheckAndWithoutIncrementingTheStateTag 0L
                     stream.RegisterNewline()
 
-    let ifDef (cpos: Position) (stream: CharStream<PasState>) = function
+    let ifDef (stream: CharStream<PasState>) = function
         | {Pos=pos; Defined=false} ->
-            let pos = stream.UserState.defGoto.[pos]
-            stream.Seek(pos.Index) // seek will not update Line, do it below
-            let lineOffset = (pos.Line - cpos.Line) - 1L
+            let gotoPos = stream.UserState.defGoto.[pos]
+            stream.Seek(gotoPos.Index) // seek will not update Line, do it below
+            let lineOffset = (gotoPos.Line - pos.Line) - 1L
             if lineOffset > 0L then
-                stream.RegisterNewlines(lineOffset, pos.Column - 1L)
+                stream.RegisterNewlines(lineOffset, gotoPos.Column - 1L)
         | _ -> ()
 
     interface ICompilerPass with
         member _.Id: CompilerPassId = id
 
         member _.HandleComment(stream, comment) =
-            let commentPos() = (stream.UserState.pass.GetPos (box comment)).Value
+            let commentPos() = match stream.UserState.pass.GetPos (box comment) with
+                               | Some v -> v
+                               | None -> raise (InternalError "2020061402")
             match comment with
             | Directive d ->
                 match d with
                 | Include f -> redirectParserTo stream f
                 | IfDef defPos ->
-                    ifDef (commentPos()) stream defPos
+                    ifDefStack.Push defPos.Defined
+                    ifDef stream defPos
                 | Else ->
-                    let pos = commentPos()
-                    ifDef pos stream { Pos=pos; Defined=false; Else=true }
+                    match ifDefStack.TryPop() with
+                    | true, defined -> ifDef stream { Pos=commentPos(); Defined=not defined; Branch=ElseBranch }
+                    | _ -> raise (InternalError "2020061401") // lack should be found in pass1
                 | _ -> ()
             | Macro (mId, _) -> redirectParserTo stream (mId.ToString())
             | _ -> ()

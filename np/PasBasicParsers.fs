@@ -56,7 +56,7 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
                     IfDef{
                         Pos = commentPos
                         Defined = ident |> pass.Defines.Contains |> (if defined then id else not)
-                        Else = false}
+                        Branch = IfDefBranch}
                     |> Directive |> Some
                 let inReply = commentParser stream
                 let r: string = (if inReply.Status = Ok then inReply.Result else "").Trim()
@@ -218,7 +218,7 @@ let initialPassParser =
         let ifDefStack = (us.pass :?> InitialPass).IfDefStack
         if ifDefStack.Count > 0 then
             let pos = ifDefStack.Pop()
-            sprintf "Unfinished '{$%s}' block detected" (if pos.Else then "ELSE" else "IFDEF")
+            sprintf "Unfinished '{$%O}' block detected" pos.Branch
             |> us.NewError (pos.Pos |> box)
     skipMany(
           (skipMany1 comments) 
