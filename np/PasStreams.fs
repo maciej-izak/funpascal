@@ -41,11 +41,13 @@ let applyParser (parser: Parser<'Result,'UserState>) (stream: CharStream<'UserSt
         let error = ParserError(stream.Position, stream.UserState, reply.Error)
         FParsec.CharParsers.Failure(error.ToString(stream), error, stream.UserState)
 
-let doPasStream s i fn =
+let doPasStream s i fn td =
     let addParserError (us: PasState) parserError =
         us.messages.errors.Add parserError
         Error us
     let us = PasState.Create (InitialPass()) (new PasStream(s)) i
+    if (td: string option).IsSome then
+        us.pass.Defines.Add(td.Value) |> ignore
     use stream1 = new CharStream<PasState>(us.stream, Encoding.Unicode)
     stream1.UserState <- us
     stream1.Name <- fn
@@ -53,6 +55,8 @@ let doPasStream s i fn =
     match applyParser initialPassParser stream1 with
     | Success _ when not us.messages.HasError -> // Do second pass, parsing success may means failure in AST
         let us = { us with pass = MainPass() }
+        if (td: string option).IsSome then
+            us.pass.Defines.Add(td.Value) |> ignore
         use stream2 = new CharStream<PasState>(us.stream, Encoding.Unicode)
         stream2.UserState <- us
         stream2.Name <- fn
@@ -63,10 +67,10 @@ let doPasStream s i fn =
     | FParsec.CharParsers.Failure(s, _, _) -> addParserError us s
     | _ -> Error us
 
-let doPas proj s =
+let doPas proj td s =
     let strToStream (s: string) = s |> Encoding.Unicode.GetBytes |> fun s -> new MemoryStream(s)
 
-    let result = doPasStream (strToStream s) @"C:\_projects\newpascal\np\npcli\test\xdpw" proj.FileName
+    let result = doPasStream (strToStream s) @"C:\_projects\newpascal\np\npcli\test\xdpw" proj.FileName td
     match result with
     | Ok(ast, us) ->
         match Ctx.BuildModule ast us with

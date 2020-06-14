@@ -41,13 +41,19 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
         if stream.Skip '$' then
             let idReply = directiveIdentifier stream
             if idReply.Status = Ok then
-                let strDef (str: string) =
+                let strDef (str: string) = //for $IFDEF - comment all after first ident
                     if System.String.IsNullOrEmpty str then
                         ""
                     else
                         let idx = str.IndexOfAny([|' ';'\t';'\r';'\n'|])
                         if idx < 0 then str
                         else str.Remove(idx)
+                let doIfDef r defined =
+                    IfDef{
+                        Line = commentPos.Line
+                        Column = commentPos.Column
+                        Defined = strDef r |> pass.Defines.Contains && defined}
+                    |> Directive |> Some
                 let inReply = commentParser stream
                 let r: string = (if inReply.Status = Ok then inReply.Result else "").Trim()
                 match idReply.Result with
@@ -102,13 +108,13 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
                 | "DEFINE", ' ' ->
                     pass.Defines.Add(strDef r) |> ignore
                     Some Regular
-                | "IFDEF", ' ' ->
-                    // TODO comment all after first ident
-                    match strDef r |> pass.Defines.Contains with
-                    | true -> IfDef None |> Directive |> Some
-                    | false -> IfDef(Some(commentPos.Line, commentPos.Column)) |> Directive |> Some
-                | "ENDIF", ' ' ->
-                    EndIf |> Directive |> Some
+                | "UNDEF", ' ' ->
+                    pass.Defines.Remove(strDef r) |> ignore
+                    Some Regular
+                | "IFDEF", ' ' -> doIfDef r true
+                | "IFNDEF", ' ' -> doIfDef r false
+                | "ENDIF", ' ' -> EndIf |> Directive |> Some
+                | "ELSE", ' ' -> Else |> Directive |> Some
                 | _ -> None
                 |>  function
                     | Some comment ->
@@ -122,25 +128,16 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
                 Reply(Error, Unchecked.defaultof<_>, idReply.Error)
         else
             match stream.UserState.pass.Id with
-            | InitialPassId when stream.UserState.testEnv <> null ->
+            | InitialPassId ->
                 mws stream |> ignore
                 if stream.Skip '%' then
-                    mws stream |> ignore
-                    let idReply = testEnvVar stream
-                    if idReply.Status = Ok then
-                        let inReply = commentParser stream
-                        if inReply.Status = Ok then
-                            // TODO raise exception for duplicated test env ?
-                            stream.UserState.testEnv.TryAdd(fst idReply.Result, snd idReply.Result) |> ignore
-                            Reply(inReply.Status, TestEnvVar(idReply.Result), inReply.Error)
-                        else
-                            let e = sprintf "Invalid '%s' test env declaration" (fst idReply.Result)
-                                   |> messageError
-                                   |> mergeErrors inReply.Error
-                            Reply(Error, e)
-                    else
-                        let inReply = commentParser stream
-                        Reply(inReply.Status, Regular, inReply.Error)
+                    let inReply = commentParser stream
+                    let r: string = (if inReply.Status = Ok then inReply.Result else "").Trim()
+                    // TODO raise exception for duplicated test env ?
+                    match runParserOnString testEnvVar us "" r with
+                    | Success((key, value), _, _) -> us.testEnv.TryAdd(key, value) |> ignore
+                    | _ -> () // sprintf "Invalid '%s' test env declaration" (fst idReply.Result)
+                    Reply(inReply.Status, Regular, inReply.Error)
                 else
                     let inReply = commentParser stream
                     Reply(inReply.Status, Regular, inReply.Error)

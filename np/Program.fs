@@ -64,13 +64,13 @@ let handleTest proj (testEnv: TestEnvDict) isError =
     | _ -> []
 
 
-let doFullCompilation proj logh =
+let doFullCompilation proj td logh =
     let handleTest(proj, testEnv, isError) =
        if proj.Test then
            handleTest proj testEnv isError
         else []
     System.IO.File.ReadAllText(proj.File)
-    |> PasStreams.doPas proj
+    |> PasStreams.doPas proj td
     |> function
        | Ok(outName, msg, testEnv) ->
            Seq.iter (fprintfn logh "%s") msg.warnings
@@ -92,7 +92,7 @@ let tryCompileFile doTest mainFile =
             let logFile = proj.OutPath </> sprintf "%s%s.log" proj.Name logSuffix
             new StreamWriter(path=logFile) :> TextWriter
         else stdout
-    let doCompile ho = using (handle ho) (doFullCompilation proj)
+    let doCompile ho = using (handle ho) (doFullCompilation proj ho)
     doCompile None |> List.iter (Some >> doCompile >> ignore) // first defines has meaning see handleTest
 
 [<EntryPoint>]
