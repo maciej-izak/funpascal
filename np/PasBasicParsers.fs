@@ -50,9 +50,9 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
                         else str.Remove(idx)
                 let doIfDef r defined =
                     IfDef{
-                        Line = commentPos.Line
-                        Column = commentPos.Column
-                        Defined = strDef r |> pass.Defines.Contains && defined}
+                        Pos = commentPos
+                        Defined = strDef r |> pass.Defines.Contains |> (if defined then id else not)
+                        Else = false}
                     |> Directive |> Some
                 let inReply = commentParser stream
                 let r: string = (if inReply.Status = Ok then inReply.Result else "").Trim()
@@ -105,12 +105,8 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
                     | "CONSOLE" -> Console |> AppType |> Directive |> Some
                     | "GUI" -> GUI |> AppType |> Directive |> Some
                     | _ -> None
-                | "DEFINE", ' ' ->
-                    pass.Defines.Add(strDef r) |> ignore
-                    Some Regular
-                | "UNDEF", ' ' ->
-                    pass.Defines.Remove(strDef r) |> ignore
-                    Some Regular
+                | "DEFINE", ' ' -> pass.Defines.Add(strDef r) |> ignore; Some Regular
+                | "UNDEF", ' ' -> pass.Defines.Remove(strDef r) |> ignore; Some Regular
                 | "IFDEF", ' ' -> doIfDef r true
                 | "IFNDEF", ' ' -> doIfDef r false
                 | "ENDIF", ' ' -> EndIf |> Directive |> Some
@@ -214,6 +210,12 @@ let comments =
 let wsc: Parser<unit, PasState> = skipMany comments
 
 let initialPassParser =
+    let checkIfDefBalance us =
+        let ifDefStack = (us.pass :?> InitialPass).IfDefStack
+        if ifDefStack.Count > 0 then
+            let pos = ifDefStack.Pop()
+            sprintf "Unfinished '{$%s}' block detected" (if pos.Else then "ELSE" else "IFDEF")
+            |> us.NewError (pos.Pos |> box)
     skipMany(
           (skipMany1 comments) 
           <|> (skipMany1Till anyChar (
@@ -222,7 +224,7 @@ let initialPassParser =
                     match (c1, c2) with
                     | '{', _ | '(', '*' | '/', '/' | '\000', _ -> true
                     | _, _ -> false)
-                <|> eof
+                <|> (eof .>> (getUserState |>> checkIfDefBalance))
           )))
 
 let str_wsc s =

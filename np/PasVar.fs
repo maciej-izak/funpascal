@@ -49,7 +49,7 @@ type MacroId =
 
 type AppType = | Console | GUI
 
-type IfDefPos = { Line: int64; Column: int64; Defined: bool }
+type IfDefPos = {Pos: Position ; Defined: bool; Else: bool }
 
 type Directive =
      | Include of string
@@ -90,7 +90,7 @@ and PasState = {
     stream: PasStream
     incPath: string
     incStack: (int64 * string * CharStreamState<PasState>) Stack
-    ifDefGoto: Dictionary<IfDefPos, int64 * int64 * int64>
+    defGoto: Dictionary<Position, Position>
     moduled: ModuleDef
     messages: CompilerMessages
     testEnv: TestEnvDict
@@ -239,17 +239,22 @@ type InitialPass() =
 
     let endIfElse comment (stream: CharStream<PasState>) isElse =
         let us = stream.UserState
-        match ifDefStack.TryPop() with
-        | true, ({Defined=false} as pos) ->
-            us.ifDefGoto.Add(pos, (stream.Index, stream.Line, stream.Column))
-            if isElse then ifDefStack.Push{ pos with Defined = true }
-        | true, ({Defined=true} as pos) ->
+        let tryHandleElse defined =
             if isElse then
-                let pos = stream.UserState.pass.GetPos(box comment).Value
-                ifDefStack.Push{ Line=pos.Line; Column=pos.Column; Defined=false }
+                let pos = us.pass.GetPos(box comment).Value
+                ifDefStack.Push{ Pos=pos; Defined=defined; Else=true }
+
+        match ifDefStack.TryPop() with
+        | true, {Pos=pos; Defined=false} ->
+            us.defGoto.Add(pos, stream.Position)
+            tryHandleElse true
+        | true, {Defined=true} ->
+            tryHandleElse false
         | _ ->
             sprintf "Unbalanced '{$%s}'" (if isElse then "ELSE" else "ENDIF")
             |> us.NewError (box comment)
+
+    member self.IfDefStack = ifDefStack
 
     interface ICompilerPass with
         member _.Id = id
@@ -283,12 +288,12 @@ type MainPass() =
                     stream.RegisterNewline()
 
     let ifDef (cpos: Position) (stream: CharStream<PasState>) = function
-        | {Defined=false} as pos ->
-            let index, line, column = stream.UserState.ifDefGoto.[pos]
-            stream.Seek(index) // seek will not update Line, do it below
-            let lineOffset = (line - cpos.Line) - 1L
+        | {Pos=pos; Defined=false} ->
+            let pos = stream.UserState.defGoto.[pos]
+            stream.Seek(pos.Index) // seek will not update Line, do it below
+            let lineOffset = (pos.Line - cpos.Line) - 1L
             if lineOffset > 0L then
-                stream.RegisterNewlines(lineOffset, column - 1L)
+                stream.RegisterNewlines(lineOffset, pos.Column - 1L)
         | _ -> ()
 
     interface ICompilerPass with
@@ -304,8 +309,7 @@ type MainPass() =
                     ifDef (commentPos()) stream defPos
                 | Else ->
                     let pos = commentPos()
-                    let defPos = { Line = pos.Line; Column = pos.Column; Defined = false }
-                    ifDef pos stream defPos
+                    ifDef pos stream { Pos=pos; Defined=false; Else=true }
                 | _ -> ()
             | Macro (mId, _) -> redirectParserTo stream (mId.ToString())
             | _ -> ()
@@ -317,7 +321,7 @@ type PasState with
             stream = s
             incPath = ip
             incStack = Stack()
-            ifDefGoto = Dictionary<_,_>()
+            defGoto = Dictionary<_,_>()
             moduled = ModuleDef()
             messages = { errors = List<string>(); warnings = List<string>() }
             testEnv = TestEnvDict(StringComparer.OrdinalIgnoreCase)
