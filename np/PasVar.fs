@@ -239,20 +239,24 @@ type InitialPass() =
 
     let endIfElse comment (stream: CharStream<PasState>) isElse =
         let us = stream.UserState
-        let tryHandleElse defined =
-            if isElse then
-                let pos = us.pass.GetPos(box comment).Value
-                ifDefStack.Push{ Pos=pos; Defined=defined; Else=true }
-
-        match ifDefStack.TryPop() with
-        | true, {Pos=pos; Defined=false} ->
-            us.defGoto.Add(pos, stream.Position)
-            tryHandleElse true
-        | true, {Defined=true} ->
-            tryHandleElse false
-        | _ ->
+        let handleElse defined =
+            let pos = us.pass.GetPos(box comment).Value
+            ifDefStack.Push{ Pos=pos; Defined=defined; Else=true }
+        let doError() =
             sprintf "Unbalanced '{$%s}'" (if isElse then "ELSE" else "ENDIF")
             |> us.NewError (box comment)
+        match ifDefStack.TryPop(), isElse with
+        | (true, {Pos=pos; Defined=false; Else=false}), false ->
+            us.defGoto.Add(pos, stream.Position)
+        | (true, {Pos=pos; Defined=false; Else=false}), true ->
+            us.defGoto.Add(pos, stream.Position)
+            handleElse true
+        | (true, {Defined=true; Else=false}), true -> handleElse false
+        | (true, {Defined=true}), false -> ()
+        | (true, ({Defined=_; Else=true} as idi)), true ->
+            ifDefStack.Push idi
+            doError()
+        | _ -> doError()
 
     member self.IfDefStack = ifDefStack
 

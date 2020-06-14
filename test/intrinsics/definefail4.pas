@@ -1,0 +1,4 @@
+{%fail}
+begin
+  {$ELSE}
+end.

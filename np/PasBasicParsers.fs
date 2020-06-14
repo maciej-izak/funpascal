@@ -49,9 +49,13 @@ let manySatisfyWith0 (commentParser: Parser<_,_>) =
                         if idx < 0 then str
                         else str.Remove(idx)
                 let doIfDef r defined =
+                    let ident = strDef r
+                    if ident = "" then
+                        sprintf "Improper '{$%s}' declaration, no ident found" (if defined then "IFDEF" else "IFNDEF")
+                        |> us.NewError (box commentPos)
                     IfDef{
                         Pos = commentPos
-                        Defined = strDef r |> pass.Defines.Contains |> (if defined then id else not)
+                        Defined = ident |> pass.Defines.Contains |> (if defined then id else not)
                         Else = false}
                     |> Directive |> Some
                 let inReply = commentParser stream
