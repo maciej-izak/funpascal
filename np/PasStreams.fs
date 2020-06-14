@@ -10,15 +10,7 @@ open Microsoft.FSharp.Core
 open Fake.IO
 open Fake.IO.FileSystemOperators
 
-type PascalProject = {
-    File: string
-    FileName: string
-    FilePath: string
-    OutPath: string
-    Exe: string option
-    Name: string
-    Test: bool
-} with
+type PascalProject with
     static member Create(mainFile, test) =
         let filePath = Path.GetDirectoryName (mainFile: string)
         let outPath = filePath </> "out"
@@ -31,6 +23,8 @@ type PascalProject = {
             Exe = None
             Name = Path.GetFileNameWithoutExtension mainFile
             Test = test
+            Defines = []
+            InitialPassOnly = false
         }
 
 let applyParser (parser: Parser<'Result,'UserState>) (stream: CharStream<'UserState>) =
@@ -41,25 +35,21 @@ let applyParser (parser: Parser<'Result,'UserState>) (stream: CharStream<'UserSt
         let error = ParserError(stream.Position, stream.UserState, reply.Error)
         FParsec.CharParsers.Failure(error.ToString(stream), error, stream.UserState)
 
-let doPasStream s i fn td =
+let doPasStream s i proj =
     let addParserError (us: PasState) parserError =
         us.messages.errors.Add parserError
         Error us
-    let us = PasState.Create (InitialPass()) (new PasStream(s)) i
-    if (td: string option).IsSome then
-        us.pass.Defines.Add(td.Value) |> ignore
+    let us = PasState.Create (InitialPass proj) (new PasStream(s)) i
     use stream1 = new CharStream<PasState>(us.stream, Encoding.Unicode)
     stream1.UserState <- us
-    stream1.Name <- fn
+    stream1.Name <- proj.FileName
     us.stream.AddInc "system.inc" @"C:\_projects\newpascal\np\npcli\test\xdpw"
     match applyParser initialPassParser stream1 with
     | Success _ when not us.messages.HasError -> // Do second pass, parsing success may means failure in AST
-        let us = { us with pass = MainPass() }
-        if (td: string option).IsSome then
-            us.pass.Defines.Add(td.Value) |> ignore
+        let us = { us with pass = MainPass(proj) }
         use stream2 = new CharStream<PasState>(us.stream, Encoding.Unicode)
         stream2.UserState <- us
-        stream2.Name <- fn
+        stream2.Name <- proj.FileName
         match applyParser mainPassParser stream2 with
         | Success(ast, _, _) when not us.messages.HasError -> Ok(ast, us)
         | FParsec.CharParsers.Failure(s, _, _) -> addParserError us s
@@ -67,10 +57,10 @@ let doPasStream s i fn td =
     | FParsec.CharParsers.Failure(s, _, _) -> addParserError us s
     | _ -> Error us
 
-let doPas proj td s =
+let doPas proj s =
     let strToStream (s: string) = s |> Encoding.Unicode.GetBytes |> fun s -> new MemoryStream(s)
 
-    let result = doPasStream (strToStream s) @"C:\_projects\newpascal\np\npcli\test\xdpw" proj.FileName td
+    let result = doPasStream (strToStream s) @"C:\_projects\newpascal\np\npcli\test\xdpw" proj
     match result with
     | Ok(ast, us) ->
         match Ctx.BuildModule ast us with

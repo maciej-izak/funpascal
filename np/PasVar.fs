@@ -222,8 +222,23 @@ and PasStream(s: Stream) = class
     member _.EndInc() = () 
   end
 
-type GenericPass() =
-    let defines = HashSet<_>(StringComparer.OrdinalIgnoreCase)
+type PascalProject = {
+    File: string
+    FileName: string
+    FilePath: string
+    OutPath: string
+    Exe: string option
+    Name: string
+    Test: bool
+    Defines: string list
+    InitialPassOnly: bool
+}
+
+type GenericPass(proj) =
+    let defines =
+        let defs = HashSet<_>(StringComparer.OrdinalIgnoreCase)
+        List.iter (defs.Add >> ignore) proj.Defines
+        defs
     let posMap = Dictionary<_,_>()
     interface ICompilerPassGeneric with
         member _.Defines = defines
@@ -233,8 +248,8 @@ type GenericPass() =
             | true, v -> Some v
             | _ -> None
 
-type InitialPass() =
-    inherit GenericPass()
+type InitialPass(proj) =
+    inherit GenericPass(proj)
     let id = InitialPassId
     let ifDefStack = Stack<IfDefPos>()
 
@@ -289,8 +304,8 @@ type InitialPass() =
             | Macro m -> macro stream.UserState m
             | _ -> ()
 
-type MainPass() =
-    inherit GenericPass()
+type MainPass(proj) =
+    inherit GenericPass(proj)
     let id = MainPassId
     let ifDefStack = Stack<bool>()
 
