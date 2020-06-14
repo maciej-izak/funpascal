@@ -253,20 +253,23 @@ type InitialPass() =
         let handleElse defined =
             let pos = us.pass.GetPos(box comment).Value
             ifDefStack.Push{ Pos=pos; Defined=defined; Branch=ElseBranch }
-        let doError() =
-            sprintf "Unbalanced '{$%O}'" branch
-            |> us.NewError (box comment)
-        match ifDefStack.TryPop(), branch with
-        | (true, {Pos=pos; Defined=false}), EndIfBranch ->
-            us.defGoto.Add(pos, stream.Position)
-        | (true, {Pos=pos; Defined=false; Branch=IfDefBranch}), ElseBranch ->
-            us.defGoto.Add(pos, stream.Position)
-            handleElse true
-        | (true, {Defined=true; Branch=IfDefBranch}), ElseBranch -> handleElse false
-        | (true, {Defined=true}), EndIfBranch -> ()
-        | (true, ({Defined=_; Branch=ElseBranch} as idi)), ElseBranch ->
-            ifDefStack.Push idi // try generate less errors
-            doError()
+        let doError() = sprintf "Unbalanced '{$%O}'" branch |> us.NewError (box comment)
+        match ifDefStack.TryPop() with
+        | true, ifDefPos ->
+            match branch with
+            | EndIfBranch ->
+                // for Defined do nothing
+                if not ifDefPos.Defined then us.defGoto.Add(ifDefPos.Pos, stream.Position)
+            | ElseBranch ->
+                match ifDefPos with
+                | {Branch=IfDefBranch; Defined=defined; Pos=pos} ->
+                    if not defined then us.defGoto.Add(pos, stream.Position)
+                    handleElse (not defined)
+                | {Branch=ElseBranch} ->
+                    ifDefStack.Push ifDefPos // try generate less errors
+                    doError()
+                | _ -> doError()
+            | _ -> raise (InternalError "202006150021")
         | _ -> doError()
 
     member self.IfDefStack = ifDefStack
