@@ -91,6 +91,13 @@ type ICompilerPassGeneric =
 
 type TestEnvDict = Dictionary<string, string list>
 
+type PasTestState = {
+    testEnv: TestEnvDict
+}   with
+    // TODO as parser ?
+    static member HandleComment _ = preturn()
+    static member Create() = { testEnv = TestEnvDict(StringComparer.OrdinalIgnoreCase) }
+
 type ICompilerPass =
     inherit ICompilerPassGeneric
     abstract member Id: CompilerPassId
@@ -104,7 +111,6 @@ and PasState = {
     defGoto: Dictionary<Position, Position>
     moduled: ModuleDef
     messages: CompilerMessages
-    testEnv: TestEnvDict
 }   with
     // TODO as parser ?
     static member HandleComment c = fun (stream: CharStream<PasState>) ->
@@ -229,15 +235,15 @@ type PascalProject = {
     OutPath: string
     Exe: string option
     Name: string
-    Test: bool
     Defines: string list
-    InitialPassOnly: bool
 }
 
 type GenericPass(proj) =
     let defines =
         let defs = HashSet<_>(StringComparer.OrdinalIgnoreCase)
-        List.iter (defs.Add >> ignore) proj.Defines
+        proj.Defines
+        |> List.filter ((<>) "")
+        |> List.iter (defs.Add >> ignore)
         defs
     let posMap = Dictionary<_,_>()
     interface ICompilerPassGeneric with
@@ -362,7 +368,6 @@ type PasState with
             defGoto = Dictionary<_,_>()
             moduled = ModuleDef()
             messages = { errors = List<string>(); warnings = List<string>() }
-            testEnv = TestEnvDict(StringComparer.OrdinalIgnoreCase)
         }
 
 let opp = OperatorPrecedenceParser<ExprEl,unit,PasState>()

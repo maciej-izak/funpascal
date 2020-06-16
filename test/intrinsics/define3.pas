@@ -1,6 +1,4 @@
-{%result=6}
-{%defines=X}
-{%results=8}
+{%results=:4,X:6}
 begin
   {$IFNDEF X}
   HaltAtLine;

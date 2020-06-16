@@ -22,9 +22,7 @@ type PascalProject with
             OutPath = outPath
             Exe = None
             Name = Path.GetFileNameWithoutExtension mainFile
-            Test = test
             Defines = []
-            InitialPassOnly = false
         }
 
 let applyParser (parser: Parser<'Result,'UserState>) (stream: CharStream<'UserState>) =
@@ -67,9 +65,9 @@ let doPas proj s =
         | Ok asmDef ->
             let outName = proj.OutPath </> proj.Name + ".dll"
             asmDef.Write(outName)
-            Ok(outName, us.messages, us.testEnv)
-        | Error() -> Error(us.messages, us.testEnv)
-    | Error us -> Error(us.messages, us.testEnv)
+            Ok(outName, us.messages)
+        | Error() -> Error(us.messages)
+    | Error us -> Error(us.messages)
 
 let toString (x:'a) = 
     match FSharpValue.GetUnionFields(x, typeof<'a>) with

@@ -27,20 +27,12 @@ let writeRuntimeConfig proj =
                                   """)
 
 
-let handleTest proj (testEnv: TestEnvDict) isError =
-    let failExpected = testEnv.ContainsKey "FAIL"
-    // TODO handle conversion errors ?
-    let runResult = match testEnv.TryGetValue "RESULT" with
-                    | true, [v] ->
-                        match Int32.TryParse v with
-                        | true, v -> v
-                        | _ -> 0
-                    | _ -> 0
-    match isError, failExpected with
+let handleTest proj testCase isError =
+    match isError, testCase.FailExpected with
     | false, false | true, true -> Ok()
     | true, false -> Error("compiler error")
     | false, true -> Error("compiler success")
-    |> if failExpected then id
+    |> if testCase.FailExpected then id
        else
         function
         | Ok() ->
@@ -49,56 +41,51 @@ let handleTest proj (testEnv: TestEnvDict) isError =
                 CreateProcess.fromRawCommand @"C:\_projects\newpascal\core32\dotnet.exe" ["exec"; proj.Exe.Value]
                 |> CreateProcess.redirectOutput
                 |> Proc.run
-            File.WriteAllText(proj.OutPath </> proj.Name + ".elg", result.Result.Output)
-            if result.ExitCode = runResult then
+            File.WriteAllText(proj.OutPath </> proj.Name + testCase.DefSuffix + ".elg", result.Result.Output)
+            if result.ExitCode = testCase.Result then
                 Ok()
             else
-                Error <| sprintf "exit code = %d (expected %d)" result.ExitCode runResult
+                Error <| sprintf "exit code = %d (expected %d)" result.ExitCode testCase.Result
         | id -> id
     |>  function
         | Ok() -> printfn "OK\t%s" proj.Name
         | Error(msg) -> printfn "FAIL\t%s\t\t%s" proj.Name msg
-    // for further tests (only first iteration has meaning)
-    match testEnv.TryGetValue "DEFINES" with
-    | true, defs -> defs
-    | _ -> []
 
-
-let doFullCompilation proj logh =
-    let handleTest(proj, testEnv, isError) =
-       if proj.Test then
-           handleTest proj testEnv isError
-        else []
+let doFullCompilation proj (testCase: TestCase option) logh =
+    let handleTest(proj, isError) =
+        if testCase.IsSome then
+            handleTest proj testCase.Value isError
     System.IO.File.ReadAllText(proj.File)
     |> PasStreams.doPas proj
     |> function
-       | Ok(outName, msg, testEnv) ->
+       | Ok(outName, msg) ->
            Seq.iter (fprintfn logh "%s") msg.warnings
            fprintfn logh "Compilation success!"
            writeRuntimeConfig proj
-           { proj with Exe = Some outName}, testEnv, false
-       | Error(msg, testEnv) ->
+           { proj with Exe = Some outName}, false
+       | Error(msg) ->
            Seq.iter (fprintfn logh "%s") msg.warnings
            Seq.iter (fprintfn logh "%s") msg.errors
            fprintfn logh "[Fatal Error] Cannot compile module '%s'" proj.FileName
-           proj, testEnv, true
+           proj, true
     |> handleTest
 
 let tryCompileFile doTest mainFile =
     let proj = PascalProject.Create(mainFile, doTest)
-    let handle def =
+    let handle defSuffix =
         if doTest then
-            let logSuffix = match def with | Some def -> "-" + def | _ -> ""
-            let logFile = proj.OutPath </> sprintf "%s%s.log" proj.Name logSuffix
+            let logFile = proj.OutPath </> sprintf "%s%s.log" proj.Name defSuffix
             new StreamWriter(path=logFile) :> TextWriter
         else stdout
-    let doCompile (ho: string option) =
-        let proj =
-            { proj with
-                Defines = if ho.IsSome then [ho.Value] else []
-                }
-        using (handle ho) (doFullCompilation proj)
-    doCompile None |> List.iter (Some >> doCompile >> ignore) // first defines has meaning see handleTest
+    if doTest then
+        let doCompile testCase =
+            let newDefs = if testCase.Define.IsSome then testCase.Define.Value::proj.Defines else proj.Defines
+            let proj = { proj with Defines = newDefs}
+            using (handle testCase.DefSuffix) (doFullCompilation proj (Some testCase))
+        match prepareTest proj with
+        | Ok cases -> cases |> List.iter (doCompile >> ignore) // first defines has meaning see handleTest
+        | _ -> printfn "TEST ERROR : %s" proj.Name
+    else doFullCompilation proj None stdout
 
 [<EntryPoint>]
 let main argv =

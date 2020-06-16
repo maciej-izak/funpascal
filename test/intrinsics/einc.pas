@@ -1,5 +1,5 @@
 { %fail }
-{ %defines=noparams,noparams2 }
+{ %results=:,noparams,noparams2 }
 var
   i: integer;
 begin
