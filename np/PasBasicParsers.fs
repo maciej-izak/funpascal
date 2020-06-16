@@ -59,22 +59,7 @@ let directiveIdentifier =
 
 let ifDefIdentifier = mws >>. simpleIdentifier "ifdef identifier" .>> skipMany(anyChar) .>> eof
 
-let testEnvVar =
-    let isProperFirstChar c = isLetter c || c = '_'
-    let isProperChar c = isLetter c || c = '_' || isDigit c
-    let isProperValChar c = isProperChar c || c = '-' || c = ' ' || c = ':'
-    let simpleIdentName = many1Satisfy2L isProperFirstChar isProperChar "test ident"
-    let simpleIdent = many1SatisfyL isProperValChar "test value"
-    simpleIdentName .>>.
-    (mws >>. opt( pchar '=' >>. sepEndBy simpleIdent (pchar ','))
-     >>= function
-         | Some x -> preturn x
-         | _ -> preturn []
-     )
-
 // TODO: escape for ~ in inc files ?
-
-
 
 let parseDirective  (commentPos: Position) (stream: CharStream<PasState>) (eofCommentParser: Parser<_,_>) =
     let us = stream.UserState
@@ -182,21 +167,6 @@ let stdParseComments (commentPos: Position) (stream: CharStream<PasState>) (eofC
         let inReply = eofCommentParser stream
         Reply(inReply.Status, Regular, inReply.Error)
 
-let testParseComments (_: Position) (stream: CharStream<PasTestState>) (eofCommentParser: Parser<_,_>) =
-    let us = stream.UserState
-    mws stream |> ignore
-    if stream.Skip '%' then
-        let inReply = eofCommentParser stream
-        let r: string = (if inReply.Status = Ok then inReply.Result else "").Trim()
-        // TODO raise exception for duplicated test env ?
-        match runParserOnString testEnvVar us "" r with
-        | Success((key, value), _, _) -> us.testEnv.TryAdd(key, value) |> ignore
-        | _ -> () // sprintf "Invalid '%s' test env declaration" (fst idReply.Result)
-        Reply(inReply.Status, Regular, inReply.Error)
-    else
-        let inReply = eofCommentParser stream
-        Reply(inReply.Status, Regular, inReply.Error)
-
 let c0 =
     fun (stream: CharStream<_>) ->
       let reply = (pchar '\000') stream
@@ -222,11 +192,15 @@ let c0 =
 
 let doubleSlashComment: Parser<string, 'u> = fun stream -> (pstring "//" >>. restOfLine true) stream
 
+type CommentsParser<'u> = Position -> CharStream<'u> -> Parser<string,'u> -> Reply<Comment>
+type CommentsHandler<'u> = Comment -> Parser<unit,'u>
+type C0<'u> = (CharStream<'u> -> Reply<Comment>) option
+
 // (Position -> CharStream<PasState> -> Parser<string,'a> -> Reply<Comment>) -> () -> (CharStream<PasState> -> Reply<Comment>) option -> 'b -> Parser<'a,PasState>
 let comments<'u>
-    (commentsParser: (Position -> CharStream<'u> -> Parser<string,'u> -> Reply<Comment>))
-    (commentsHandler: Comment -> Parser<unit,'u>)
-    (c0: (CharStream<'u> -> Reply<Comment>) option)
+    (commentsParser: CommentsParser<'u>)
+    (commentsHandler: CommentsHandler<'u>)
+    (c0: C0<'u>)
     : Parser<unit, 'u> =
     fun (stream: CharStream<'u>) ->
         (choice[
@@ -260,10 +234,6 @@ let initialPassParser =
             sprintf "Unfinished '{$%O}' block detected" pos.Branch
             |> us.NewError (pos.Pos |> box)
     pass1Parser stdComments (eof .>> (getUserState |>> checkIfDefBalance))
-
-let testComments = comments<PasTestState> testParseComments PasTestState.HandleComment None
-
-let testPassParser = pass1Parser testComments eof
 
 let wsc: Parser<unit, PasState> = skipMany stdComments
 let str_wsc s =
