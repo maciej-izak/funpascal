@@ -48,11 +48,16 @@ let starCommentBlock perseComment =
         Reply(Error, messageError "Unexpected end of file")
     between (pstring "(*") (strWsc "*)") <| manySatisfyWith0(2L, internalCommentParser) perseComment
 
-let directiveIdentifier =
+let simpleIdentifier msg =
     let isProperFirstChar c = isLetter c || c = '_'
     let isProperChar c = isLetter c || c = '_' || isDigit c
-    many1Satisfy2L isProperFirstChar isProperChar "directive ident"
+    many1Satisfy2L isProperFirstChar isProperChar msg
+
+let directiveIdentifier =
+    simpleIdentifier "directive ident"
     .>>. (pchar '+' <|> pchar '-' <|> (mws >>% ' '))
+
+let ifDefIdentifier = mws >>. simpleIdentifier "ifdef identifier" .>> skipMany(anyChar) .>> eof
 
 let testEnvVar =
     let isProperFirstChar c = isLetter c || c = '_'
@@ -69,34 +74,39 @@ let testEnvVar =
 
 // TODO: escape for ~ in inc files ?
 
+
+
 let parseDirective  (commentPos: Position) (stream: CharStream<PasState>) (eofCommentParser: Parser<_,_>) =
     let us = stream.UserState
     let pass = us.pass
+
     let idReply = directiveIdentifier stream
     if idReply.Status = Ok then
-        let strDef (str: string) = //for $IFDEF - comment all after first ident
-            if System.String.IsNullOrEmpty str then
-                ""
-            else
-                let idx = str.IndexOfAny([|' ';'\t';'\r';'\n'|])
-                if idx < 0 then str
-                else str.Remove(idx)
-        let doIfDef r defined =
-            let ident = strDef r
-            if ident = "" then
-                sprintf "Improper '{$%s}' declaration, no ident found" (if defined then "IFDEF" else "IFNDEF")
+        let inReply = eofCommentParser stream
+        let restOfComment: string = (if inReply.Status = Ok then inReply.Result else "").Trim()
+
+        let parseDefineId specIdName action =
+            match runParserOnString ifDefIdentifier us "" restOfComment with
+            | Success(id,_,_) -> action id |> Some
+            | _ ->
+                sprintf "Invalid %s identifier" specIdName
                 |> us.NewError (box commentPos)
+                None
+
+        let doIfDef defined =
+            let spec = if defined then "IFDEF" else "IFNDEF"
             IfDef{
                 Pos = commentPos
-                Defined = ident |> pass.Defines.Contains |> (if defined then id else not)
+                Defined =
+                    parseDefineId spec (pass.Defines.Contains >> if defined then id else not)
+                    |> Option.defaultValue false
                 Branch = IfDefBranch}
             |> Directive |> Some
-        let inReply = eofCommentParser stream
-        let r: string = (if inReply.Status = Ok then inReply.Result else "").Trim()
+
         match idReply.Result with
         | "I", (' ' as firstIChar) | "I", ('%' as firstIChar) ->
             // `{$I%` or `{$I %` or `{$I   %` is correct
-            if (firstIChar = '%' && r.Length > 0) || (r.Length > 1 && r.Chars(0) = '%') then
+            if (firstIChar = '%' && restOfComment.Length > 0) || (restOfComment.Length > 1 && restOfComment.Chars(0) = '%') then
                 // TODO optimize parsing
                 // follow FPC logic, allow all below :
                 // {$I %IDENT} -> 'IDENT'
@@ -107,7 +117,7 @@ let parseDirective  (commentPos: Position) (stream: CharStream<PasState>) (eofCo
                 // {$I %%IDENT%%%} -> '%IDENT%%'
                 let r =
                     // {$I %IDENT%} version
-                    let r = if (firstIChar = ' ' && r.Chars(0) = '%') then r.Substring(1) else r
+                    let r = if (firstIChar = ' ' && restOfComment.Chars(0) = '%') then restOfComment.Substring(1) else restOfComment
                     let eof = r.IndexOf(' ')
                     let r = if eof > -1 then r.Substring(0, eof) else r
                     if r.Chars(r.Length-1) = '%' then
@@ -133,19 +143,23 @@ let parseDirective  (commentPos: Position) (stream: CharStream<PasState>) (eofCo
                 Macro(macroId, macro)
             else
                 // TODO handle bad file names
-                r |> Include |> Directive
+                restOfComment |> Include |> Directive
             |> Some
         | "I", c when c = '+' || c = '-' -> c = '+' |> IOCheck |> Directive |> Some
         | "H", c when c = '+' || c = '-' -> c = '+' |> LongString |> Directive |> Some
         | "APPTYPE", ' ' ->
-            match r with
+            match restOfComment with
             | "CONSOLE" -> Console |> AppType |> Directive |> Some
             | "GUI" -> GUI |> AppType |> Directive |> Some
             | _ -> None
-        | "DEFINE", ' ' -> pass.Defines.Add(strDef r) |> ignore; Some Regular
-        | "UNDEF", ' ' -> pass.Defines.Remove(strDef r) |> ignore; Some Regular
-        | "IFDEF", ' ' -> doIfDef r true
-        | "IFNDEF", ' ' -> doIfDef r false
+        | "DEFINE", ' ' ->
+            parseDefineId "DEFINE" pass.Defines.Add |> ignore
+            Some Regular
+        | "UNDEF", ' ' ->
+            parseDefineId "UNDEF" pass.Defines.Remove |> ignore
+            Some Regular
+        | "IFDEF", ' ' -> doIfDef true
+        | "IFNDEF", ' ' -> doIfDef false
         | "ENDIF", ' ' -> EndIf |> Directive |> Some
         | "ELSE", ' ' -> Else |> Directive |> Some
         | _ -> None

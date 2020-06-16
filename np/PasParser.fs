@@ -152,11 +152,7 @@ let stringLiteral =
                                                    | VInteger i -> i |> char |> string |> preturn
                                                    | _ -> fail "integer expected"))
 
-let tkIdentifier =
-    let isProperFirstChar c = isLetter c || c = '_'
-    let isProperChar c = isLetter c || c = '_' || isDigit c
-    many1Satisfy2L isProperFirstChar isProperChar "ident"
-    .>> wsc
+let tkIdentifier = simpleIdentifier "ident" .>> wsc
 
 let identifier : Parser<string, PasState> =
     let expectedIdentifier = expected "identifier"

@@ -1,0 +1,4 @@
+{%fail}
+begin
+  {$DEFINE}
+end.
