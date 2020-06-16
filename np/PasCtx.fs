@@ -1188,6 +1188,17 @@ module Intrinsics =
             ], Some typ)
         | _ -> ([], if ci.popResult then None else Some ci.ctx.sysTypes.unknown)
 
+    let private doContinue ci =
+        match (), ci with
+        | EofParam ->
+            match ci.ctx.loop.TryPeek() with
+            | true, (continueLabel, _) ->
+                ([IlBranch(IlBr, continueLabel)], None)
+            | _ ->
+                ci.ctx.NewError ci.ident "Continue intrinsic cannot be used outside loop"
+                ([], None)
+        | _ -> ([], None)
+
     let private callFloatFunToInt64 f ci =
         let ctx = ci.ctx
         match ci with
@@ -1209,10 +1220,7 @@ module Intrinsics =
         | DecProc, _ -> deltaModify NegativeDelta ci
         | SuccProc, _ -> deltaAdd PositiveDelta ci
         | PredProc, _ -> deltaAdd NegativeDelta ci
-        | ContinueProc, [] -> match ctx.loop.TryPeek() with
-                              | true, (continueLabel, _) ->
-                                ([IlBranch(IlBr, continueLabel)], None)
-                              | _ -> failwith "IE"
+        | ContinueProc, _ -> doContinue ci
         | BreakProc, [] -> match ctx.loop.TryPeek() with
                            | true, (_, breakLabel) ->
                             ([IlBranch(IlBr, breakLabel)], None)
