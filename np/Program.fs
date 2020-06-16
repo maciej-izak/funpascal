@@ -48,8 +48,8 @@ let handleTest proj testCase isError =
                 Error <| sprintf "exit code = %d (expected %d)" result.ExitCode testCase.Result
         | id -> id
     |>  function
-        | Ok() -> printfn "OK\t%s" proj.Name
-        | Error(msg) -> printfn "FAIL\t%s\t\t%s" proj.Name msg
+        | Ok() -> printfn "OK\t%s%s" proj.Name testCase.DefSuffix
+        | Error(msg) -> printfn "FAIL\t%s%s\t\t%s" proj.Name testCase.DefSuffix msg
 
 let doFullCompilation proj (testCase: TestCase option) logh =
     let handleTest(proj, isError) =
