@@ -50,7 +50,6 @@ type Ctx = {
         details: Ctx.ModuleDetails
         loop: Stack<BranchLabel ref * BranchLabel ref>
         enumSet: Dictionary<PasType, PasType>
-        posMap: Dictionary<obj, FParsec.Position>
         sysTypes: Ctx.SystemTypes
         sysProc: Ctx.SystemProc
     } with
@@ -58,10 +57,10 @@ type Ctx = {
     member inline self.NewMessage (items: List<string>) fmt (pos: ^T) msg =
         let addMsg = addMsg items fmt msg
         let p = (^T : (member BoxPos : obj) pos)
-        addMsg (self.posMap.[p])
+        addMsg (self.messages.PosMap.[p])
 
-    member inline self.NewError(pos: ^T) = self.NewMessage self.messages.errors errorFmt pos
-    member inline self.NewWarning(pos: ^T) = self.NewMessage self.messages.warnings warningFmt pos
+    member inline self.NewError(pos: ^T) = self.NewMessage self.messages.Errors errorFmt pos
+    member inline self.NewWarning(pos: ^T) = self.NewMessage self.messages.Warnings warningFmt pos
 
     static member Create = Ctx.createCtx
 
@@ -365,7 +364,7 @@ module Ctx =
         symbols.Add(StringName "Ln", singleScalar mathLog)
         ctx
 
-    let createCtx moduleBuilder ns tb owner pm messages =
+    let createCtx moduleBuilder ns tb owner messages =
         let lang = LangCtx()
         let details = ModuleDetails.Create moduleBuilder ns tb
         let symbols = Dictionary<TypeName,Symbol>(lang)
@@ -381,7 +380,6 @@ module Ctx =
             details = details
             loop = Stack<_>()
             enumSet = Dictionary<_, _>()
-            posMap = pm
             sysTypes = Ctx.createSystemTypes details symbols
             sysProc = Ctx.createSystemProc details
         } |> addSystemRoutines
@@ -1188,14 +1186,28 @@ module Intrinsics =
             ], Some typ)
         | _ -> ([], if ci.popResult then None else Some ci.ctx.sysTypes.unknown)
 
-    let private doContinue ci =
+    type private LoopLabels =
+        | ContinueLabel
+        | BreakLabel
+    with
+        override self.ToString() =
+            match self with
+            | ContinueLabel -> "Continue"
+            | BreakLabel -> "Break"
+
+        member self.GetLabel (continueLabel, breakLabel) =
+            match self with
+            | ContinueLabel -> continueLabel
+            | BreakLabel -> breakLabel
+
+    let private doLoopBranch ci (label: LoopLabels) =
         match (), ci with
         | EofParam ->
             match ci.ctx.loop.TryPeek() with
-            | true, (continueLabel, _) ->
-                ([IlBranch(IlBr, continueLabel)], None)
+            | true, labels -> ([IlBranch(IlBr, label.GetLabel labels)], None)
             | _ ->
-                ci.ctx.NewError ci.ident "Continue intrinsic cannot be used outside loop"
+                sprintf "%O intrinsic cannot be used outside loop" label
+                |> ci.ctx.NewError ci.ident
                 ([], None)
         | _ -> ([], None)
 
@@ -1220,11 +1232,8 @@ module Intrinsics =
         | DecProc, _ -> deltaModify NegativeDelta ci
         | SuccProc, _ -> deltaAdd PositiveDelta ci
         | PredProc, _ -> deltaAdd NegativeDelta ci
-        | ContinueProc, _ -> doContinue ci
-        | BreakProc, [] -> match ctx.loop.TryPeek() with
-                           | true, (_, breakLabel) ->
-                            ([IlBranch(IlBr, breakLabel)], None)
-                           | _ -> failwith "IE"
+        | ContinueProc, _ -> doLoopBranch ci ContinueLabel
+        | BreakProc, _ -> doLoopBranch ci BreakLabel
         | ExitProc, [] -> // TODO handle Exit(result);
             ([
                 +.Ret
@@ -1313,7 +1322,7 @@ module Intrinsics =
                  // +Call ctx.sysProc.Exit
             ], None)
         | HaltAtLineProc, [] ->
-            let exitCode = int (ci.ctx.posMap.[ci.ident.BoxPos]).Line
+            let exitCode = int (ci.ctx.messages.PosMap.[ci.ident.BoxPos]).Line
             ([
                  +Ldc_I4 exitCode
                  +Call(ctx.FindMethodReference "EXITPROCESS")

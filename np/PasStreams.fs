@@ -35,7 +35,7 @@ let applyParser (parser: Parser<'Result,'UserState>) (stream: CharStream<'UserSt
 
 let doPasStream s i proj =
     let addParserError (us: PasState) parserError =
-        us.messages.errors.Add parserError
+        us.messages.Errors.Add parserError
         Error us
     let us = PasState.Create (InitialPass proj) (new PasStream(s)) i
     use stream1 = new CharStream<PasState>(us.stream, Encoding.Unicode)

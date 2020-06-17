@@ -21,10 +21,16 @@ let addMsg (items: List<string>) fmt msg (pos: Position) = items.Add(fmt pos.Str
 type PasSubStream = {index: int; length: int}
 
 type CompilerMessages = {
-    errors: List<string>
-    warnings: List<string>
+    Errors: List<string>
+    Warnings: List<string>
+    PosMap: Dictionary<obj, Position>
 }   with
-    member self.HasError = self.errors.Count > 0
+    member self.HasError = self.Errors.Count > 0
+    member self.GetPos(o: obj): Position option =
+        match self.PosMap.TryGetValue o with
+        | true, v -> Some v
+        | _ -> None
+
 
 type LabelDef = {name: string; mutable stmtPoint: bool}
 
@@ -32,7 +38,7 @@ type SymbolDef =
     | Label of LabelDef
 
 type BlockDef() = class
-    member val symbols: Dictionary<string, SymbolDef> = new Dictionary<_,_>() with get, set
+    member val symbols: Dictionary<string, SymbolDef> = Dictionary<_,_>() with get, set
   end
 
 type ModuleDef() = class
@@ -86,8 +92,6 @@ exception InternalError of string
 
 type ICompilerPassGeneric =
     abstract member Defines: HashSet<string>
-    abstract member PosMap: Dictionary<obj, Position>
-    abstract member GetPos: obj -> Position option
 
 type TestEnvDict = Dictionary<string, string list>
 
@@ -122,7 +126,7 @@ and PasState = {
         match o with
         | :? Position -> unbox<Position> o |> addMsg
         | _ ->
-            match self.pass.GetPos o with
+            match self.messages.GetPos o with
             | Some pos -> addMsg pos
             | _ -> raise (InternalError "2020061001")
 
@@ -131,8 +135,8 @@ and PasState = {
         | InitialPassId -> self.NewMessage items fmt o msg
         | _ -> ()
 
-    member self.NewError = self.NewInitialPassMessage self.messages.errors errorFmt
-    member self.NewWarning = self.NewInitialPassMessage self.messages.warnings warningFmt
+    member self.NewError = self.NewInitialPassMessage self.messages.Errors errorFmt
+    member self.NewWarning = self.NewInitialPassMessage self.messages.Warnings warningFmt
 
 and IncludeHandle = string -> CharStream<PasState> -> Reply<unit>
 and MacroHandle = MacroId * Macro -> CharStream<PasState> -> Reply<unit>
@@ -245,14 +249,9 @@ type GenericPass(proj) =
         |> List.filter ((<>) "")
         |> List.iter (defs.Add >> ignore)
         defs
-    let posMap = Dictionary<_,_>()
+
     interface ICompilerPassGeneric with
         member _.Defines = defines
-        member _.PosMap = posMap
-        member _.GetPos o =
-            match posMap.TryGetValue o with
-            | true, v -> Some v
-            | _ -> None
 
 type InitialPass(proj) =
     inherit GenericPass(proj)
@@ -272,7 +271,7 @@ type InitialPass(proj) =
     let endIfElse comment (stream: CharStream<PasState>) branch =
         let us = stream.UserState
         let handleElse defined =
-            let pos = us.pass.GetPos(box comment).Value
+            let pos = us.messages.GetPos(box comment).Value
             ifDefStack.Push{ Pos=pos; Defined=defined; Branch=ElseBranch }
         let doError() = sprintf "Unbalanced '{$%O}'" branch |> us.NewError (box comment)
         match ifDefStack.TryPop() with
@@ -340,7 +339,7 @@ type MainPass(proj) =
         member _.Id: CompilerPassId = id
 
         member _.HandleComment(stream, comment) =
-            let commentPos() = match stream.UserState.pass.GetPos (box comment) with
+            let commentPos() = match stream.UserState.messages.GetPos (box comment) with
                                | Some v -> v
                                | None -> raise (InternalError "2020061402")
             match comment with
@@ -367,7 +366,7 @@ type PasState with
             incStack = Stack()
             defGoto = Dictionary<_,_>()
             moduled = ModuleDef()
-            messages = { errors = List<string>(); warnings = List<string>() }
+            messages = { Errors = List<_>(); Warnings = List<_>(); PosMap = Dictionary<_,_>() }
         }
 
 let opp = OperatorPrecedenceParser<ExprEl,unit,PasState>()

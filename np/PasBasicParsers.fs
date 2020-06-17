@@ -150,7 +150,7 @@ let parseDirective  (commentPos: Position) (stream: CharStream<PasState>) (eofCo
         | _ -> None
         |>  function
             | Some comment ->
-                pass.PosMap.Add(box comment, commentPos)
+                us.messages.PosMap.TryAdd(box comment, commentPos) |> ignore
                 Reply(inReply.Status, comment, inReply.Error)
             | _ ->
                 "Invalid directive declaration"

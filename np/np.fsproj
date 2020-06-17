@@ -10,6 +10,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="CommandLineHandle.fs" />
+    <Compile Include="PasMessages.fs" />
     <Compile Include="PasAst.fs" />
     <Compile Include="PasVar.fs" />
     <Compile Include="PasBasicParsers.fs" />

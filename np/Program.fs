@@ -59,13 +59,13 @@ let doFullCompilation proj (testCase: TestCase option) logh =
     |> PasStreams.doPas proj
     |> function
        | Ok(outName, msg) ->
-           Seq.iter (fprintfn logh "%s") msg.warnings
+           Seq.iter (fprintfn logh "%s") msg.Warnings
            fprintfn logh "Compilation success!"
            writeRuntimeConfig proj
            { proj with Exe = Some outName}, false
        | Error(msg) ->
-           Seq.iter (fprintfn logh "%s") msg.warnings
-           Seq.iter (fprintfn logh "%s") msg.errors
+           Seq.iter (fprintfn logh "%s") msg.Warnings
+           Seq.iter (fprintfn logh "%s") msg.Errors
            fprintfn logh "[Fatal Error] Cannot compile module '%s'" proj.FileName
            proj, true
     |> handleTest

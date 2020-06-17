@@ -181,7 +181,7 @@ let arrayIndexes =
 let (~+) p =
     tuple3 getPosition getUserState p |>>
     fun (pos, us: PasState, pr) ->
-        us.pass.PosMap.TryAdd(box pr, pos) |> ignore
+        us.messages.PosMap.TryAdd(box pr, pos) |> ignore
         pr
 
 let designator =
