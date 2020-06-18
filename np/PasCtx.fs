@@ -54,13 +54,9 @@ type Ctx = {
         sysProc: Ctx.SystemProc
     } with
 
-    member inline self.NewMessage (items: List<string>) fmt (pos: ^T) msg =
-        let addMsg = addMsg items fmt msg
+    member inline self.NewMsg (pos: ^T) =
         let p = (^T : (member BoxPos : obj) pos)
-        addMsg (self.messages.PosMap.[p])
-
-    member inline self.NewError(pos: ^T) = self.NewMessage self.messages.Errors errorFmt pos
-    member inline self.NewWarning(pos: ^T) = self.NewMessage self.messages.Warnings warningFmt pos
+        self.messages.AddMsg (self.messages.PosMap.[p])
 
     static member Create = Ctx.createCtx
 
@@ -422,7 +418,9 @@ module TypesDef =
             | TIdPointer(count, typeId) -> addTypePointer ctx count (TypeName.FromTypeId typeId) (TypedName t)
             | TIdArray(ArrayDef(_, dimensions, tname)) -> addTypeArray ctx dimensions tname (TypedName t)
             | TIdSet(_, typeId) -> addTypeSet ctx (TypeName.FromTypeId typeId) (TypedName t)
-            | _ -> ctx.NewError t (sprintf "Cannot find type identifier \"%O\"" t); ctx.sysTypes.unknown
+            | _ ->
+                ``Error: Cannot find type identifier '%O'`` t |> ctx.NewMsg t
+                ctx.sysTypes.unknown
 
     let addTypeArray ctx dimensions tname name =
         let newSubType (dims, size) (typ: PasType, typSize) name =
@@ -538,7 +536,7 @@ module SymSearch =
             | _ -> failwith "IE"
         | TypeSym t -> Ok([TypeCastLoad t], Some t)
         | _ ->
-            ctx.NewError dident (sprintf "Cannot find symbol '%O'" dident)
+            ``Error: Cannot find symbol '%O'`` dident |> ctx.NewMsg dident
             Error()
 
     type FoundFunction =
@@ -707,7 +705,8 @@ module EvalExpr =
         |> fun(il, t) ->
             if param.IsSome then
                 if not(Utils.typeCheck ctx param.Value t) then
-                    ctx.NewError cp (sprintf "Incompatible types ('%O' and '%O') for %d parameter" param.Value.name t.name (fst idxmr.Value))
+                    ``Error: Incompatible types ('%O' and '%O') for %d parameter`` param.Value.name t.name (fst idxmr.Value)
+                    |> ctx.NewMsg cp
             (il, t)
 
     let doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
@@ -1033,7 +1032,8 @@ module Intrinsics =
                 | TkFloat _ -> "WRITEREALF"
                 | TkPointer _ -> "WRITEPOINTERF"
                 | TkArray(AkSString _,_,_) -> "WRITESTRINGF"
-                | _ -> ctx.NewError cp (sprintf "Unknown type kind of expression for Write/WriteLn: %O" cp); ""
+                | _ -> ``Error: Unknown type kind of expression for Write/WriteLn: %O`` cp |> ctx.NewMsg cp
+                       ""
                 |> ctx.FindMethodReferenceOpt |>
                 function
                 | Some subWrite ->
@@ -1093,10 +1093,10 @@ module Intrinsics =
             // TODO ? Convert to float id needed ?
             | FloatType | IntType -> Some(inst, (typ, {ci with cp=t}))
             | _ ->
-                ci.ctx.NewError cp (sprintf "Expected ordinal or float type but '%O' found" typ.name)
+                ``Error: Expected ordinal or float type but '%O' found`` typ.name |> ci.ctx.NewMsg cp
                 None
         | [] ->
-            ci.ctx.NewError ci.ident ("Expected ordinal or float type parameter but nothing found")
+            ``Error: Expected ordinal or float type parameter but nothing found`` |> ci.ctx.NewMsg ci.ident
             None
 
     let (|FloatOrOrdParamIdent|_|) ci =
@@ -1108,13 +1108,13 @@ module Intrinsics =
             // TODO ? Convert to float id needed ?
             | FloatType | IntType -> Some(inst, (typ, {ci with cp=t}))
             | _ ->
-                ci.ctx.NewError cp (sprintf "Expected ordinal or float type but '%O' found" typ.name)
+                ``Error: Expected ordinal or float type but '%O' found`` typ.name |> ci.ctx.NewMsg cp
                 None
         | cp::_ ->
-            ci.ctx.NewError cp ("Expected ident parameter but expression found")
+            ``Error: Expected ident parameter but expression found`` |> ci.ctx.NewMsg cp
             None
         | [] ->
-            ci.ctx.NewError ci.ident ("Expected ident parameter but nothing found")
+            ``Error: Expected ident parameter but nothing found`` |> ci.ctx.NewMsg ci.ident
             None
 
     let (|EofOptFloatOrOrdParamValue|_|) (expectedType, ci) =
@@ -1126,20 +1126,20 @@ module Intrinsics =
             | FloatType, FloatOrIntType, [] -> Some(expectedType, Some inst)
             | IntType, IntType, [] -> Some(expectedType, Some inst)
             | FloatType, _, [] ->
-                ci.ctx.NewError cp (sprintf "Expected integer or float type but '%O' found" typ.name)
+                ``Error: Expected ordinal or float type but '%O' found`` typ.name |> ci.ctx.NewMsg cp
                 None
             | IntType, _, [] ->
-                ci.ctx.NewError cp (sprintf "Expected integer type but '%O' found" typ.name)
+                ``Error: Expected integer type but '%O' found`` typ.name |> ci.ctx.NewMsg cp
                 None
             | _, _, cp::_ ->
-                ci.ctx.NewError cp "Unexpected parameter"
+                ``Error: Unexpected parameter`` |> ci.ctx.NewMsg cp
                 None
         | [] -> Some(expectedType, None)
 
     let (|EofParam|_|) (_,ci) =
         match ci.cp with
         | [] -> Some()
-        | cp::_ -> ci.ctx.NewError cp "Unexpected parameter"; None
+        | cp::_ -> ``Error: Unexpected parameter`` |> ci.ctx.NewMsg cp; None
 
     type DeltaKind =
         | NegativeDelta
@@ -1206,8 +1206,8 @@ module Intrinsics =
             match ci.ctx.loop.TryPeek() with
             | true, labels -> ([IlBranch(IlBr, label.GetLabel labels)], None)
             | _ ->
-                sprintf "%O intrinsic cannot be used outside loop" label
-                |> ci.ctx.NewError ci.ident
+                ``Error: %O intrinsic cannot be used outside loop`` label
+                |> ci.ctx.NewMsg ci.ident
                 ([], None)
         | _ -> ([], None)
 

@@ -34,7 +34,8 @@ module LangStmt =
             let ltp = !ltp
             let expr, exprType = ctx.ExprToIl expr (Some ltp.ToTypeRef)
             if not(Utils.typeCheck ctx ltp.PasType exprType) then
-                ctx.NewError ident (sprintf "Incompatible types ('%O' and '%O') for \"%O\"" ltp.PasType.name exprType.name ident)
+                ``Error: Incompatible types ('%O' and '%O') for '%O'`` ltp.PasType.name exprType.name ident
+                |> ctx.NewMsg ident
             [
                 yield! loadDest
                 yield! expr

@@ -14,23 +14,27 @@ let DefaultByteBufferLength = 4096L;
 [<Literal>]
 let MinimumByteBufferLength = 128L
 
-let errorFmt = sprintf "[Error] %s(%d,%d) %s"
-let warningFmt = sprintf "[Warning] %s(%d,%d) %s"
-let addMsg (items: List<string>) fmt msg (pos: Position) = items.Add(fmt pos.StreamName (int pos.Line) (int pos.Column) msg)
-
 type PasSubStream = {index: int; length: int}
 
-type CompilerMessages = {
-    Errors: List<string>
-    Warnings: List<string>
-    PosMap: Dictionary<obj, Position>
-}   with
+type CompilerMessages() =
+
+    let errorFmt = sprintf "[Error] %s(%d,%d) %s"
+    let warningFmt = sprintf "[Warning] %s(%d,%d) %s"
+
+    member val Errors = List<string>()
+    member val Warnings = List<string>()
+    member val PosMap = Dictionary<obj, Position>()
+
     member self.HasError = self.Errors.Count > 0
     member self.GetPos(o: obj): Position option =
         match self.PosMap.TryGetValue o with
         | true, v -> Some v
         | _ -> None
 
+    member self.AddMsg (pos: Position) msg =
+        match msg with
+        | MsgError(_, msg) -> self.Errors.Add(errorFmt pos.StreamName (int pos.Line) (int pos.Column) msg)
+        | MsgWarning(_, _, msg) -> self.Warnings.Add(warningFmt pos.StreamName (int pos.Line) (int pos.Column) msg)
 
 type LabelDef = {name: string; mutable stmtPoint: bool}
 
@@ -121,22 +125,18 @@ and PasState = {
         stream.UserState.pass.HandleComment(stream, c)
         Reply(())
 
-    member self.NewMessage (items: List<string>) fmt (o: obj) msg =
-        let addMsg = addMsg items fmt msg
+    member private self.NewMessage (o: obj) =
         match o with
-        | :? Position -> unbox<Position> o |> addMsg
+        | :? Position -> self.messages.AddMsg(unbox<Position> o)
         | _ ->
             match self.messages.GetPos o with
-            | Some pos -> addMsg pos
+            | Some pos -> self.messages.AddMsg pos
             | _ -> raise (InternalError "2020061001")
 
-    member self.NewInitialPassMessage (items: List<string>) fmt (o: obj) msg =
+    member self.NewMsg (o: obj) msg =
         match self.pass.Id with
-        | InitialPassId -> self.NewMessage items fmt o msg
+        | InitialPassId -> self.NewMessage o msg
         | _ -> ()
-
-    member self.NewError = self.NewInitialPassMessage self.messages.Errors errorFmt
-    member self.NewWarning = self.NewInitialPassMessage self.messages.Warnings warningFmt
 
 and IncludeHandle = string -> CharStream<PasState> -> Reply<unit>
 and MacroHandle = MacroId * Macro -> CharStream<PasState> -> Reply<unit>
@@ -273,7 +273,7 @@ type InitialPass(proj) =
         let handleElse defined =
             let pos = us.messages.GetPos(box comment).Value
             ifDefStack.Push{ Pos=pos; Defined=defined; Branch=ElseBranch }
-        let doError() = sprintf "Unbalanced '{$%O}'" branch |> us.NewError (box comment)
+        let doError() = ``Error: Unbalanced '{$%O}'`` branch |> us.NewMsg (box comment)
         match ifDefStack.TryPop() with
         | true, ifDefPos ->
             match branch with
@@ -366,7 +366,7 @@ type PasState with
             incStack = Stack()
             defGoto = Dictionary<_,_>()
             moduled = ModuleDef()
-            messages = { Errors = List<_>(); Warnings = List<_>(); PosMap = Dictionary<_,_>() }
+            messages = CompilerMessages()
         }
 
 let opp = OperatorPrecedenceParser<ExprEl,unit,PasState>()

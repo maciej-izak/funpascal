@@ -74,8 +74,8 @@ let parseDirective  (commentPos: Position) (stream: CharStream<PasState>) (eofCo
             match runParserOnString ifDefIdentifier us "" restOfComment with
             | Success(id,_,_) -> action id |> Some
             | _ ->
-                sprintf "Invalid %s identifier" specIdName
-                |> us.NewError (box commentPos)
+                ``Error: Invalid %s identifier`` specIdName
+                |> us.NewMsg (box commentPos)
                 None
 
         let doIfDef defined =
@@ -122,8 +122,8 @@ let parseDirective  (commentPos: Position) (stream: CharStream<PasState>) (eofCo
                                 | None ->
                                     // report once
                                     // TODO rework as handler ?
-                                    sprintf "Cannot find enviroment variable '%s'" var
-                                    |> us.NewWarning (box commentPos)
+                                    ``Warning: Cannot find enviroment variable '%s'`` var
+                                    |> us.NewMsg (box commentPos)
                                     CompilerInfoStr ""
                 Macro(macroId, macro)
             else
@@ -153,8 +153,8 @@ let parseDirective  (commentPos: Position) (stream: CharStream<PasState>) (eofCo
                 us.messages.PosMap.TryAdd(box comment, commentPos) |> ignore
                 Reply(inReply.Status, comment, inReply.Error)
             | _ ->
-                "Invalid directive declaration"
-                |> us.NewError (box commentPos)
+                ``Error: Invalid directive declaration``
+                |> us.NewMsg (box commentPos)
                 Reply(inReply.Status, Regular, inReply.Error)
     else
         Reply(Error, Unchecked.defaultof<_>, idReply.Error)
@@ -231,8 +231,8 @@ let initialPassParser =
         let ifDefStack = (us.pass :?> InitialPass).IfDefStack
         if ifDefStack.Count > 0 then
             let pos = ifDefStack.Pop()
-            sprintf "Unfinished '{$%O}' block detected" pos.Branch
-            |> us.NewError (pos.Pos |> box)
+            ``Error: Unfinished '{$%O}' block detected`` pos.Branch
+            |> us.NewMsg (pos.Pos |> box)
     pass1Parser stdComments (eof .>> (getUserState |>> checkIfDefBalance))
 
 let wsc: Parser<unit, PasState> = skipMany stdComments
