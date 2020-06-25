@@ -24,6 +24,10 @@ with
         | TIdIdent _ -> failwith "IE"
         | ti -> TypedName ti
 
+    static member FromDIdent = function
+        | DIdent(Ident id::_) -> StringName id
+        | _ -> raise <| InternalError "2020062301"
+
     override self.ToString() =
         match self with
         | StringName s -> s

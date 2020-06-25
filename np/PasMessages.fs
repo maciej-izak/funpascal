@@ -60,6 +60,12 @@ module Errors =
     let ``Error: Incompatible types ('%O' and '%O') for '%O'`` o1 o2 o3 =
         MsgError(Some 16, sprintf "Incompatible types ('%O' and '%O') for \"%O\"" o1 o2 o3)
 
+    let ``Error: %s expected`` s =
+        MsgError(Some 17, sprintf "%s expected" s)
+
+    let ``Error: %O type expected but '%O' found`` o1 o2 =
+        MsgError(Some 18, sprintf "%O type expected but '%O' found" o1 o2)
+
 [<AutoOpen>]
 module Warnings =
     let ``Warning: Cannot find enviroment variable '%s'`` s =

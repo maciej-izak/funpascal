@@ -138,7 +138,11 @@ type Ctx = {
     member self.AddTypeArray = TypesDef.addTypeArray self
 
     // SymSearch module
-    member self.FindSymbol = SymSearch.findSymbol self
+    member self.FindSymbol did =
+        match SymSearch.findSymbol self did with
+        | Error() as res -> ``Error: Cannot find symbol '%O'`` did |> self.NewMsg did; res
+        | res -> res
+
     member self.FindMethodReferenceOpt =
         Utils.stdIdent >> self.FindSymbol >> chainToSLList >>
         function | [CallableLoad(Referenced({raw=mr}, _))], _ -> Some mr | _ -> None
@@ -473,7 +477,7 @@ module TypesDef =
 
 module SymSearch =
 
-    let findSymbol (ctx: Ctx) (DIdent ident as dident) =
+    let findSymbol (ctx: Ctx) (DIdent ident) =
         let mainSym = ident.Head |> function | Ident n -> ctx.FindSym(StringName n)
 
         let rec findSym ref acc = function
@@ -535,9 +539,7 @@ module SymSearch =
                 Ok([ValueLoad(ValueInt i)], Some ctx.sysTypes.boolean)
             | _ -> failwith "IE"
         | TypeSym t -> Ok([TypeCastLoad t], Some t)
-        | _ ->
-            ``Error: Cannot find symbol '%O'`` dident |> ctx.NewMsg dident
-            Error()
+        | _ -> Error()
 
     type FoundFunction =
         | RealFunction of (MethodSym * IlInstruction option)
@@ -545,18 +547,18 @@ module SymSearch =
         | TypeCast of PasType
 
     let findFunction (ctx: Ctx) ident =
-            let callChain = findSymbol ctx ident
-            // TODO more advanced calls like foo().x().z^ := 10
-            match callChain with
-            | Ok([CallableLoad cl], _) ->
-               match cl with
-               | Referenced ({raw=mr}, _) -> RealFunction(cl, +Call(mr) |> Some)
-               | Intrinsic _ -> RealFunction(cl, None)
-            | Ok([TypeCastLoad t], _) -> TypeCast t
-            | _ ->
-                // TODO replace first error "Cannot find symbol" with
-                // ctx.NewError ident (sprintf "Unknown function '%O'" ident)
-                UnknownFunction
+        let callChain = ctx.FindSymbol ident
+        // TODO more advanced calls like foo().x().z^ := 10
+        match callChain with
+        | Ok([CallableLoad cl], _) ->
+           match cl with
+           | Referenced ({raw=mr}, _) -> RealFunction(cl, +Call(mr) |> Some)
+           | Intrinsic _ -> RealFunction(cl, None)
+        | Ok([TypeCastLoad t], _) -> TypeCast t
+        | _ ->
+            // TODO replace first error "Cannot find symbol" with
+            // ctx.NewError ident (sprintf "Unknown function '%O'" ident)
+            UnknownFunction
 
 module EvalExpr =
 
@@ -883,6 +885,8 @@ module EvalExpr =
         | CallableLoad (Referenced(mr,_)) ->
             if mr.result.IsNone then failwith "IE"
             [+Call mr.raw]
+        // probably below IE can be reduced
+        | _ -> raise (InternalError "2020062201")
 
 
 module EvalConstExpr =
@@ -1003,7 +1007,8 @@ module Intrinsics =
             | _ -> None
         | _ -> None
 
-    let private doWrite ctx cp =
+    let private doGenWrite ci =
+        let ctx, cp = ci.ctx, ci.cp
         let file, cp =
             match cp with
             | ParamIdent id::tail ->
@@ -1048,7 +1053,8 @@ module Intrinsics =
                 | None -> []
         file, cp |> List.collect doParam
 
-    let private doRead ctx cp =
+    let private doGenRead ci =
+        let ctx, cp = ci.ctx, ci.cp
         let file, cp =
             match cp with
             | ParamIdent id::tail ->
@@ -1084,13 +1090,15 @@ module Intrinsics =
         file, cp |> List.collect doParam
 
     type CallInfo = { ctx: Ctx; ident: DIdent; cp: CallParam list; popResult: bool }
+    with
+        member self.InExpr = not self.popResult
 
     let (|FloatOrOrdParam|_|) ci =
         match ci.cp with
         | cp::t ->
             let inst, typ = callParamToIl ci.ctx cp None
             match typ with
-            // TODO ? Convert to float id needed ?
+            // TODO ? Convert to float if needed ?
             | FloatType | IntType -> Some(inst, (typ, {ci with cp=t}))
             | _ ->
                 ``Error: Expected ordinal or float type but '%O' found`` typ.name |> ci.ctx.NewMsg cp
@@ -1116,6 +1124,27 @@ module Intrinsics =
         | [] ->
             ``Error: Expected ident parameter but nothing found`` |> ci.ctx.NewMsg ci.ident
             None
+
+(*    let (|PointerTypeParamIdent|_|) ci =
+        match ci.cp with
+        | ((ParamIdent id) as cp)::t ->
+            match ci.ctx.FindTypeId(TIdIdent id) with
+            | Some pt ->
+            TypeName
+            // TODO : IDENT NOT FOUND?
+            let inst, typ = findSymbolAndGetPtr ci.ctx id
+            match typ with
+            // TODO ? Convert to float id needed ?
+            | PointerType -> Some(inst, (typ, {ci with cp=t}))
+            | _ ->
+                ``Error: Expected ordinal or float type but '%O' found`` typ.name |> ci.ctx.NewMsg cp
+                None
+        | cp::_ ->
+            ``Error: Expected ident parameter but expression found`` |> ci.ctx.NewMsg cp
+            None
+        | [] ->
+            ``Error: Expected ident parameter but nothing found`` |> ci.ctx.NewMsg ci.ident
+            None*)
 
     let (|EofOptFloatOrOrdParamValue|_|) (expectedType, ci) =
         match ci.cp with
@@ -1200,7 +1229,7 @@ module Intrinsics =
             | ContinueLabel -> continueLabel
             | BreakLabel -> breakLabel
 
-    let private doLoopBranch ci (label: LoopLabels) =
+    let private doLoopBranch (label: LoopLabels) ci =
         match (), ci with
         | EofParam ->
             match ci.ctx.loop.TryPeek() with
@@ -1210,6 +1239,122 @@ module Intrinsics =
                 |> ci.ctx.NewMsg ci.ident
                 ([], None)
         | _ -> ([], None)
+
+    // TODO handle Exit(result);
+    let private doExit ci =
+        match (), ci with
+        | EofParam -> ([+.Ret], None)
+        | _ -> ([], None)
+
+    let private doWrite ci =
+        let _, writeParams = doGenWrite ci
+        (writeParams, None)
+
+    let private doWriteLn ci =
+        let file, writeParams = doGenWrite ci
+        ([
+            yield! writeParams
+            yield! file()
+            +Ldnull
+            +Call(ci.ctx.FindMethodReference "WRITENEWLINE")
+         ], None)
+
+    let private doRead ci =
+        let _, readParams = doGenRead ci
+        (readParams, None)
+
+    let private doReadLn ci =
+        let file, readParams = doGenRead ci
+        ([
+            yield! readParams
+            yield! file()
+            +Ldnull
+            +Call(ci.ctx.FindMethodReference "READNEWLINE")
+         ], None)
+
+    let private doReadLine ci =
+        let ctx, cp = ci.ctx, ci.cp
+        let high = ref 0
+        let cparams,str = cp |> List.mapi (fun i p -> incr high; callParamToIl ctx p None, sprintf "{%d}" i) |> List.unzip
+        let str = String.Concat(str)
+        ([
+            +Ldstr str
+            +Ldc_I4 !high
+            +Newarr ctx.sysTypes.net_obj.raw
+            yield! cparams
+                   |> List.mapi (
+                                   fun idx (i, t) ->
+                                       let putArrayElem i elems =
+                                           +Dup::+Ldc_I4 idx::i @
+                                           [yield! elems ; +Stelem Elem_Ref]
+                                       match t with
+                                       | StrType ->
+                                           [+Call ctx.sysProc.PtrToStringAnsi]
+                                           // TODO critical handle ptr to strings! bug found in .NET 32 bit
+                                           |> putArrayElem (match ilToAtom i with | [Ldsfld f] -> [+Ldsflda f] | _ -> i)
+                                       | ChrType ->
+                                           [
+                                               +Conv Conv_U1
+                                               +Call ctx.sysProc.ConvertU1ToChar
+                                               +Box ctx.details.moduleBuilder.TypeSystem.Char
+                                           ]
+                                           |> putArrayElem i
+                                       | _ -> [+Box t.raw] |> putArrayElem i
+                                )
+                   |> List.concat
+            +Call ctx.sysProc.WriteLine
+         ], None)
+
+    let private doNew ci =
+        match ci.cp with
+        | [ParamIdent id] ->
+            // TODO check only first ident part (see FromDIdent)
+            match ci.ctx.FindSym(TypeName.FromDIdent id) with
+            | Some s ->
+                // TODO more complicated New like New(foo.x^.x.z)
+                match s with
+                | VariableSym _ when ci.InExpr ->
+                    ``Error: %s expected`` "Pointer type identifier" |> ci.ctx.NewMsg id
+                    ([], Some ci.ctx.sysTypes.unknown)
+                | VariableSym _ ->
+                    let ils, t = findSymbolAndGetPtr ci.ctx id
+                    match t.kind with
+                    | TkPointer pt ->
+                        ([
+                            yield! ils
+                            +Ldc_I4 pt.SizeOf
+                            +Call ci.ctx.sysProc.GetMem
+                            +Dup
+                            +Initobj pt.raw
+                            +Stind Ind_U
+                        ], None)
+                    | _ ->
+                        ``Error: %O type expected but '%O' found`` "Pointer" (t.name) |> ci.ctx.NewMsg id
+                        ([], None)
+                | TypeSym _ when not ci.InExpr ->
+                    ``Error: %s expected`` "Variable identifier" |> ci.ctx.NewMsg id
+                    ([], None)
+                // TODO warning for untyped "Pointer"
+                | TypeSym ({kind=TkPointer(pt)} as t) ->
+                    ([
+                        +Ldc_I4 pt.SizeOf
+                        +Call ci.ctx.sysProc.GetMem
+                        +Dup
+                        +Initobj pt.raw
+                    ], Some t)
+                | _ ->
+                    ``Error: %s expected`` "Variable or pointer type identifier" |> ci.ctx.NewMsg id
+                    ([], Some ci.ctx.sysTypes.unknown)
+            | None ->
+                ``Error: Cannot find symbol '%O'`` id |> ci.ctx.NewMsg id
+                ([], None)
+        // TODO in the case of error for PopResult do unknown type?
+        | cp::_ ->
+            ``Error: Expected ident parameter but expression found`` |> ci.ctx.NewMsg cp
+            ([], None)
+        | [] ->
+            ``Error: Expected ident parameter but nothing found`` |> ci.ctx.NewMsg ci.ident
+            ([], None)
 
     let private callFloatFunToInt64 f ci =
         let ctx = ci.ctx
@@ -1232,78 +1377,15 @@ module Intrinsics =
         | DecProc, _ -> deltaModify NegativeDelta ci
         | SuccProc, _ -> deltaAdd PositiveDelta ci
         | PredProc, _ -> deltaAdd NegativeDelta ci
-        | ContinueProc, _ -> doLoopBranch ci ContinueLabel
-        | BreakProc, _ -> doLoopBranch ci BreakLabel
-        | ExitProc, [] -> // TODO handle Exit(result);
-            ([
-                +.Ret
-             ], None)
-        | WriteProc, cp ->
-            let _, writeParams = doWrite ctx cp
-            (writeParams, None)
-        | WriteLnProc, cp ->
-            let file, writeParams = doWrite ctx cp
-            ([
-                yield! writeParams
-                yield! file()
-                +Ldnull
-                +Call(ctx.FindMethodReference "WRITENEWLINE")
-             ], None)
-        | ReadProc, cp ->
-            let _, readParams = doRead ctx cp
-            (readParams, None)
-        | ReadLnProc, cp ->
-            let file, readParams = doRead ctx cp
-            ([
-                yield! readParams
-                yield! file()
-                +Ldnull
-                +Call(ctx.FindMethodReference "READNEWLINE")
-             ], None)
-        | WriteLineProc, cp ->
-            let high = ref 0
-            let cparams,str = cp |> List.mapi (fun i p -> incr high; callParamToIl ctx p None, sprintf "{%d}" i) |> List.unzip
-            let str = String.Concat(str)
-            ([
-                +Ldstr str
-                +Ldc_I4 !high
-                +Newarr ctx.sysTypes.net_obj.raw
-                yield! cparams
-                       |> List.mapi (
-                                       fun idx (i, t) ->
-                                           let putArrayElem i elems =
-                                               +Dup::+Ldc_I4 idx::i @
-                                               [yield! elems ; +Stelem Elem_Ref]
-                                           match t with
-                                           | StrType ->
-                                               [+Call ctx.sysProc.PtrToStringAnsi]
-                                               // TODO critical handle ptr to strings! bug found in .NET 32 bit
-                                               |> putArrayElem (match ilToAtom i with | [Ldsfld f] -> [+Ldsflda f] | _ -> i)
-                                           | ChrType ->
-                                               [
-                                                   +Conv Conv_U1
-                                                   +Call ctx.sysProc.ConvertU1ToChar
-                                                   +Box ctx.details.moduleBuilder.TypeSystem.Char
-                                               ]
-                                               |> putArrayElem i
-                                           | _ -> [+Box t.raw] |> putArrayElem i
-                                    )
-                       |> List.concat
-                +Call ctx.sysProc.WriteLine
-             ], None)
-        | NewProc, [ParamIdent id] ->
-            let ils, t = findSymbolAndGetPtr ctx id
-            let t = match t.kind with
-                    | TkPointer pt -> pt
-                    | _ -> failwith "IE"
-            ([
-                yield! ils
-                +Ldc_I4 t.SizeOf
-                +Call ctx.sysProc.GetMem
-                +Dup
-                +Initobj t.raw
-                +Stind Ind_U
-            ], None)
+        | ContinueProc, _ -> doLoopBranch ContinueLabel ci
+        | BreakProc, _ -> doLoopBranch BreakLabel ci
+        | ExitProc, _ -> doExit ci
+        | WriteProc, _ -> doWrite ci
+        | WriteLnProc, _ -> doWriteLn ci
+        | ReadProc, _ -> doRead ci
+        | ReadLnProc, _ -> doReadLn ci
+        | WriteLineProc, _ -> doReadLine ci
+        | NewProc, _ -> doNew ci
         | DisposeProc, [ParamIdent id] ->
             let ils, _ = findSymbolAndLoad ctx id
             ([
