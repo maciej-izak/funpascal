@@ -1305,10 +1305,11 @@ module Intrinsics =
             +Call ctx.sysProc.WriteLine
          ], None)
 
+    // TODO allow return pointer result for New(varId) (forbridden in FPC)
     let private doNew ci =
         match ci.cp with
         | [ParamIdent id] ->
-            // TODO check only first ident part (see FromDIdent)
+            // TODO check only first ident part (see FromDIdent). More advanced cases are handled in findSymbolAndGetPtr
             match ci.ctx.FindSym(TypeName.FromDIdent id) with
             | Some s ->
                 // TODO more complicated New like New(foo.x^.x.z)
@@ -1356,6 +1357,37 @@ module Intrinsics =
             ``Error: Expected ident parameter but nothing found`` |> ci.ctx.NewMsg ci.ident
             ([], None)
 
+    let private doDispose ci =
+        match ci.cp with
+        | [ParamIdent id] ->
+            // TODO check only first ident part (see FromDIdent). More advanced cases are handled in findSymbolAndGetPtr
+            match ci.ctx.FindSym(TypeName.FromDIdent id) with
+            | Some s ->
+                match s with
+                | VariableSym _ ->
+                    let ils, t = findSymbolAndLoad ci.ctx id
+                    match t.kind with
+                    | TkPointer _ ->
+                        ([
+                            yield! ils
+                            +Call ci.ctx.sysProc.FreeMem
+                        ], None)
+                    | _ ->
+                        ``Error: %O type expected but '%O' found`` "Pointer" (t.name) |> ci.ctx.NewMsg id
+                        ([], None)
+                | _ ->
+                    ``Error: %s expected`` "Variable identifier" |> ci.ctx.NewMsg id
+                    ([], None)
+            | None ->
+                ``Error: Cannot find symbol '%O'`` id |> ci.ctx.NewMsg id
+                ([], None)
+        | cp::_ ->
+            ``Error: Expected ident parameter but expression found`` |> ci.ctx.NewMsg cp
+            ([], None)
+        | [] ->
+            ``Error: Expected ident parameter but nothing found`` |> ci.ctx.NewMsg ci.ident
+            ([], None)
+
     let private callFloatFunToInt64 f ci =
         let ctx = ci.ctx
         match ci with
@@ -1386,12 +1418,7 @@ module Intrinsics =
         | ReadLnProc, _ -> doReadLn ci
         | WriteLineProc, _ -> doReadLine ci
         | NewProc, _ -> doNew ci
-        | DisposeProc, [ParamIdent id] ->
-            let ils, _ = findSymbolAndLoad ctx id
-            ([
-                yield! ils
-                +Call ctx.sysProc.FreeMem
-            ], None)
+        | DisposeProc, _ -> doDispose ci
         | HaltProc, cp ->
             // TODO errorcode global variable
             let exitCode = match cp with
