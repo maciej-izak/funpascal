@@ -168,6 +168,10 @@ let (|FloatType|_|) = function
     | {kind=TkFloat _} -> Some FloatType
     | _ -> None
 
+let (|UnitType|_|) = function
+    | {name=AnonName;kind=TkUnknown 0} -> Some UnitType
+    | _ -> None
+
 let (|FloatOrIntType|_|) = function
     | {kind=TkFloat _} | {kind=TkOrd(OkInteger,_)} -> Some FloatOrIntType
     | _ -> None

@@ -1388,6 +1388,35 @@ module Intrinsics =
             ``Error: Expected ident parameter but nothing found`` |> ci.ctx.NewMsg ci.ident
             ([], None)
 
+    // TODO errorcode global variable
+    let private doHalt ci =
+        let exitProcess = +Call(ci.ctx.FindMethodReference "EXITPROCESS")
+        match ci.cp with
+        | [] -> ([+Ldc_I4 0; exitProcess], None)
+        | [cp] ->
+            let il, typ = callParamToIl ci.ctx cp None
+            match typ with
+            | IntType -> ([yield! il; exitProcess], None)
+            | _ ->
+                ``Error: %s expected`` "Integer parameter" |> ci.ctx.NewMsg cp
+                ([], None)
+        | _ ->
+            ``Error: %s expected`` "One integer parameter or no parameters" |> ci.ctx.NewMsg ci.ident
+            ([], None)
+
+    let private doHaltAtLineProc ci =
+        match ci.cp with
+        | [] ->
+            let exitCode = int (ci.ctx.messages.PosMap.[ci.ident.BoxPos]).Line
+            ([
+                 +Ldc_I4 exitCode
+                 +Call(ci.ctx.FindMethodReference "EXITPROCESS")
+                 // +Call ctx.sysProc.Exit
+            ], None)
+        | cp::_ ->
+            ``Error: Unexpected parameter`` |> ci.ctx.NewMsg cp
+            ([], None)
+
     let private callFloatFunToInt64 f ci =
         let ctx = ci.ctx
         match ci with
@@ -1419,24 +1448,8 @@ module Intrinsics =
         | WriteLineProc, _ -> doReadLine ci
         | NewProc, _ -> doNew ci
         | DisposeProc, _ -> doDispose ci
-        | HaltProc, cp ->
-            // TODO errorcode global variable
-            let exitCode = match cp with
-                           | [] -> [+Ldc_I4 0]
-                           | [cp] -> fst <| callParamToIl ctx cp None // TODO typecheck ?
-                           | _ -> failwith "IE only one param allowed"
-            ([
-                 yield! exitCode
-                 +Call(ctx.FindMethodReference "EXITPROCESS")
-                 // +Call ctx.sysProc.Exit
-            ], None)
-        | HaltAtLineProc, [] ->
-            let exitCode = int (ci.ctx.messages.PosMap.[ci.ident.BoxPos]).Line
-            ([
-                 +Ldc_I4 exitCode
-                 +Call(ctx.FindMethodReference "EXITPROCESS")
-                 // +Call ctx.sysProc.Exit
-            ], None)
+        | HaltProc, _ -> doHalt ci
+        | HaltAtLineProc, _ -> doHaltAtLineProc ci
         | ChrFunc, cp ->
             let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
             let callInstr, typ = callParamToIl ctx cp None
