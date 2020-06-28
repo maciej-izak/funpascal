@@ -1101,10 +1101,10 @@ module Intrinsics =
             // TODO ? Convert to float if needed ?
             | FloatType | IntType -> Some(inst, (typ, {ci with cp=t}))
             | _ ->
-                ``Error: Expected ordinal or float type but '%O' found`` typ.name |> ci.ctx.NewMsg cp
+                ``Error: Expected %s type but '%O' found`` "ordinal or float" typ.name |> ci.ctx.NewMsg cp
                 None
         | [] ->
-            ``Error: Expected ordinal or float type parameter but nothing found`` |> ci.ctx.NewMsg ci.ident
+            ``Error: Expected %s type parameter but nothing found`` "ordinal or float" |> ci.ctx.NewMsg ci.ident
             None
 
     let (|FloatOrOrdParamIdent|_|) ci =
@@ -1116,7 +1116,7 @@ module Intrinsics =
             // TODO ? Convert to float id needed ?
             | FloatType | IntType -> Some(inst, (typ, {ci with cp=t}))
             | _ ->
-                ``Error: Expected ordinal or float type but '%O' found`` typ.name |> ci.ctx.NewMsg cp
+                ``Error: Expected %s type but '%O' found`` "ordinal or float" typ.name |> ci.ctx.NewMsg cp
                 None
         | cp::_ ->
             ``Error: Expected ident parameter but expression found`` |> ci.ctx.NewMsg cp
@@ -1155,7 +1155,7 @@ module Intrinsics =
             | FloatType, FloatOrIntType, [] -> Some(expectedType, Some inst)
             | IntType, IntType, [] -> Some(expectedType, Some inst)
             | FloatType, _, [] ->
-                ``Error: Expected ordinal or float type but '%O' found`` typ.name |> ci.ctx.NewMsg cp
+                ``Error: Expected %s type but '%O' found`` "ordinal or float" typ.name |> ci.ctx.NewMsg cp
                 None
             | IntType, _, [] ->
                 ``Error: Expected integer type but '%O' found`` typ.name |> ci.ctx.NewMsg cp
@@ -1417,6 +1417,30 @@ module Intrinsics =
             ``Error: Unexpected parameter`` |> ci.ctx.NewMsg cp
             ([], None)
 
+    let private doChr ci =
+        match ci.cp with
+        | [cp] ->
+            let callInstr, typ = callParamToIl ci.ctx cp None
+            match typ with
+            | OrdType ->
+                if ci.popResult then
+                    ``Error: Improper expression`` |> ci.ctx.NewMsg ci.ident
+                    ([], Some ci.ctx.sysTypes.char)
+                else
+                    ([
+                        yield! callInstr
+                        if ci.popResult then yield +Pop // TODO or not generate call ?
+                     ], Some ci.ctx.sysTypes.char)
+            | _ ->
+                ``Error: %s expected`` "Ordinal type" |> ci.ctx.NewMsg cp
+                ([], Some ci.ctx.sysTypes.char)
+        | [] ->
+            ``Error: Expected %s type parameter but nothing found`` "ordinal" |> ci.ctx.NewMsg ci.ident
+            ([], Some ci.ctx.sysTypes.char)
+        | _ ->
+            ``Error: %s expected`` "One ordinal parameter" |> ci.ctx.NewMsg ci.ident
+            ([], Some ci.ctx.sysTypes.char)
+
     let private callFloatFunToInt64 f ci =
         let ctx = ci.ctx
         match ci with
@@ -1450,13 +1474,7 @@ module Intrinsics =
         | DisposeProc, _ -> doDispose ci
         | HaltProc, _ -> doHalt ci
         | HaltAtLineProc, _ -> doHaltAtLineProc ci
-        | ChrFunc, cp ->
-            let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
-            let callInstr, typ = callParamToIl ctx cp None
-            ([
-                yield! callInstr
-                if popResult then yield +Pop // TODO or not generate call ?
-             ], Some ctx.sysTypes.char)
+        | ChrFunc, cp -> doChr ci
         | OrdFunc, cp ->
             let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
             let callInstr, typ = callParamToIl ctx cp None

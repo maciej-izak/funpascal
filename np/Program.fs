@@ -105,6 +105,6 @@ let main argv =
     | None ->
         // only proper for tests
         match results.TryGetResult(Test) with
-        | Some testDir -> !! (testDir </> "*.pas") |> Seq.iter (tryCompileFile true)
+        | Some testDir -> !! (testDir </> "*.pas") ++ (testDir </> "*.pp") |> Seq.iter (tryCompileFile true)
         | _ -> failwith "No proper command found"
     0

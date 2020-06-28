@@ -36,11 +36,11 @@ module Errors =
     let ``Error: Unknown type kind of expression for Write/WriteLn: %O`` o =
         MsgError(Some 8, sprintf "Unknown type kind of expression for Write/WriteLn: %O" o)
 
-    let ``Error: Expected ordinal or float type but '%O' found`` o =
-        MsgError(Some 9, sprintf "Expected ordinal or float type but '%O' found" o)
+    let ``Error: Expected %s type but '%O' found`` s o =
+        MsgError(Some 9, sprintf "Expected %s type but '%O' found" s o)
 
-    let ``Error: Expected ordinal or float type parameter but nothing found`` =
-        MsgError(Some 10, sprintf "Expected ordinal or float type parameter but nothing found")
+    let ``Error: Expected %s type parameter but nothing found`` s =
+        MsgError(Some 10, sprintf "Expected %s type parameter but nothing found" s)
 
     let ``Error: Expected ident parameter but expression found`` =
         MsgError(Some 11, sprintf "Expected ident parameter but expression found")
@@ -65,6 +65,9 @@ module Errors =
 
     let ``Error: %O type expected but '%O' found`` o1 o2 =
         MsgError(Some 18, sprintf "%O type expected but '%O' found" o1 o2)
+
+    let ``Error: Improper expression`` =
+        MsgError(Some 19, "Improper expression")
 
 [<AutoOpen>]
 module Warnings =
