@@ -1485,6 +1485,9 @@ module Intrinsics =
              ], Some ctx.sysTypes.int64)
         | _ -> ([], Some ctx.sysTypes.int64)
 
+    let private doTrunc = callFloatFunToInt64 ValueNone
+    let private doRound ci = callFloatFunToInt64 (ValueSome ci.ctx.sysProc.Round) ci
+
     let private doSizeOf ci =
         let ctx = ci.ctx
         match ci.cp with
@@ -1509,29 +1512,27 @@ module Intrinsics =
             ``Error: Expected ident parameter but nothing found`` |> ci.ctx.NewMsg ci.ident
             ([], Some ctx.sysTypes.int32)
 
-    let handleIntrinsic intrinsicSym ci =
-        let ctx = ci.ctx
-        let popResult = ci.popResult
-        match (intrinsicSym, ci.cp) with
-        | IncProc, _ -> deltaModify PositiveDelta ci
-        | DecProc, _ -> deltaModify NegativeDelta ci
-        | SuccProc, _ -> deltaAdd PositiveDelta ci
-        | PredProc, _ -> deltaAdd NegativeDelta ci
-        | ContinueProc, _ -> doLoopBranch ContinueLabel ci
-        | BreakProc, _ -> doLoopBranch BreakLabel ci
-        | ExitProc, _ -> doExit ci
-        | WriteProc, _ -> doWrite ci
-        | WriteLnProc, _ -> doWriteLn ci
-        | ReadProc, _ -> doRead ci
-        | ReadLnProc, _ -> doReadLn ci
-        | WriteLineProc, _ -> doReadLine ci
-        | NewProc, _ -> doNew ci
-        | DisposeProc, _ -> doDispose ci
-        | HaltProc, _ -> doHalt ci
-        | HaltAtLineProc, _ -> doHaltAtLineProc ci
-        | ChrFunc, _ -> doChr ci
-        | OrdFunc, _ -> doOrd ci
-        | TruncFunc, _ -> callFloatFunToInt64 ValueNone ci
-        | RoundFunc, _ -> callFloatFunToInt64 (ValueSome ctx.sysProc.Round) ci
-        | SizeOfFunc, _ -> doSizeOf ci
+    let handleIntrinsic intrinsicSym =
+        match intrinsicSym with
+        | IncProc -> deltaModify PositiveDelta
+        | DecProc -> deltaModify NegativeDelta
+        | SuccProc -> deltaAdd PositiveDelta
+        | PredProc -> deltaAdd NegativeDelta
+        | ContinueProc -> doLoopBranch ContinueLabel
+        | BreakProc -> doLoopBranch BreakLabel
+        | ExitProc -> doExit
+        | WriteProc -> doWrite
+        | WriteLnProc -> doWriteLn
+        | ReadProc -> doRead
+        | ReadLnProc -> doReadLn
+        | WriteLineProc -> doReadLine
+        | NewProc -> doNew
+        | DisposeProc -> doDispose
+        | HaltProc -> doHalt
+        | HaltAtLineProc -> doHaltAtLineProc
+        | ChrFunc -> doChr
+        | OrdFunc -> doOrd
+        | TruncFunc -> doTrunc
+        | RoundFunc -> doRound
+        | SizeOfFunc -> doSizeOf
         | _ -> raise (InternalError "2020063001")
