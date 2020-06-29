@@ -152,6 +152,10 @@ let (|OrdType|_|) = function
     | {kind=TkOrd _} -> Some OrdType
     | _ -> None
 
+let (|Ord64Type|_|) = function
+    | {kind=TkOrd(_,OtSQWord _)} | {kind=TkOrd(_,OtUQWord _)} -> Some Ord64Type
+    | _ -> None
+
 let (|IntType|_|) = function
     | {kind=TkOrd(OkInteger,_)} -> Some IntType
     | _ -> None

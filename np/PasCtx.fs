@@ -1437,11 +1437,40 @@ module Intrinsics =
                 ``Error: %s expected`` "Byte type" |> ci.ctx.NewMsg cp
                 ([], Some ci.ctx.sysTypes.char)
         | [] ->
-            ``Error: Expected %s type parameter but nothing found`` "ordinal" |> ci.ctx.NewMsg ci.ident
+            ``Error: Expected %s type parameter but nothing found`` "byte" |> ci.ctx.NewMsg ci.ident
             ([], Some ci.ctx.sysTypes.char)
         | _ ->
-            ``Error: %s expected`` "One ordinal parameter" |> ci.ctx.NewMsg ci.ident
+            ``Error: %s expected`` "Only one byte parameter" |> ci.ctx.NewMsg ci.ident
             ([], Some ci.ctx.sysTypes.char)
+
+    let private doOrd ci =
+        match ci.cp with
+        | [cp] ->
+            let callInstr, typ = callParamToIl ci.ctx cp None
+            match typ with
+            | OrdType ->
+                if ci.popResult then // TODO warning ? about ignored expression
+                    ``Error: Improper expression`` |> ci.ctx.NewMsg ci.ident
+                    ([], Some ci.ctx.sysTypes.int32)
+                else
+                    let conv, typ =
+                        match typ with
+                        | Ord64Type -> +Conv Conv_I8, ci.ctx.sysTypes.int64
+                        | _ -> +Conv Conv_I4, ci.ctx.sysTypes.int32
+                    ([
+                        yield! callInstr
+                        yield conv
+                        // if ci.popResult then yield +Pop // TODO or not generate call ?
+                     ], Some typ)
+            | _ ->
+                ``Error: %s expected`` "Ordinal type" |> ci.ctx.NewMsg cp
+                ([], Some ci.ctx.sysTypes.int32)
+        | [] ->
+            ``Error: Expected %s type parameter but nothing found`` "ordinal" |> ci.ctx.NewMsg ci.ident
+            ([], Some ci.ctx.sysTypes.int32)
+        | _ ->
+            ``Error: %s expected`` "Only one ordinal parameter" |> ci.ctx.NewMsg ci.ident
+            ([], Some ci.ctx.sysTypes.int32)
 
     let private callFloatFunToInt64 f ci =
         let ctx = ci.ctx
@@ -1476,14 +1505,8 @@ module Intrinsics =
         | DisposeProc, _ -> doDispose ci
         | HaltProc, _ -> doHalt ci
         | HaltAtLineProc, _ -> doHaltAtLineProc ci
-        | ChrFunc, cp -> doChr ci
-        | OrdFunc, cp ->
-            let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
-            let callInstr, typ = callParamToIl ctx cp None
-            ([
-                yield! callInstr
-                if popResult then yield +Pop // TODO or not generate call ?
-             ], Some ctx.sysTypes.int32)
+        | ChrFunc, _ -> doChr ci
+        | OrdFunc, _ -> doOrd ci
         | TruncFunc, _ -> callFloatFunToInt64 ValueNone ci
         | RoundFunc, _ -> callFloatFunToInt64 (ValueSome ctx.sysProc.Round) ci
         | SizeOfFunc, [ParamIdent id] ->
