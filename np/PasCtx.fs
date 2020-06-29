@@ -1417,22 +1417,24 @@ module Intrinsics =
             ``Error: Unexpected parameter`` |> ci.ctx.NewMsg cp
             ([], None)
 
+    // TODO warnings for const expressions > 255 or < 0
     let private doChr ci =
         match ci.cp with
         | [cp] ->
             let callInstr, typ = callParamToIl ci.ctx cp None
             match typ with
-            | OrdType ->
-                if ci.popResult then
+            | IntType ->
+                if ci.popResult then // TODO warning ? about ignored expression
                     ``Error: Improper expression`` |> ci.ctx.NewMsg ci.ident
                     ([], Some ci.ctx.sysTypes.char)
                 else
                     ([
                         yield! callInstr
-                        if ci.popResult then yield +Pop // TODO or not generate call ?
+                        yield +Conv Conv_U1
+                        // if ci.popResult then yield +Pop // TODO or not generate call ?
                      ], Some ci.ctx.sysTypes.char)
             | _ ->
-                ``Error: %s expected`` "Ordinal type" |> ci.ctx.NewMsg cp
+                ``Error: %s expected`` "Byte type" |> ci.ctx.NewMsg cp
                 ([], Some ci.ctx.sysTypes.char)
         | [] ->
             ``Error: Expected %s type parameter but nothing found`` "ordinal" |> ci.ctx.NewMsg ci.ident
