@@ -1485,6 +1485,30 @@ module Intrinsics =
              ], Some ctx.sysTypes.int64)
         | _ -> ([], Some ctx.sysTypes.int64)
 
+    let private doSizeOf ci =
+        let ctx = ci.ctx
+        match ci.cp with
+        | [ParamIdent id] ->
+            if ci.popResult then // TODO warning ? about ignored expression
+                ``Error: Improper expression`` |> ci.ctx.NewMsg ci.ident
+                ([], Some ctx.sysTypes.int32)
+            else
+                match id with
+                | VariablePasType ctx t | TypePasType ctx t ->
+                    ([
+                        +Ldc_I4 t.SizeOf
+                        // if ci.popResult then +Pop // TODO or not generate call ?
+                     ], Some ctx.sysTypes.int32)
+                | _ ->
+                    ``Error: %s expected`` "type or variable" |> ctx.NewMsg id
+                    ([], Some ctx.sysTypes.int32)
+        | cp::_ ->
+            ``Error: Expected ident parameter but expression found`` |> ci.ctx.NewMsg cp
+            ([], Some ctx.sysTypes.int32)
+        | [] ->
+            ``Error: Expected ident parameter but nothing found`` |> ci.ctx.NewMsg ci.ident
+            ([], Some ctx.sysTypes.int32)
+
     let handleIntrinsic intrinsicSym ci =
         let ctx = ci.ctx
         let popResult = ci.popResult
@@ -1509,13 +1533,5 @@ module Intrinsics =
         | OrdFunc, _ -> doOrd ci
         | TruncFunc, _ -> callFloatFunToInt64 ValueNone ci
         | RoundFunc, _ -> callFloatFunToInt64 (ValueSome ctx.sysProc.Round) ci
-        | SizeOfFunc, [ParamIdent id] ->
-            let t = match id with
-                    | VariablePasType ctx t -> t
-                    | TypePasType ctx t -> t
-                    | _ -> failwithf "IE cannot get size of %A" id
-            ([
-                +Ldc_I4 t.SizeOf
-                if popResult then +Pop // TODO or not generate call ?
-             ], Some ctx.sysTypes.int32)
-        | _ -> failwith "IE"
+        | SizeOfFunc, _ -> doSizeOf ci
+        | _ -> raise (InternalError "2020063001")
