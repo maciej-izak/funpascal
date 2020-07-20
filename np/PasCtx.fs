@@ -1487,30 +1487,56 @@ module Intrinsics =
 
     let private doTrunc = callFloatFunToInt64 ValueNone
     let private doRound ci = callFloatFunToInt64 (ValueSome ci.ctx.sysProc.Round) ci
-
-    let private doSizeOf ci =
+    
+    let getParamIdent (ctx: Ctx) cp =
+        match cp with
+        | ParamIdent id -> Some(id)
+        | _ ->
+            ``Error: Expected ident parameter but expression found`` |> ctx.NewMsg cp
+            None
+    
+    type ParamsBuilder(ci: CallInfo, rt: PasType option) =
         let ctx = ci.ctx
-        match ci.cp with
-        | [ParamIdent id] ->
+        let cp = Queue(ci.cp)
+        
+        member _.Bind(v, f) =
+            match cp.TryDequeue() with
+            | true, p -> 
+                match v ctx p with
+                | Some v -> f v
+                | _ -> [], rt
+            | false, _ ->
+                ``Error: Expected ident parameter but nothing found`` |> ctx.NewMsg ci.ident
+                [], rt
+                
+        member _.Bind(v, f) =
+            match v with
+            | true -> f()
+            | _ -> [], rt
+                
+        member _.Return(v: IlInstruction list option) =
+            match v with
+            | Some v -> v, rt
+            | None -> [], rt
+
+        member _.Return(_) = id
+        
+        [<CustomOperation("inExpr",MaintainsVariableSpaceUsingBind=true)>]
+        member _.InExpr (_) =
             if ci.popResult then // TODO warning ? about ignored expression
                 ``Error: Improper expression`` |> ci.ctx.NewMsg ci.ident
-                ([], Some ctx.sysTypes.int32)
+                false
             else
-                match id with
-                | VariablePasType ctx t | TypePasType ctx t ->
-                    ([
-                        +Ldc_I4 t.SizeOf
-                        // if ci.popResult then +Pop // TODO or not generate call ?
-                     ], Some ctx.sysTypes.int32)
-                | _ ->
-                    ``Error: %s expected`` "type or variable" |> ctx.NewMsg id
-                    ([], Some ctx.sysTypes.int32)
-        | cp::_ ->
-            ``Error: Expected ident parameter but expression found`` |> ci.ctx.NewMsg cp
-            ([], Some ctx.sysTypes.int32)
-        | [] ->
-            ``Error: Expected ident parameter but nothing found`` |> ci.ctx.NewMsg ci.ident
-            ([], Some ctx.sysTypes.int32)
+                true
+        
+    let private doSizeOf (ci: CallInfo) =
+        let ctx = ci.ctx
+        ParamsBuilder(ci, Some ci.ctx.sysTypes.int32) {
+            inExpr
+            match! getParamIdent with
+            | VariablePasType ctx t | TypePasType ctx t -> return Some[+Ldc_I4 t.SizeOf]
+            | id -> ``Error: %s expected`` "type or variable" |> ctx.NewMsg id; return None
+        }
 
     let handleIntrinsic intrinsicSym =
         match intrinsicSym with
