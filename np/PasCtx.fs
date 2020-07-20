@@ -994,7 +994,48 @@ module EvalConstExpr =
 module Intrinsics =
 
     open EvalExpr
+    
+    type ParamsBuilder(ci: CallInfo, rt: PasType option) =
+        let ctx = ci.ctx
+        let cp = Queue(ci.cp)
+        
+        member _.Bind(v, f) =
+            match cp.TryDequeue() with
+            | true, p -> 
+                match v ctx p with
+                | Some v -> f v
+                | _ -> [], rt
+            | false, _ ->
+                ``Error: Expected ident parameter but nothing found`` |> ctx.NewMsg ci.ident
+                [], rt
+                
+        member _.Bind(v, f) =
+            match v with
+            | true -> f()
+            | _ -> [], rt
+                
+        member _.Return(v: IlInstruction list option) =
+            match v with
+            | Some v -> v, rt
+            | None -> [], rt
 
+        member _.Return(_) = id
+        
+        [<CustomOperation("inExpr",MaintainsVariableSpaceUsingBind=true)>]
+        member _.InExpr (_) =
+            if ci.popResult then // TODO warning ? about ignored expression
+                ``Error: Improper expression`` |> ctx.NewMsg ci.ident
+                false
+            else
+                true
+                
+        member _.Run(r) =
+            match cp.TryDequeue() with
+            | true, cp ->
+                ``Error: Unexpected parameter`` |> ctx.NewMsg cp
+                [], rt
+            | _ -> r
+    
     let (|VariablePasType|_|) (ctx: Ctx) id =
         match ctx.FindSymbol id |> chainToSLList with
         | _, Some(t) -> Some(VariablePasType t)
@@ -1494,41 +1535,7 @@ module Intrinsics =
         | _ ->
             ``Error: Expected ident parameter but expression found`` |> ctx.NewMsg cp
             None
-    
-    type ParamsBuilder(ci: CallInfo, rt: PasType option) =
-        let ctx = ci.ctx
-        let cp = Queue(ci.cp)
-        
-        member _.Bind(v, f) =
-            match cp.TryDequeue() with
-            | true, p -> 
-                match v ctx p with
-                | Some v -> f v
-                | _ -> [], rt
-            | false, _ ->
-                ``Error: Expected ident parameter but nothing found`` |> ctx.NewMsg ci.ident
-                [], rt
-                
-        member _.Bind(v, f) =
-            match v with
-            | true -> f()
-            | _ -> [], rt
-                
-        member _.Return(v: IlInstruction list option) =
-            match v with
-            | Some v -> v, rt
-            | None -> [], rt
-
-        member _.Return(_) = id
-        
-        [<CustomOperation("inExpr",MaintainsVariableSpaceUsingBind=true)>]
-        member _.InExpr (_) =
-            if ci.popResult then // TODO warning ? about ignored expression
-                ``Error: Improper expression`` |> ci.ctx.NewMsg ci.ident
-                false
-            else
-                true
-        
+            
     let private doSizeOf (ci: CallInfo) =
         let ctx = ci.ctx
         ParamsBuilder(ci, Some ci.ctx.sysTypes.int32) {

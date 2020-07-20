@@ -1,4 +1,4 @@
-{%results=OK,FAIL1:-,FAIL2:-,FAIL3:-}
+{%results=OK,FAIL1:-,FAIL2:-,FAIL3:-,FAIL4:-}
 var
   x: char;
   y: single;
@@ -17,5 +17,8 @@ begin
   {$ENDIF}
   {$IFDEF FAIL3}
   if SizeOf() <> 4 then ;
+  {$ENDIF}
+  {$IFDEF FAIL4}
+  if SizeOf(byte, 2) <> 1 then ;
   {$ENDIF}
 end.
