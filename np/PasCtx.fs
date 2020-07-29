@@ -1025,12 +1025,19 @@ module Intrinsics =
                 expectedTypes.Add "integer"
                 None
                 
-        member _.Run(r) =
+        member this.Run(r) =
             match r with
-            | Some (ils, t) -> ils, Some t
-            | _ -> [], None
+            | Some (ils, t) ->
+                this.Instructions <- ils
+                this.Type <- t
+                this.Successful <- true
+                true
+            | _ -> false
             
-        [<DefaultValue>] val mutable Final: IlInstruction list        
+        [<DefaultValue>] val mutable Instructions: IlInstruction list
+        [<DefaultValue>] val mutable Type: PasType
+        [<DefaultValue>] val mutable Successful: bool
+        
                 
                 // ``Error: Expected %s type but '%O' found`` "float" typ.name |> ctx.NewMsg cp
 //        | [] ->
@@ -1041,7 +1048,7 @@ module Intrinsics =
         let ctx = ci.ctx
         let cp = Queue(ci.cp)
         
-        member _.Bind(v, f) =
+        member _.Bind(v, f) = // for call getParamIdent
             match cp.TryDequeue() with
             | true, p -> 
                 match v ctx p with
@@ -1055,25 +1062,18 @@ module Intrinsics =
             match v with
             | true -> f()
             | _ -> [], rt
-
-
-//        member self.Bind(v, f) =
-//            match v with
-//            | ParamSettings -> f()
-//            | ParamResult None -> ParamResult None
-//            | ParamResult (Some(l1, t1)) ->
-//                match f() with
-//                | ParamResult None -> ParamResult None
-//                | ParamResult (Some(l1, _)) ->
-//                    ParamResult
                 
+        member _.Return( pb: ParamBuilder ) = pb
+        member _.Return( u: unit ) = true
+        member _.Return( b: bool ) = b
+            
         member _.Return(v: IlInstruction list option) =
             match v with
             | Some v -> v, rt
             | None -> [], rt
+        
+        member _.Return(v: IlInstruction list) = true
 
-        member _.Return(_) = id
-        member _.Zero() = id
         
         [<CustomOperation("inExpr",MaintainsVariableSpaceUsingBind=true)>]
         member _.InExpr (_) =
@@ -1082,25 +1082,46 @@ module Intrinsics =
                 false
             else
                 true
-                
-        member _.Bind(pb: ParamBuilder, _) = pb
+
+        member _.Bind(pb: ParamBuilder, f) = // for 'into' proper type inference 
+            if pb = null then
+                pb
+            else f(pb)
         
-        member _.Bind(x: IlInstruction list * PasType option, _) =
-            [],rt
+        member _.Bind((v, p), c) = if v then c p else false
+        
+        member _.Bind(c, f) =
+            match c with
+            | true -> f(c)
+            | false -> false
 
         [<CustomOperation("nextParam",MaintainsVariableSpaceUsingBind=true,AllowIntoPattern=true)>]
         member _.NextParam (b: bool) =
             match b, cp.TryDequeue() with
             | true, (true, cp) -> ParamBuilder(cp, ctx)
             | _ -> null
+        
+        member _.Zero() = true
+        
+        member self.Combine(a, b) = a && b
+            
+        member _.Delay(f) = f()
             
         [<CustomOperation("specialize",MaintainsVariableSpaceUsingBind=true)>]
-        member _.ParamSpecialize (p: ParamBuilder, [<ProjectionParameter>] f) =
+        member _.ParamSpecialize (p: ParamBuilder, [<ProjectionParameter>] f1, [<ProjectionParameter>] f2) =
             if p = null then
-                [],rt
+                false
             else
-                f(p)
+                if f1(p) then f2(p) |> ignore; true else false
                 
+        member _.Run(r) =
+            match r, cp.TryDequeue() with
+            | _, (true, cp) ->
+                ``Error: Unexpected parameter`` |> ctx.NewMsg cp
+                [], rt
+            | true, (false, _) -> [], rt // final generated    
+            | _ -> [], rt
+            
         member _.Run(r) =
             match cp.TryDequeue() with
             | true, cp ->
@@ -1628,45 +1649,16 @@ module Intrinsics =
         | _ -> ([], Some ctx.sysTypes.int64)
 
     let private callFloatFunToInt64_2 f ci =
-        let ctx = ci.ctx
-//        ParamBuilder(ci.cp.Head, ctx) {
-//               tryAsFloat 
-//        }
-        ParamsBuilder(ci, Some ctx.sysTypes.int64) {
+        ParamsBuilder(ci, Some ci.ctx.sysTypes.int64) {
             inExpr
             nextParam into param1
-            specialize (param1 {
-                tryAsFloat
-                tryAsInt
-            })
-            let x = (param1: ParamBuilder).Final
-            return (x,None)
-        (*    
-         paramsBuilder.Run(
-           paramsBuilder.ParamSpecialize(
-             paramsBuilder.Bind(
-               paramsBuilder.NextParam(
-                 paramsBuilder.InExpr(
-                   paramsBuilder.Return<Unit, object>(null)
-                 )
-               ),
-               ()new callFloatFunToInt64_2@1629(paramsBuilder) //!!! empty id return of self
-             ),
-             new callFloatFunToInt64_2@1629-1() // here is specialize monad defined (parambuilder)
-           )
-         );
-        *)    
-            
+            specialize (param1 { tryAsFloat; tryAsInt })
+                [
+                    yield! param1.Instructions
+                    if (f: MethodReference voption).IsSome then +Call f.Value
+                    +Conv Conv_I8
+                ]
         }
-//        | FloatOrOrdParam(ils,EofParam) ->
-//            ([
-//                yield! ils
-//                if (f: MethodReference voption).IsSome then +Call f.Value
-//                match ci.popResult with
-//                | true  -> +Pop
-//                | false -> +Conv Conv_I8
-//             ], Some ctx.sysTypes.int64)
-//        | _ -> ([], Some ctx.sysTypes.int64)
 
     let private doTrunc = callFloatFunToInt64 ValueNone
     let private doRound ci = callFloatFunToInt64 (ValueSome ci.ctx.sysProc.Round) ci

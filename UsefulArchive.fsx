@@ -18,6 +18,7 @@
 //     - https://www.elementscompiler.com/elements/oxygene/evolution.aspx
 // active patterns tutorial
 // https://github.com/sgoguen/journal/blob/master/2019/12/fsharp-advent/05-active-patterns.md
+// Analiza CE : https://stackoverflow.com/questions/23122639/how-do-i-write-a-computation-expression-builder-that-accumulates-a-value-and-als
 
 // meta trick to get assembly methods reference:
 
