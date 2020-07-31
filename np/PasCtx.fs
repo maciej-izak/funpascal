@@ -995,35 +995,71 @@ module Intrinsics =
 
     open EvalExpr
     
+    let (|VariablePasType|_|) (ctx: Ctx) id =
+        match ctx.FindSymbol id |> chainToSLList with
+        | _, Some(t) -> Some(VariablePasType t)
+        | _ -> None
+
+    let (|TypePasType|_|) (ctx: Ctx) = function
+        | DIdent[Ident(id)] ->
+            match ctx.FindSym(StringName id) with
+            | Some (TypeSym t) -> Some(TypePasType t)
+            | _ -> None
+        | _ -> None
+        
+    let getParamIdent cp =
+        match cp with
+        | ParamIdent id -> Some(id)
+        | _ -> None
+    
     [<AllowNullLiteral>]
     type ParamBuilder(cp: CallParam, ctx: Ctx) =
         
         let expectedTypes = List<string>()
         
-        member _.Bind(v, f) =
-            match v with
-            | Some _ -> v
-            | _ -> f()
-            
-        member _.Return(_) = id
-        
-        [<CustomOperation("tryAsFloat",MaintainsVariableSpaceUsingBind=true)>]
-        member _.TryAsFloat (_) =
-            let inst, typ = callParamToIl ctx cp None
-            match typ with
-            | FloatType -> Some(inst, typ)
-            | _ ->
-                expectedTypes.Add "float"
-                None
-
-        [<CustomOperation("tryAsInt",MaintainsVariableSpaceUsingBind=true)>]
-        member _.TryAsInt (_) =
+        let tryAsInt() =
             let inst, typ = callParamToIl ctx cp None
             match typ with
             | IntType -> Some(inst, typ)
             | _ ->
                 expectedTypes.Add "integer"
                 None
+                
+        let tryAsFloat() =
+            let inst, typ = callParamToIl ctx cp None
+            match typ with
+            | FloatType -> Some(inst, typ)
+            | _ ->
+                expectedTypes.Add "float"
+                None            
+        
+        let tryAsPasType() =
+            match getParamIdent cp with
+            | Some(TypePasType ctx t) -> Some([], t)
+            | _ ->
+                expectedTypes.Add "type ident"
+                None
+                
+        let tryAsVarType() =
+            match getParamIdent cp with
+            | Some(VariablePasType ctx t) -> Some([], t)
+            | _ ->
+                expectedTypes.Add "variable ident"
+                None                
+            
+        member _.Return(_) = None
+        
+        [<CustomOperation("float",MaintainsVariableSpaceUsingBind=true)>]
+        member _.TryAsFloat (v) = Option.orElseWith tryAsFloat v
+
+        [<CustomOperation("int",MaintainsVariableSpaceUsingBind=true)>]
+        member _.TryAsInt (v) = Option.orElseWith tryAsInt v
+
+        [<CustomOperation("pasType",MaintainsVariableSpaceUsingBind=true)>]
+        member _.TryAsPasType (v) = Option.orElseWith tryAsPasType v
+
+        [<CustomOperation("varType",MaintainsVariableSpaceUsingBind=true)>]
+        member _.TryAsVarType (v) = Option.orElseWith tryAsVarType v
                 
         member this.Run(r) =
             match r with
@@ -1032,31 +1068,23 @@ module Intrinsics =
                 this.Type <- t
                 this.Successful <- true
                 true
-            | _ -> false
+            | _ ->
+                ``Error: %s expected`` (String.concat " or " expectedTypes) |> ctx.NewMsg cp
+                false
             
         [<DefaultValue>] val mutable Instructions: IlInstruction list
         [<DefaultValue>] val mutable Type: PasType
         [<DefaultValue>] val mutable Successful: bool
         
-                
-                // ``Error: Expected %s type but '%O' found`` "float" typ.name |> ctx.NewMsg cp
+// ``Error: Expected %s type but '%O' found`` "float" typ.name |> ctx.NewMsg cp
 //        | [] ->
 //            ``Error: Expected %s type parameter but nothing found`` "ordinal or float" |> ci.ctx.NewMsg ci.ident
 //            None
-                
+
     type ParamsBuilder(ci: CallInfo, rt: PasType option) =
         let ctx = ci.ctx
         let cp = Queue(ci.cp)
-        
-        member _.Bind(v, f) = // for call getParamIdent
-            match cp.TryDequeue() with
-            | true, p -> 
-                match v ctx p with
-                | Some v -> f v
-                | _ -> [], rt
-            | false, _ ->
-                ``Error: Expected ident parameter but nothing found`` |> ctx.NewMsg ci.ident
-                [], rt
+        let finalIls = List<IlInstruction list>()
                 
         member _.Bind(v, f) =
             match v with
@@ -1066,14 +1094,6 @@ module Intrinsics =
         member _.Return( pb: ParamBuilder ) = pb
         member _.Return( u: unit ) = true
         member _.Return( b: bool ) = b
-            
-        member _.Return(v: IlInstruction list option) =
-            match v with
-            | Some v -> v, rt
-            | None -> [], rt
-        
-        member _.Return(v: IlInstruction list) = true
-
         
         [<CustomOperation("inExpr",MaintainsVariableSpaceUsingBind=true)>]
         member _.InExpr (_) =
@@ -1095,81 +1115,26 @@ module Intrinsics =
             | true -> f(c)
             | false -> false
 
-        [<CustomOperation("nextParam",MaintainsVariableSpaceUsingBind=true,AllowIntoPattern=true)>]
+        [<CustomOperation("next",MaintainsVariableSpaceUsingBind=true,AllowIntoPattern=true)>]
         member _.NextParam (b: bool) =
             match b, cp.TryDequeue() with
             | true, (true, cp) -> ParamBuilder(cp, ctx)
             | _ -> null
         
-        member _.Zero() = true
-        
-        member self.Combine(a, b) = a && b
-            
-        member _.Delay(f) = f()
-            
         [<CustomOperation("specialize",MaintainsVariableSpaceUsingBind=true)>]
         member _.ParamSpecialize (p: ParamBuilder, [<ProjectionParameter>] f1, [<ProjectionParameter>] f2) =
-            if p = null then
-                false
-            else
-                if f1(p) then f2(p) |> ignore; true else false
+            match p with
+            | null -> false
+            | _ -> if f1(p) then finalIls.Add(f2(p)); true else false
                 
         member _.Run(r) =
             match r, cp.TryDequeue() with
             | _, (true, cp) ->
                 ``Error: Unexpected parameter`` |> ctx.NewMsg cp
                 [], rt
-            | true, (false, _) -> [], rt // final generated    
-            | _ -> [], rt
-            
-        member _.Run(r) =
-            match cp.TryDequeue() with
-            | true, cp ->
-                ``Error: Unexpected parameter`` |> ctx.NewMsg cp
-                [], rt
-            | _ -> r
-            
-    let getParamIdent (ctx: Ctx) cp =
-        match cp with
-        | ParamIdent id -> Some(id)
-        | _ ->
-            ``Error: Expected ident parameter but expression found`` |> ctx.NewMsg cp
-            None
-
-    let getParam (ctx: Ctx) cp =
-        match cp with
-        | ParamIdent id -> Some(id)
-        | _ ->
-            ``Error: Expected ident parameter but expression found`` |> ctx.NewMsg cp
-            None
-            
-            
-//    let (|FloatOrOrdParam|_|) ci =
-//        match ci.cp with
-//        | cp::t ->
-//            let inst, typ = callParamToIl ci.ctx cp None
-//            match typ with
-//            // TODO ? Convert to float if needed ?
-//            | FloatType | IntType -> Some(inst, (typ, {ci with cp=t}))
-//            | _ ->
-//                ``Error: Expected %s type but '%O' found`` "ordinal or float" typ.name |> ci.ctx.NewMsg cp
-//                None
-//        | [] ->
-//            ``Error: Expected %s type parameter but nothing found`` "ordinal or float" |> ci.ctx.NewMsg ci.ident
-//            None            
-    
-    let (|VariablePasType|_|) (ctx: Ctx) id =
-        match ctx.FindSymbol id |> chainToSLList with
-        | _, Some(t) -> Some(VariablePasType t)
-        | _ -> None
-
-    let (|TypePasType|_|) (ctx: Ctx) = function
-        | DIdent[Ident(id)] ->
-            match ctx.FindSym(StringName id) with
-            | Some (TypeSym t) -> Some(TypePasType t)
-            | _ -> None
-        | _ -> None
-
+            | true, (false, _) -> finalIls |> Seq.concat |> List.ofSeq, rt // final generated    
+            | _ -> [], rt // other error reported in some operators / other CE
+                
     let private doGenWrite ci =
         let ctx, cp = ci.ctx, ci.cp
         let file, cp =
@@ -1636,23 +1601,10 @@ module Intrinsics =
             ([], Some ci.ctx.sysTypes.int32)
 
     let private callFloatFunToInt64 f ci =
-        let ctx = ci.ctx
-        match ci with
-        | FloatOrOrdParam(ils,EofParam) ->
-            ([
-                yield! ils
-                if (f: MethodReference voption).IsSome then +Call f.Value
-                match ci.popResult with
-                | true  -> +Pop
-                | false -> +Conv Conv_I8
-             ], Some ctx.sysTypes.int64)
-        | _ -> ([], Some ctx.sysTypes.int64)
-
-    let private callFloatFunToInt64_2 f ci =
         ParamsBuilder(ci, Some ci.ctx.sysTypes.int64) {
             inExpr
-            nextParam into param1
-            specialize (param1 { tryAsFloat; tryAsInt })
+            next into param1
+            specialize (param1 { float; int })
                 [
                     yield! param1.Instructions
                     if (f: MethodReference voption).IsSome then +Call f.Value
@@ -1664,12 +1616,10 @@ module Intrinsics =
     let private doRound ci = callFloatFunToInt64 (ValueSome ci.ctx.sysProc.Round) ci
                 
     let private doSizeOf (ci: CallInfo) =
-        let ctx = ci.ctx
-        ParamsBuilder(ci, Some ctx.sysTypes.int32) {
+        ParamsBuilder(ci, Some ci.ctx.sysTypes.int32) {
             inExpr
-            match! getParamIdent with
-            | VariablePasType ctx t | TypePasType ctx t -> return Some[+Ldc_I4 t.SizeOf]
-            | id -> ``Error: %s expected`` "type or variable" |> ctx.NewMsg id; return None
+            next into ident
+            specialize (ident { pasType; varType }) [+Ldc_I4 ident.Type.SizeOf]
         }
 
     let handleIntrinsic intrinsicSym =
