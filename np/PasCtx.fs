@@ -1031,7 +1031,15 @@ module Intrinsics =
             | FloatType -> Some(inst, typ)
             | _ ->
                 expectedTypes.Add "float"
-                None            
+                None
+        
+        let tryAsOrd() =
+            let inst, typ = callParamToIl ctx cp None
+            match typ with
+            | OrdType -> Some(inst, typ)
+            | _ ->
+                expectedTypes.Add "ordinal"
+                None
         
         let tryAsPasType() =
             match getParamIdent cp with
@@ -1060,6 +1068,9 @@ module Intrinsics =
 
         [<CustomOperation("varType",MaintainsVariableSpaceUsingBind=true)>]
         member _.TryAsVarType (v) = Option.orElseWith tryAsVarType v
+
+        [<CustomOperation("ord",MaintainsVariableSpaceUsingBind=true)>]
+        member _.TryAsOrd (v) = Option.orElseWith tryAsOrd v
                 
         member this.Run(r) =
             match r with
@@ -1085,11 +1096,13 @@ module Intrinsics =
         let ctx = ci.ctx
         let cp = Queue(ci.cp)
         let finalIls = List<IlInstruction list>()
+        
+        member val ReturnType = rt with get, set
                 
-        member _.Bind(v, f) =
+        member self.Bind(v, f) =
             match v with
             | true -> f()
-            | _ -> [], rt
+            | _ -> [], self.ReturnType
                 
         member _.Return( pb: ParamBuilder ) = pb
         member _.Return( u: unit ) = true
@@ -1127,7 +1140,8 @@ module Intrinsics =
             | null -> false
             | _ -> if f1(p) then finalIls.Add(f2(p)); true else false
                 
-        member _.Run(r) =
+        member self.Run(r) =
+            let rt = self.ReturnType
             match r, cp.TryDequeue() with
             | _, (true, cp) ->
                 ``Error: Unexpected parameter`` |> ctx.NewMsg cp
@@ -1572,41 +1586,28 @@ module Intrinsics =
             ([], Some ci.ctx.sysTypes.char)
 
     let private doOrd ci =
-        match ci.cp with
-        | [cp] ->
-            let callInstr, typ = callParamToIl ci.ctx cp None
-            match typ with
-            | OrdType ->
-                if ci.popResult then // TODO warning ? about ignored expression
-                    ``Error: Improper expression`` |> ci.ctx.NewMsg ci.ident
-                    ([], Some ci.ctx.sysTypes.int32)
-                else
-                    let conv, typ =
-                        match typ with
-                        | Ord64Type -> +Conv Conv_I8, ci.ctx.sysTypes.int64
-                        | _ -> +Conv Conv_I4, ci.ctx.sysTypes.int32
-                    ([
-                        yield! callInstr
-                        yield conv
-                        // if ci.popResult then yield +Pop // TODO or not generate call ?
-                     ], Some typ)
-            | _ ->
-                ``Error: %s expected`` "Ordinal type" |> ci.ctx.NewMsg cp
-                ([], Some ci.ctx.sysTypes.int32)
-        | [] ->
-            ``Error: Expected %s type parameter but nothing found`` "ordinal" |> ci.ctx.NewMsg ci.ident
-            ([], Some ci.ctx.sysTypes.int32)
-        | _ ->
-            ``Error: %s expected`` "Only one ordinal parameter" |> ci.ctx.NewMsg ci.ident
-            ([], Some ci.ctx.sysTypes.int32)
+        let pb = ParamsBuilder(ci, Some ci.ctx.sysTypes.int32)
+        pb {
+            inExpr
+            next into param
+            specialize (param { ord })
+                [
+                    yield! param.Instructions
+                    match param.Type with
+                    | Ord64Type ->
+                        pb.ReturnType <- Some ci.ctx.sysTypes.int64
+                        +Conv Conv_I8
+                    | _ -> +Conv Conv_I4
+                ]
+        }
 
     let private callFloatFunToInt64 f ci =
         ParamsBuilder(ci, Some ci.ctx.sysTypes.int64) {
             inExpr
-            next into param1
-            specialize (param1 { float; int })
+            next into param
+            specialize (param { float; int })
                 [
-                    yield! param1.Instructions
+                    yield! param.Instructions
                     if (f: MethodReference voption).IsSome then +Call f.Value
                     +Conv Conv_I8
                 ]
