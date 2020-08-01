@@ -1012,6 +1012,8 @@ module Intrinsics =
         | ParamIdent id -> Some(id)
         | _ -> None
     
+    type ParamRec = { Instructions: IlInstruction list; Type: PasType }
+    
     [<AllowNullLiteral>]
     type ParamBuilder(cp: CallParam, ctx: Ctx) =
         
@@ -1074,19 +1076,11 @@ module Intrinsics =
                 
         member this.Run(r) =
             match r with
-            | Some (ils, t) ->
-                this.Instructions <- ils
-                this.Type <- t
-                this.Successful <- true
-                true
+            | Some (ils, t) -> Some{ Instructions = ils; Type = t}
             | _ ->
                 ``Error: %s expected`` (String.concat " or " expectedTypes) |> ctx.NewMsg cp
-                false
+                None
             
-        [<DefaultValue>] val mutable Instructions: IlInstruction list
-        [<DefaultValue>] val mutable Type: PasType
-        [<DefaultValue>] val mutable Successful: bool
-        
 // ``Error: Expected %s type but '%O' found`` "float" typ.name |> ctx.NewMsg cp
 //        | [] ->
 //            ``Error: Expected %s type parameter but nothing found`` "ordinal or float" |> ci.ctx.NewMsg ci.ident
@@ -1104,7 +1098,7 @@ module Intrinsics =
             | true -> f()
             | _ -> [], self.ReturnType
                 
-        member _.Return( pb: ParamBuilder ) = pb
+        member _.Return( pb: ParamBuilder option option) = pb
         member _.Return( u: unit ) = true
         member _.Return( b: bool ) = b
         
@@ -1128,6 +1122,9 @@ module Intrinsics =
             if pb = null then
                 pb
             else f(pb)
+
+        member _.Bind(p: ParamBuilder option option, f) = // for 'into' proper type inference 
+            f(p)
         
         member _.Bind((v, p), c) = if v then c p else false
         
@@ -1136,11 +1133,18 @@ module Intrinsics =
             | true -> f(c)
             | false -> false
 
-        [<CustomOperation("next",MaintainsVariableSpaceUsingBind=true,AllowIntoPattern=true)>]
+        [<CustomOperation("parameter",MaintainsVariableSpaceUsingBind=true,AllowIntoPattern=true)>]
         member _.NextParam (b: bool) =
             match b, cp.TryDequeue() with
-            | true, (true, cp) -> ParamBuilder(cp, ctx)
-            | _ -> null
+            | true, (true, cp) -> ParamBuilder(cp, ctx) |> Some |> Some
+            | _ -> None
+
+        [<CustomOperation("optional",MaintainsVariableSpaceUsingBind=true,AllowIntoPattern=true)>]
+        member _.NextOptionalParam (b: bool) =
+            match b, cp.TryDequeue() with
+            | true, (true, cp) -> ParamBuilder(cp, ctx) |> Some |> Some
+            | true, (false, _) -> None |> Some
+            | _ -> None
 
         [<CustomOperation("noParams",MaintainsVariableSpaceUsingBind=true)>]
         member _.NoParams (b: bool, [<ProjectionParameter>] f) =
@@ -1153,11 +1157,25 @@ module Intrinsics =
                 true
             | _ -> false
         
-        [<CustomOperation("specialize",MaintainsVariableSpaceUsingBind=true)>]
-        member _.ParamSpecialize (p: ParamBuilder, [<ProjectionParameter>] f1, [<ProjectionParameter>] f2) =
+        [<CustomOperation("doParameter", MaintainsVariableSpaceUsingBind=true)>]
+        member _.ParamSpecialize (p: ParamBuilder option option, [<ProjectionParameter>] f1, [<ProjectionParameter>] f2) =
             match p with
-            | null -> false
-            | _ -> if f1(p) then finalIls.Add(f2(p)); true else false
+            | Some(Some p) ->
+                match f1(p) with
+                | Some p -> f2(p) |> finalIls.Add; true
+                | _ -> false
+            | _ -> false
+
+        [<CustomOperation("doOptional", MaintainsVariableSpaceUsingBind=true)>]
+        member _.OptionalParamSpecialize (p: ParamBuilder option option, [<ProjectionParameter>] f1, [<ProjectionParameter>] f2,
+                                  [<ProjectionParameter>] f3) =
+            match p with
+            | Some(Some p) ->
+                match f1(p) with
+                | Some p -> f2(p) |> finalIls.Add; true
+                | _ -> false
+            | Some None -> f3() |> finalIls.Add; true
+            | _ -> false
                 
         member self.Run(r) =
             let rt = self.ReturnType
@@ -1552,18 +1570,11 @@ module Intrinsics =
     // TODO errorcode global variable
     let private doHalt ci =
         let exitProcess = +Call(ci.ctx.FindMethodReference "EXITPROCESS")
-        match ci.cp with
-        | [] -> ([+Ldc_I4 0; exitProcess], None)
-        | [cp] ->
-            let il, typ = callParamToIl ci.ctx cp None
-            match typ with
-            | IntType -> ([yield! il; exitProcess], None)
-            | _ ->
-                ``Error: %s expected`` "Integer parameter" |> ci.ctx.NewMsg cp
-                ([], None)
-        | _ ->
-            ``Error: %s expected`` "One integer parameter or no parameters" |> ci.ctx.NewMsg ci.ident
-            ([], None)
+        ParamsBuilder(ci, None) {
+            inBlock
+            optional into param
+            doOptional (param { int }) [yield! param.Instructions; exitProcess] [+Ldc_I4 0; exitProcess]
+        }
 
     let private doHaltAtLineProc ci =
         ParamsBuilder(ci, None) {
@@ -1579,16 +1590,16 @@ module Intrinsics =
     let private doChr ci =
         ParamsBuilder(ci, Some ci.ctx.sysTypes.char) {
             inExpr
-            next into param
-            specialize (param { int }) [ yield! param.Instructions; +Conv Conv_U1 ]
+            parameter into param
+            doParameter (param { int }) [ yield! param.Instructions; +Conv Conv_U1 ]
         }
 
     let private doOrd ci =
         let pb = ParamsBuilder(ci, Some ci.ctx.sysTypes.int32)
         pb {
             inExpr
-            next into param
-            specialize (param { ord })
+            parameter into param
+            doParameter (param { ord })
                 [
                     yield! param.Instructions
                     match param.Type with
@@ -1602,8 +1613,8 @@ module Intrinsics =
     let private callFloatFunToInt64 f ci =
         ParamsBuilder(ci, Some ci.ctx.sysTypes.int64) {
             inExpr
-            next into param
-            specialize (param { float; int })
+            parameter into param
+            doParameter (param { float; int })
                 [
                     yield! param.Instructions
                     if (f: MethodReference voption).IsSome then +Call f.Value
@@ -1617,8 +1628,8 @@ module Intrinsics =
     let private doSizeOf (ci: CallInfo) =
         ParamsBuilder(ci, Some ci.ctx.sysTypes.int32) {
             inExpr
-            next into ident
-            specialize (ident { pasType; varType }) [+Ldc_I4 ident.Type.SizeOf]
+            parameter into ident
+            doParameter (ident { pasType; varType }) [+Ldc_I4 ident.Type.SizeOf]
         }
 
     let handleIntrinsic intrinsicSym =
