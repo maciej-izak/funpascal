@@ -1561,29 +1561,11 @@ module Intrinsics =
 
     // TODO warnings for const expressions > 255 or < 0
     let private doChr ci =
-        match ci.cp with
-        | [cp] ->
-            let callInstr, typ = callParamToIl ci.ctx cp None
-            match typ with
-            | IntType ->
-                if ci.popResult then // TODO warning ? about ignored expression
-                    ``Error: Improper expression`` |> ci.ctx.NewMsg ci.ident
-                    ([], Some ci.ctx.sysTypes.char)
-                else
-                    ([
-                        yield! callInstr
-                        yield +Conv Conv_U1
-                        // if ci.popResult then yield +Pop // TODO or not generate call ?
-                     ], Some ci.ctx.sysTypes.char)
-            | _ ->
-                ``Error: %s expected`` "Byte type" |> ci.ctx.NewMsg cp
-                ([], Some ci.ctx.sysTypes.char)
-        | [] ->
-            ``Error: Expected %s type parameter but nothing found`` "byte" |> ci.ctx.NewMsg ci.ident
-            ([], Some ci.ctx.sysTypes.char)
-        | _ ->
-            ``Error: %s expected`` "Only one byte parameter" |> ci.ctx.NewMsg ci.ident
-            ([], Some ci.ctx.sysTypes.char)
+        ParamsBuilder(ci, Some ci.ctx.sysTypes.char) {
+            inExpr
+            next into param
+            specialize (param { int }) [ yield! param.Instructions; +Conv Conv_U1 ]
+        }
 
     let private doOrd ci =
         let pb = ParamsBuilder(ci, Some ci.ctx.sysTypes.int32)
