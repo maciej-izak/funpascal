@@ -1116,6 +1116,14 @@ module Intrinsics =
             else
                 true
 
+        [<CustomOperation("inBlock",MaintainsVariableSpaceUsingBind=true)>]
+        member _.InBlock (_) =
+            if not ci.popResult then
+                ``Error: Improper expression`` |> ctx.NewMsg ci.ident
+                false
+            else
+                true
+
         member _.Bind(pb: ParamBuilder, f) = // for 'into' proper type inference 
             if pb = null then
                 pb
@@ -1133,6 +1141,17 @@ module Intrinsics =
             match b, cp.TryDequeue() with
             | true, (true, cp) -> ParamBuilder(cp, ctx)
             | _ -> null
+
+        [<CustomOperation("noParams",MaintainsVariableSpaceUsingBind=true)>]
+        member _.NoParams (b: bool, [<ProjectionParameter>] f) =
+            match b, cp.TryPeek() with
+            | true, (true, cp) ->
+                ``Error: Unexpected parameter`` |> ctx.NewMsg cp
+                false
+            | true, (false, _) ->
+                f() |> finalIls.Add
+                true
+            | _ -> false
         
         [<CustomOperation("specialize",MaintainsVariableSpaceUsingBind=true)>]
         member _.ParamSpecialize (p: ParamBuilder, [<ProjectionParameter>] f1, [<ProjectionParameter>] f2) =
@@ -1547,17 +1566,14 @@ module Intrinsics =
             ([], None)
 
     let private doHaltAtLineProc ci =
-        match ci.cp with
-        | [] ->
-            let exitCode = int (ci.ctx.messages.PosMap.[ci.ident.BoxPos]).Line
-            ([
-                 +Ldc_I4 exitCode
-                 +Call(ci.ctx.FindMethodReference "EXITPROCESS")
-                 // +Call ctx.sysProc.Exit
-            ], None)
-        | cp::_ ->
-            ``Error: Unexpected parameter`` |> ci.ctx.NewMsg cp
-            ([], None)
+        ParamsBuilder(ci, None) {
+            inBlock
+            noParams [
+                    let exitCode = int (ci.ctx.messages.PosMap.[ci.ident.BoxPos]).Line
+                    +Ldc_I4 exitCode
+                    +Call(ci.ctx.FindMethodReference "EXITPROCESS") // +Call ctx.sysProc.Exit
+                ]
+        }
 
     // TODO warnings for const expressions > 255 or < 0
     let private doChr ci =
