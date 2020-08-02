@@ -1008,12 +1008,12 @@ module Intrinsics =
         | _ -> None
         
     // TODO check only first ident part (see FromDIdent). More advanced cases are handled in findSymbolAndGetPtr
-    let (|VariableIdent|_|) (ctx: Ctx) id =
+    let (|VariableIdent|_|) (ctx: Ctx) ptr id =
         match ctx.FindSym(TypeName.FromDIdent id) with
         | Some s ->
             match s with
             | VariableSym _ ->
-                VariableIdent(findSymbolAndLoad ctx id) |> Some
+                VariableIdent(findSymbolInternal (not ptr) ptr ctx id) |> Some
             | _ -> None
         | _ -> None
 
@@ -1022,101 +1022,192 @@ module Intrinsics =
         | ParamIdent id -> Some(id)
         | _ -> None
     
-    type ParamRec = { Instructions: IlInstruction list; Type: PasType }
-    type VariableIdentKind =
-        | AnyVarId
-        | PtrVarId
+    type IdentKind =
+        | Any
+        | PtrType
+        | PtrVar
+
+    type ParamBuilderResult =
+        | VarParam of PasType option
+        | VarTypeParam of PasType option
+        | TypeParam of PasType option
+        | FloatParam
+        | IntParam
+        | OrdParam
+    
+    type ParamRec = { Instructions: IlInstruction list; Type: PasType; Result: ParamBuilderResult }
+    
+    type ParamLocationPolicy =
+        | InExpr
+        | InBlock
+        | InAny
+        
+    type ExpectedTypeKind =
+        | StandardExp of string
+        | LocationPolicyExp of ParamLocationPolicy
+    
+    type ParamBuildAtom =
+        | InitAtom
+        | LocationAtom
+        | ParamSpecAtom of (IlInstruction list * PasType * ParamBuilderResult) option
+    
+    module Result =
+        let bindAtomLocation f atom =
+            match atom with
+            | Ok (ParamSpecAtom _) -> atom
+            | Error (ParamSpecAtom _) | Ok InitAtom ->
+                if f() then Ok LocationAtom else Error LocationAtom
+            | _ -> raise (InternalError "2020080203")
+    
+        let bindAtomParamSpec f ef atom =
+            match atom with
+            | Ok (ParamSpecAtom _) -> atom
+            | Ok LocationAtom | Error (ParamSpecAtom _) | Ok InitAtom -> f()
+            | Error LocationAtom -> ef()
+            | _ -> raise (InternalError "2020080204")
     
     [<AllowNullLiteral>]
-    type ParamBuilder(cp: CallParam, ctx: Ctx) =
+    type ParamBuilder(cp, ci) =
+        let ctx = ci.ctx
         
-        let expectedTypes = List<string>()
+        let expectedTypes = List<ExpectedTypeKind>()
+        
+        let isExpr() =
+            if ci.popResult then
+                expectedTypes.Add <| LocationPolicyExp InExpr
+                false
+            else true
+        
+        let isBlock() =
+            if not ci.popResult then
+                expectedTypes.Add <| LocationPolicyExp InBlock
+                false
+            else true
+            
+        let paramSpecError typ () =
+            expectedTypes.Add <| StandardExp typ
+            None |> ParamSpecAtom |> Error
+        
+        let intSpecError = paramSpecError "integer"
         
         let tryAsInt() =
             let inst, typ = callParamToIl ctx cp None
             match typ with
-            | IntType -> Some(inst, typ)
-            | _ ->
-                expectedTypes.Add "integer"
-                None
+            | IntType -> Some(inst, typ, IntParam) |> ParamSpecAtom |> Ok
+            | _ -> intSpecError()
+            
+        let floatSpecError = paramSpecError "float"
                 
         let tryAsFloat() =
             let inst, typ = callParamToIl ctx cp None
             match typ with
-            | FloatType -> Some(inst, typ)
-            | _ ->
-                expectedTypes.Add "float"
-                None
+            | FloatType -> Some(inst, typ, FloatParam) |> ParamSpecAtom |> Ok
+            | _ -> floatSpecError()
+            
+        let ordSpecError = paramSpecError "ordinal"
         
         let tryAsOrd() =
             let inst, typ = callParamToIl ctx cp None
             match typ with
-            | OrdType -> Some(inst, typ)
-            | _ ->
-                expectedTypes.Add "ordinal"
-                None
+            | OrdType -> Some(inst, typ, OrdParam) |> ParamSpecAtom |> Ok
+            | _ -> ordSpecError()
+                
+        let addIdentExpectedMsg identKind varKind =
+            identKind + " ident" +
+            match varKind with
+            | Any -> ""
+            | PtrType | PtrVar -> " (pointer type)"
+            |> StandardExp
+            |> expectedTypes.Add
+            None |> ParamSpecAtom |> Error
         
-        let tryAsPasType() =
+        let pasTypeSpecError varKind () = addIdentExpectedMsg "type" varKind
+        
+        let tryAsPasType varKind () =
             match getParamIdent cp with
-            | Some(TypePasType ctx t) -> Some([], t)
-            | _ ->
-                expectedTypes.Add "type ident"
-                None
-                
-        let tryAsVarType() =
-            match getParamIdent cp with
-            | Some(VariablePasType ctx t) -> Some([], t)
-            | _ ->
-                expectedTypes.Add "variable ident"
-                None                
-
-        let tryAsVarIdent varKind () =
-            let addIdentExpectedMsg() =
-                "variable ident" +
+            | Some(TypePasType ctx t) ->
                 match varKind with
-                | AnyVarId -> ""
-                | PtrVarId -> " (with pointer type)"
-                |> expectedTypes.Add
-                
-            match getParamIdent cp with
-            | Some(VariableIdent ctx ((_, t) as vi)) ->
-                match varKind with
-                | AnyVarId -> Some vi
-                | PtrVarId ->
+                | Any -> Some([], t, TypeParam None) |> ParamSpecAtom |> Ok
+                | PtrType ->
                     match t.kind with
-                    | TkPointer _ -> Some vi
-                    | _ ->
-                        addIdentExpectedMsg()
-                        None
-            | _ ->
-                addIdentExpectedMsg()
-                None
-            
-        member _.Return(_) = None
-        
-        [<CustomOperation("float",MaintainsVariableSpaceUsingBind=true)>]
-        member _.TryAsFloat (v) = Option.orElseWith tryAsFloat v
+                    | TkPointer pt -> Some([], t, TypeParam(Some pt)) |> ParamSpecAtom |> Ok
+                    | _ -> pasTypeSpecError varKind ()
+                | PtrVar -> raise(InternalError "2020080300")
+            | _ -> pasTypeSpecError varKind ()
+                
+        let varTypeSpecError varKind () = addIdentExpectedMsg "variable" varKind    
+                
+        let tryAsVarType varKind () =
+            match getParamIdent cp with
+            | Some(VariablePasType ctx t) ->
+                match varKind with
+                | Any -> Some([], t, VarTypeParam None) |> ParamSpecAtom |> Ok
+                | PtrType ->
+                    match t.kind with
+                    | TkPointer pt -> Some([], t, VarTypeParam(Some pt)) |> ParamSpecAtom |> Ok
+                    | _ -> varTypeSpecError varKind ()
+                | PtrVar -> raise(InternalError "2020080301")    
+            | _ -> varTypeSpecError varKind ()
 
+        let varIdentSpecError varKind () = addIdentExpectedMsg "variable" varKind
+        
+        let tryAsVarIdent varKind () =
+            let ptr = match varKind with | PtrVar -> true | _ -> false
+            match getParamIdent cp with
+            | Some(VariableIdent ctx ptr (il, t)) ->
+                match varKind with
+                | Any -> Some(il, t, VarParam None) |> ParamSpecAtom |> Ok
+                | PtrType | PtrVar ->
+                    match t.kind with
+                    | TkPointer pt -> Some(il, t, VarParam(Some pt)) |> ParamSpecAtom |> Ok
+                    | _ -> varIdentSpecError varKind ()
+            | _ -> varIdentSpecError varKind ()
+            
+        member _.Return (unit) = Ok InitAtom
+        
+        [<CustomOperation("inExpr",MaintainsVariableSpaceUsingBind=true)>]
+        member _.InExpr v = Result.bindAtomLocation isExpr v
+
+        [<CustomOperation("inBlock",MaintainsVariableSpaceUsingBind=true)>]
+        member _.InBlock v = Result.bindAtomLocation isBlock v
+                
         [<CustomOperation("int",MaintainsVariableSpaceUsingBind=true)>]
-        member _.TryAsInt (v) = Option.orElseWith tryAsInt v
+        member _.TryAsInt v = Result.bindAtomParamSpec tryAsInt intSpecError v
+
+        [<CustomOperation("float",MaintainsVariableSpaceUsingBind=true)>]
+        member _.TryAsFloat v = Result.bindAtomParamSpec tryAsFloat floatSpecError v
 
         [<CustomOperation("pasType",MaintainsVariableSpaceUsingBind=true)>]
-        member _.TryAsPasType (v) = Option.orElseWith tryAsPasType v
+        member _.TryAsPasType (v, varKind) = Result.bindAtomParamSpec (tryAsPasType varKind) (pasTypeSpecError varKind) v
 
         [<CustomOperation("varType",MaintainsVariableSpaceUsingBind=true)>]
-        member _.TryAsVarType (v) = Option.orElseWith tryAsVarType v
+        member _.TryAsVarType (v, varKind) = Result.bindAtomParamSpec (tryAsVarType varKind) (varTypeSpecError varKind) v
 
         [<CustomOperation("var",MaintainsVariableSpaceUsingBind=true)>]
-        member _.TryAsVar (v, varKind) = Option.orElseWith (tryAsVarIdent varKind) v
+        member _.TryAsVar (v, varKind) = Result.bindAtomParamSpec (tryAsVarIdent varKind) (varIdentSpecError varKind) v
 
         [<CustomOperation("ord",MaintainsVariableSpaceUsingBind=true)>]
-        member _.TryAsOrd (v) = Option.orElseWith tryAsOrd v
+        member _.TryAsOrd v = Result.bindAtomParamSpec tryAsOrd ordSpecError v
                 
-        member this.Run(r) =
+        member this.Run r =
             match r with
-            | Some (ils, t) -> Some{ Instructions = ils; Type = t}
+            | Ok(ParamSpecAtom(Some(ils, t, p))) -> Some{ Instructions = ils; Type = t; Result = p}
+            | Ok _ -> raise (InternalError "2020080205")
             | _ ->
-                ``Error: %s expected`` (String.concat " or " expectedTypes) |> ctx.NewMsg cp
+                let finalList = List<string>()
+                Seq.fold (
+                    fun s i ->
+                         match s, i with
+                         | None, StandardExp s -> finalList.Add s; None
+                         | None, LocationPolicyExp lpe ->
+                             match lpe with
+                             | InExpr -> Some "in expression"
+                             | InBlock -> Some "in block"
+                             | InAny -> None
+                         | Some suffix, StandardExp s -> finalList.Add (sprintf "%s %s" s suffix); None
+                         | _ -> raise (InternalError "2020080201")
+                    ) None expectedTypes |> (fun s -> if s.IsSome then raise (InternalError "2020080202"))
+                ``Error: %s expected`` (String.concat " or " finalList) |> ctx.NewMsg cp
                 None
             
 // ``Error: Expected %s type but '%O' found`` "float" typ.name |> ctx.NewMsg cp
@@ -1131,14 +1222,14 @@ module Intrinsics =
         
         let nextParam() =
             match cp.TryDequeue() with
-            | true, cp -> ParamBuilder(cp, ctx) |> Some |> Some
+            | true, cp -> ParamBuilder(cp, ci) |> Some |> Some
             | _ ->
                 ``Error: More parameters expected`` |> ctx.NewMsg ci.ident
                 None
         
         let nextOptionalParam() =
             match cp.TryDequeue() with
-            | true, cp -> ParamBuilder(cp, ctx) |> Some |> Some
+            | true, cp -> ParamBuilder(cp, ci) |> Some |> Some
             | false, _ -> None |> Some
             
         let noParams f () =
@@ -1167,6 +1258,7 @@ module Intrinsics =
         member val ReturnType = rt with get, set
         
         member _.Return a = a
+        member _.Return (a: unit) = Some()
         
         [<CustomOperation("inExpr",MaintainsVariableSpaceUsingBind=true)>]
         member _.InExpr (_) =
@@ -1512,63 +1604,34 @@ module Intrinsics =
             +Call ctx.sysProc.WriteLine
          ], None)
 
-    // TODO allow return pointer result for New(varId) (forbridden in FPC)
     let private doNew ci =
-        match ci.cp with
-        | [ParamIdent id] ->
-            // TODO check only first ident part (see FromDIdent). More advanced cases are handled in findSymbolAndGetPtr
-            match ci.ctx.FindSym(TypeName.FromDIdent id) with
-            | Some s ->
-                // TODO more complicated New like New(foo.x^.x.z)
-                match s with
-                | VariableSym _ when ci.InExpr ->
-                    ``Error: %s expected`` "Pointer type identifier" |> ci.ctx.NewMsg id
-                    ([], Some ci.ctx.sysTypes.unknown)
-                | VariableSym _ ->
-                    let ils, t = findSymbolAndGetPtr ci.ctx id
-                    match t.kind with
-                    | TkPointer pt ->
-                        ([
-                            yield! ils
-                            +Ldc_I4 pt.SizeOf
-                            +Call ci.ctx.sysProc.GetMem
-                            +Dup
-                            +Initobj pt.raw
-                            +Stind Ind_U
-                        ], None)
-                    | _ ->
-                        ``Error: %O type expected but '%O' found`` "Pointer" (t.name) |> ci.ctx.NewMsg id
-                        ([], None)
-                | TypeSym _ when not ci.InExpr ->
-                    ``Error: %s expected`` "Variable identifier" |> ci.ctx.NewMsg id
-                    ([], None)
-                // TODO warning for untyped "Pointer"
-                | TypeSym ({kind=TkPointer(pt)} as t) ->
-                    ([
-                        +Ldc_I4 pt.SizeOf
-                        +Call ci.ctx.sysProc.GetMem
-                        +Dup
-                        +Initobj pt.raw
-                    ], Some t)
-                | _ ->
-                    ``Error: %s expected`` "Variable or pointer type identifier" |> ci.ctx.NewMsg id
-                    ([], Some ci.ctx.sysTypes.unknown)
-            | None ->
-                ``Error: Cannot find symbol '%O'`` id |> ci.ctx.NewMsg id
-                ([], None)
-        // TODO in the case of error for PopResult do unknown type?
-        | cp::_ ->
-            ``Error: Expected ident parameter but expression found`` |> ci.ctx.NewMsg cp
-            ([], None)
-        | [] ->
-            ``Error: Expected ident parameter but nothing found`` |> ci.ctx.NewMsg ci.ident
-            ([], None)
-
+        let pb = ParamsBuilder(ci, Some ci.ctx.sysTypes.unknown)
+        pb {
+            parameter into ident // TODO warning for untyped "Pointer"
+            doParameter ( ident { inBlock; var PtrVar; inExpr; pasType PtrType } ) [
+                match ident.Result with
+                | VarParam (Some pt) -> // TODO more complicated New like New(foo.x^.x.z)
+                    pb.ReturnType <- None // TODO allow return pointer result for New(varId) (forbridden in FPC)
+                    yield! ident.Instructions
+                    +Ldc_I4 pt.SizeOf
+                    +Call ci.ctx.sysProc.GetMem
+                    +Dup
+                    +Initobj pt.raw
+                    +Stind Ind_U
+                | TypeParam (Some pt) ->
+                    pb.ReturnType <- Some ident.Type
+                    +Ldc_I4 pt.SizeOf
+                    +Call ci.ctx.sysProc.GetMem
+                    +Dup
+                    +Initobj pt.raw
+                | _ -> raise (InternalError "2020080200")
+            ]}
+    
     let private doDispose ci =
         ParamsBuilder(ci, None) {
             inBlock
             parameter into ident
-            doParameter ( ident { var PtrVarId } ) [yield! ident.Instructions; +Call ci.ctx.sysProc.FreeMem]
+            doParameter ( ident { var PtrType } ) [yield! ident.Instructions; +Call ci.ctx.sysProc.FreeMem]
         }
     
     // TODO errorcode global variable
@@ -1633,7 +1696,7 @@ module Intrinsics =
         ParamsBuilder(ci, Some ci.ctx.sysTypes.int32) {
             inExpr
             parameter into ident
-            doParameter (ident { pasType; varType }) [+Ldc_I4 ident.Type.SizeOf]
+            doParameter (ident { pasType Any; varType Any }) [+Ldc_I4 ident.Type.SizeOf]
         }
 
     let handleIntrinsic intrinsicSym =
