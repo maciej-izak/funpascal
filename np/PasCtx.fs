@@ -1007,12 +1007,25 @@ module Intrinsics =
             | _ -> None
         | _ -> None
         
+    // TODO check only first ident part (see FromDIdent). More advanced cases are handled in findSymbolAndGetPtr
+    let (|VariableIdent|_|) (ctx: Ctx) id =
+        match ctx.FindSym(TypeName.FromDIdent id) with
+        | Some s ->
+            match s with
+            | VariableSym _ ->
+                VariableIdent(findSymbolAndLoad ctx id) |> Some
+            | _ -> None
+        | _ -> None
+
     let getParamIdent cp =
         match cp with
         | ParamIdent id -> Some(id)
         | _ -> None
     
     type ParamRec = { Instructions: IlInstruction list; Type: PasType }
+    type VariableIdentKind =
+        | AnyVarId
+        | PtrVarId
     
     [<AllowNullLiteral>]
     type ParamBuilder(cp: CallParam, ctx: Ctx) =
@@ -1056,6 +1069,28 @@ module Intrinsics =
             | _ ->
                 expectedTypes.Add "variable ident"
                 None                
+
+        let tryAsVarIdent varKind () =
+            let addIdentExpectedMsg() =
+                "variable ident" +
+                match varKind with
+                | AnyVarId -> ""
+                | PtrVarId -> " (with pointer type)"
+                |> expectedTypes.Add
+                
+            match getParamIdent cp with
+            | Some(VariableIdent ctx ((_, t) as vi)) ->
+                match varKind with
+                | AnyVarId -> Some vi
+                | PtrVarId ->
+                    match t.kind with
+                    | TkPointer _ -> Some vi
+                    | _ ->
+                        addIdentExpectedMsg()
+                        None
+            | _ ->
+                addIdentExpectedMsg()
+                None
             
         member _.Return(_) = None
         
@@ -1070,6 +1105,9 @@ module Intrinsics =
 
         [<CustomOperation("varType",MaintainsVariableSpaceUsingBind=true)>]
         member _.TryAsVarType (v) = Option.orElseWith tryAsVarType v
+
+        [<CustomOperation("var",MaintainsVariableSpaceUsingBind=true)>]
+        member _.TryAsVar (v, varKind) = Option.orElseWith (tryAsVarIdent varKind) v
 
         [<CustomOperation("ord",MaintainsVariableSpaceUsingBind=true)>]
         member _.TryAsOrd (v) = Option.orElseWith tryAsOrd v
@@ -1098,9 +1136,7 @@ module Intrinsics =
             | true -> f()
             | _ -> [], self.ReturnType
                 
-        member _.Return( pb: ParamBuilder option option) = pb
-        member _.Return( u: unit ) = true
-        member _.Return( b: bool ) = b
+        member _.Return a = a
         
         [<CustomOperation("inExpr",MaintainsVariableSpaceUsingBind=true)>]
         member _.InExpr (_) =
@@ -1125,9 +1161,7 @@ module Intrinsics =
 
         member _.Bind(p: ParamBuilder option option, f) = // for 'into' proper type inference 
             f(p)
-        
-        member _.Bind((v, p), c) = if v then c p else false
-        
+
         member _.Bind(c, f) =
             match c with
             | true -> f(c)
@@ -1537,35 +1571,42 @@ module Intrinsics =
             ([], None)
 
     let private doDispose ci =
-        match ci.cp with
-        | [ParamIdent id] ->
-            // TODO check only first ident part (see FromDIdent). More advanced cases are handled in findSymbolAndGetPtr
-            match ci.ctx.FindSym(TypeName.FromDIdent id) with
-            | Some s ->
-                match s with
-                | VariableSym _ ->
-                    let ils, t = findSymbolAndLoad ci.ctx id
-                    match t.kind with
-                    | TkPointer _ ->
-                        ([
-                            yield! ils
-                            +Call ci.ctx.sysProc.FreeMem
-                        ], None)
-                    | _ ->
-                        ``Error: %O type expected but '%O' found`` "Pointer" (t.name) |> ci.ctx.NewMsg id
-                        ([], None)
-                | _ ->
-                    ``Error: %s expected`` "Variable identifier" |> ci.ctx.NewMsg id
-                    ([], None)
-            | None ->
-                ``Error: Cannot find symbol '%O'`` id |> ci.ctx.NewMsg id
-                ([], None)
-        | cp::_ ->
-            ``Error: Expected ident parameter but expression found`` |> ci.ctx.NewMsg cp
-            ([], None)
-        | [] ->
-            ``Error: Expected ident parameter but nothing found`` |> ci.ctx.NewMsg ci.ident
-            ([], None)
+        ParamsBuilder(ci, None) {
+            inBlock
+            parameter into ident
+            doParameter ( ident { var PtrVarId } ) [yield! ident.Instructions; +Call ci.ctx.sysProc.FreeMem]
+        }
+    
+//    let private doDispose ci =
+//        match ci.cp with
+//        | [ParamIdent id] ->
+//            // TODO check only first ident part (see FromDIdent). More advanced cases are handled in findSymbolAndGetPtr
+//            match ci.ctx.FindSym(TypeName.FromDIdent id) with
+//            | Some s ->
+//                match s with
+//                | VariableSym _ ->
+//                    let ils, t = findSymbolAndLoad ci.ctx id
+//                    match t.kind with
+//                    | TkPointer _ ->
+//                        ([
+//                            yield! ils
+//                            +Call ci.ctx.sysProc.FreeMem
+//                        ], None)
+//                    | _ ->
+//                        ``Error: %O type expected but '%O' found`` "Pointer" (t.name) |> ci.ctx.NewMsg id
+//                        ([], None)
+//                | _ ->
+//                    ``Error: %s expected`` "Variable identifier" |> ci.ctx.NewMsg id
+//                    ([], None)
+//            | None ->
+//                ``Error: Cannot find symbol '%O'`` id |> ci.ctx.NewMsg id
+//                ([], None)
+//        | cp::_ ->
+//            ``Error: Expected ident parameter but expression found`` |> ci.ctx.NewMsg cp
+//            ([], None)
+//        | [] ->
+//            ``Error: Expected ident parameter but nothing found`` |> ci.ctx.NewMsg ci.ident
+//            ([], None)
 
     // TODO errorcode global variable
     let private doHalt ci =
