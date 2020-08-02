@@ -1129,87 +1129,81 @@ module Intrinsics =
         let cp = Queue(ci.cp)
         let finalIls = List<IlInstruction list>()
         
+        let nextParam() =
+            match cp.TryDequeue() with
+            | true, cp -> ParamBuilder(cp, ctx) |> Some |> Some
+            | _ ->
+                ``Error: More parameters expected`` |> ctx.NewMsg ci.ident
+                None
+        
+        let nextOptionalParam() =
+            match cp.TryDequeue() with
+            | true, cp -> ParamBuilder(cp, ctx) |> Some |> Some
+            | false, _ -> None |> Some
+            
+        let noParams f () =
+            match cp.TryPeek() with
+            | true, cp ->
+                ``Error: Unexpected parameter`` |> ctx.NewMsg cp
+                None
+            | false, _ ->
+                f() |> finalIls.Add
+                Some()
+                
+        let paramSpecialize f1 f2 = function
+            | Some p ->
+                match f1(p) with
+                | Some p -> f2(p) |> finalIls.Add; Some()
+                | _ -> None
+            | None -> None
+            
+        let optionalParamSpecialize f1 f2 f3 = function
+            | Some p ->
+                match f1(p) with
+                | Some p -> f2(p) |> finalIls.Add; Some()
+                | _ -> None
+            | None -> f3() |> finalIls.Add; Some()
+        
         member val ReturnType = rt with get, set
-                
-        member self.Bind(v, f) =
-            match v with
-            | true -> f()
-            | _ -> [], self.ReturnType
-                
+        
         member _.Return a = a
         
         [<CustomOperation("inExpr",MaintainsVariableSpaceUsingBind=true)>]
         member _.InExpr (_) =
             if ci.popResult then // TODO warning ? about ignored expression
                 ``Error: Improper expression`` |> ctx.NewMsg ci.ident
-                false
+                None
             else
-                true
+                Some()
 
         [<CustomOperation("inBlock",MaintainsVariableSpaceUsingBind=true)>]
         member _.InBlock (_) =
             if not ci.popResult then
                 ``Error: Improper expression`` |> ctx.NewMsg ci.ident
-                false
+                None
             else
-                true
-
-        member _.Bind(pb: ParamBuilder, f) = // for 'into' proper type inference 
-            if pb = null then
-                pb
-            else f(pb)
+                Some()
 
         member _.Bind(p: ParamBuilder option option, f) = // for 'into' proper type inference 
-            f(p)
-
-        member _.Bind(c, f) =
-            match c with
-            | true -> f(c)
-            | false -> false
+            Option.map f p
 
         [<CustomOperation("parameter",MaintainsVariableSpaceUsingBind=true,AllowIntoPattern=true)>]
-        member _.NextParam (b: bool) =
-            match b, cp.TryDequeue() with
-            | true, (true, cp) -> ParamBuilder(cp, ctx) |> Some |> Some
-            | _ -> None
+        member _.NextParam v = Option.bind nextParam v 
 
         [<CustomOperation("optional",MaintainsVariableSpaceUsingBind=true,AllowIntoPattern=true)>]
-        member _.NextOptionalParam (b: bool) =
-            match b, cp.TryDequeue() with
-            | true, (true, cp) -> ParamBuilder(cp, ctx) |> Some |> Some
-            | true, (false, _) -> None |> Some
-            | _ -> None
+        member _.NextOptionalParam v = Option.bind nextOptionalParam v
 
         [<CustomOperation("noParams",MaintainsVariableSpaceUsingBind=true)>]
-        member _.NoParams (b: bool, [<ProjectionParameter>] f) =
-            match b, cp.TryPeek() with
-            | true, (true, cp) ->
-                ``Error: Unexpected parameter`` |> ctx.NewMsg cp
-                false
-            | true, (false, _) ->
-                f() |> finalIls.Add
-                true
-            | _ -> false
+        member _.NoParams (v, [<ProjectionParameter>] f) = Option.bind (noParams f) v
         
         [<CustomOperation("doParameter", MaintainsVariableSpaceUsingBind=true)>]
         member _.ParamSpecialize (p: ParamBuilder option option, [<ProjectionParameter>] f1, [<ProjectionParameter>] f2) =
-            match p with
-            | Some(Some p) ->
-                match f1(p) with
-                | Some p -> f2(p) |> finalIls.Add; true
-                | _ -> false
-            | _ -> false
+            Option.bind (paramSpecialize f1 f2) p
 
         [<CustomOperation("doOptional", MaintainsVariableSpaceUsingBind=true)>]
         member _.OptionalParamSpecialize (p: ParamBuilder option option, [<ProjectionParameter>] f1, [<ProjectionParameter>] f2,
                                   [<ProjectionParameter>] f3) =
-            match p with
-            | Some(Some p) ->
-                match f1(p) with
-                | Some p -> f2(p) |> finalIls.Add; true
-                | _ -> false
-            | Some None -> f3() |> finalIls.Add; true
-            | _ -> false
+            Option.bind (optionalParamSpecialize f1 f2 f3) p
                 
         member self.Run(r) =
             let rt = self.ReturnType
@@ -1217,7 +1211,7 @@ module Intrinsics =
             | _, (true, cp) ->
                 ``Error: Unexpected parameter`` |> ctx.NewMsg cp
                 [], rt
-            | true, (false, _) -> finalIls |> Seq.concat |> List.ofSeq, rt // final generated    
+            | Some _, (false, _) -> finalIls |> Seq.concat |> List.ofSeq, rt // final generated    
             | _ -> [], rt // other error reported in some operators / other CE
                 
     let private doGenWrite ci =
@@ -1577,37 +1571,6 @@ module Intrinsics =
             doParameter ( ident { var PtrVarId } ) [yield! ident.Instructions; +Call ci.ctx.sysProc.FreeMem]
         }
     
-//    let private doDispose ci =
-//        match ci.cp with
-//        | [ParamIdent id] ->
-//            // TODO check only first ident part (see FromDIdent). More advanced cases are handled in findSymbolAndGetPtr
-//            match ci.ctx.FindSym(TypeName.FromDIdent id) with
-//            | Some s ->
-//                match s with
-//                | VariableSym _ ->
-//                    let ils, t = findSymbolAndLoad ci.ctx id
-//                    match t.kind with
-//                    | TkPointer _ ->
-//                        ([
-//                            yield! ils
-//                            +Call ci.ctx.sysProc.FreeMem
-//                        ], None)
-//                    | _ ->
-//                        ``Error: %O type expected but '%O' found`` "Pointer" (t.name) |> ci.ctx.NewMsg id
-//                        ([], None)
-//                | _ ->
-//                    ``Error: %s expected`` "Variable identifier" |> ci.ctx.NewMsg id
-//                    ([], None)
-//            | None ->
-//                ``Error: Cannot find symbol '%O'`` id |> ci.ctx.NewMsg id
-//                ([], None)
-//        | cp::_ ->
-//            ``Error: Expected ident parameter but expression found`` |> ci.ctx.NewMsg cp
-//            ([], None)
-//        | [] ->
-//            ``Error: Expected ident parameter but nothing found`` |> ci.ctx.NewMsg ci.ident
-//            ([], None)
-
     // TODO errorcode global variable
     let private doHalt ci =
         let exitProcess = +Call(ci.ctx.FindMethodReference "EXITPROCESS")

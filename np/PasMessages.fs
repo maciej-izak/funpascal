@@ -69,6 +69,9 @@ module Errors =
     let ``Error: Improper expression`` =
         MsgError(Some 19, "Improper expression")
 
+    let ``Error: More parameters expected`` =
+        MsgError(Some 20, "More parameters expected")
+
 [<AutoOpen>]
 module Warnings =
     let ``Warning: Cannot find enviroment variable '%s'`` s =
