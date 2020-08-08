@@ -1054,7 +1054,7 @@ module Intrinsics =
     type ParamBuildRec = {
         location: ParamLocationPolicy option
         ref: ParamRefPolicy option
-        typ: ParamTypPolicy option
+        typ: (ParamTypPolicy * ParamRec option) option
     }
     with
         static member Empty = { location = None; ref = None; typ = None }    
@@ -1062,7 +1062,7 @@ module Intrinsics =
     type ParamBuildState =
         | PBProcess
         | PBError
-        | PBOk of IlInstruction list * PasType * ParamBuilderResult
+        | PBOk
     with
         member this.bind v =
             match this, v with
@@ -1092,11 +1092,11 @@ module Intrinsics =
             | PBOk _ -> pr
             | PBError | PBProcess ->
                 match pr.current with
-                | { location=None; ref=None; typ=None } ->
+                | { location=None } ->
                     let newState, location = pr.state.bind (f pr.current)
                     { pr with
-                          state = newState
-                          current = { pr.current with location = Some location } }
+                        state = newState
+                        current = { pr.current with location = Some location } }
                 | _ -> raise (InternalError "2020080203")
     
         let bindParamRef f pr =
@@ -1104,11 +1104,11 @@ module Intrinsics =
             | PBOk _ -> pr
             | PBError | PBProcess ->
                 match pr.current with
-                | { ref=None; typ=None } ->
+                | { ref=None } ->
                     let newState, ref = pr.state.bind (f pr.current)
                     { pr with
-                          state = newState
-                          current = { pr.current with ref = Some ref } }
+                        state = newState
+                        current = { pr.current with ref = Some ref } }
                 | _ -> raise (InternalError "2020080602")
 
         let bindParamTyp f pr =
@@ -1117,17 +1117,21 @@ module Intrinsics =
             | PBError | PBProcess ->
                 match pr.current with
                 | { typ=None } ->
-                    let newState, (typ, res) = pr.state.bind (f pr.current)
-                    let newCurrent = { pr.current with typ = Some typ }
-                    match newState, res with
-                    | PBProcess, Some res -> { pr with state = PBOk res; current = newCurrent } // final step
-                    | PBError, _ -> // next try
-                        { pr with
-                              candidates = newCurrent::pr.candidates
-                              state = PBProcess
-                              current = ParamBuildRec.Empty }
-                    | _ -> raise (InternalError "2020080603")
+                    let newState, typ = pr.state.bind (f pr.current)
+                    { pr with
+                        state = newState
+                        current = { pr.current with typ = Some typ } }
                 | _ -> raise (InternalError "2020080604")
+                
+        let bindParamNextAttempt pr =
+            match pr.state with
+            | PBOk -> pr
+            | PBProcess -> { pr with state = PBOk } // TODO ? basic check pr.current ?
+            | PBError ->
+                { pr with
+                    candidates = pr.current::pr.candidates
+                    current = ParamBuildRec.Empty
+                    state = PBProcess }
     
     [<AllowNullLiteral>]
     type ParamBuilder(cp, ci) =
@@ -1148,29 +1152,29 @@ module Intrinsics =
         let tryAsInt _ =
             let inst, typ = callParamToIl ctx cp None
             match typ with
-            | IntType -> Ok(IntTyp, Some(inst, typ, IntParam))
+            | IntType -> Ok(IntTyp, Some{Instructions=inst; Type=typ; Result=IntParam})
             | _ -> Error(IntTyp, None)
             
         let tryAsFloat _ =
             let inst, typ = callParamToIl ctx cp None
             match typ with
-            | FloatType -> Ok(FloatTyp, Some(inst, typ, FloatParam))
+            | FloatType -> Ok(FloatTyp, Some{Instructions=inst; Type=typ; Result=FloatParam})
             | _ -> Error(FloatTyp, None)
             
         let tryAsOrd _ =
             let inst, typ = callParamToIl ctx cp None
             match typ with
-            | OrdType -> Ok(OrdTyp, Some(inst, typ, OrdParam))
+            | OrdType -> Ok(OrdTyp,  Some{Instructions=inst; Type=typ; Result=OrdParam})
             | _ -> Error(OrdTyp, None)
                 
         let tryAsPasType typ _ =
             match getParamIdent cp with
             | Some(TypePasType ctx t) ->
                 match typ with
-                | PasType None -> Ok(typ, Some([], t, TypeParam None))
+                | PasType None -> Ok(typ, Some{Instructions=[]; Type=t; Result=TypeParam None})
                 | PasType(Some(PtrType)) ->
                     match t.kind with
-                    | TkPointer pt -> Ok(typ, Some([], t, TypeParam(Some pt)))
+                    | TkPointer pt -> Ok(typ, Some{Instructions=[]; Type=t; Result=TypeParam(Some pt)})
                     | _ -> Error(typ, None)
                 | _ -> raise(InternalError "2020080300")
             | _ -> Error(typ, None)
@@ -1179,10 +1183,10 @@ module Intrinsics =
             match getParamIdent cp with
             | Some(VariablePasType ctx t) ->
                 match typ with
-                | VarType None -> Ok(typ, Some([], t, VarTypeParam None))
+                | VarType None -> Ok(typ, Some{Instructions=[]; Type=t; Result=VarTypeParam None})
                 | VarType(Some(PtrType)) ->
                     match t.kind with
-                    | TkPointer pt -> Ok(typ, Some([], t, VarTypeParam(Some pt)))
+                    | TkPointer pt -> Ok(typ, Some{Instructions=[]; Type=t; Result=VarTypeParam(Some pt)})
                     | _ -> Error(typ, None)
                 | _ -> raise(InternalError "2020080301")    
             | _ -> Error(typ, None)
@@ -1192,10 +1196,18 @@ module Intrinsics =
             match getParamIdent cp with
             | Some(VariableIdent ctx byRef (il, t)) ->
                 match typ with
-                | Var None -> Ok(typ, Some(il, t, VarParam None))
+                | Var None -> Ok(typ, Some{Instructions=il; Type=t; Result=VarParam None})
                 | Var(Some(PtrType)) ->
                     match t.kind with
-                    | TkPointer pt -> Ok(typ, Some(il, t, VarParam(Some pt)))
+                    | TkPointer pt -> Ok(typ, Some{Instructions=il; Type=t; Result=VarParam(Some pt)})
+                    | _ -> Error(typ, None)
+                | Var(Some(FloatTyp)) ->
+                    match t with
+                    | FloatType -> Ok(typ, Some{Instructions=il; Type=t; Result=VarParam None})
+                    | _ -> Error(typ, None)
+                | Var(Some(OrdTyp)) ->
+                    match t with
+                    | OrdType -> Ok(typ, Some{Instructions=il; Type=t; Result=VarParam None})
                     | _ -> Error(typ, None)
                 | _ -> raise(InternalError "2020080800")    
             | _ -> Error(typ, None)
@@ -1217,6 +1229,9 @@ module Intrinsics =
         [<CustomOperation("float",MaintainsVariableSpace=true)>]
         member _.TryAsFloat v = Result.bindParamTyp tryAsFloat v
 
+        [<CustomOperation("ord",MaintainsVariableSpace=true)>]
+        member _.TryAsOrd v = Result.bindParamTyp tryAsOrd v
+
         [<CustomOperation("anyType",MaintainsVariableSpace=true)>]
         member _.TryAsAnyType v = Result.bindParamTyp (tryAsPasType (PasType None)) v
 
@@ -1229,17 +1244,21 @@ module Intrinsics =
         [<CustomOperation("var",MaintainsVariableSpace=true)>]
         member _.TryAsVar v = Result.bindParamTyp (tryAsVarIdent (Var None)) v
 
+        [<CustomOperation("varAs",MaintainsVariableSpace=true)>]
+        member _.TryAsVarAs(v, t) = Result.bindParamTyp (tryAsVarIdent (Var (Some t))) v
+
         [<CustomOperation("ptrVar",MaintainsVariableSpace=true)>]
         member _.TryAsPtrVar v = Result.bindParamTyp (tryAsVarIdent (Var (Some(PtrType)))) v
 
-        [<CustomOperation("ord",MaintainsVariableSpace=true)>]
-        member _.TryAsOrd v = Result.bindParamTyp tryAsOrd v
+        [<CustomOperation("OR",MaintainsVariableSpace=true)>]
+        member _.TryAsOr v = Result.bindParamNextAttempt v
                 
-        member this.Run r =
-            match r.state with
-            | PBOk(ils, t, p) -> Some{ Instructions = ils; Type = t; Result = p}
-            | PBError -> raise (InternalError "2020080205")
-            | PBProcess ->
+        member this.Run v =
+            let r = Result.bindParamNextAttempt v // finalize process
+            match r.state, r.current.typ with
+            | PBOk, Some(_, r) -> r
+            | PBError, _ -> raise (InternalError "2020080205")
+            | PBProcess, _ ->
                 let finalList = List<string>()
 //                Seq.fold (
 //                    fun s i ->
@@ -1255,6 +1274,7 @@ module Intrinsics =
 //                    ) None expectedTypes |> (fun s -> if s.IsSome then raise (InternalError "2020080202"))
                 ``Error: %s expected`` (String.concat " or " finalList) |> ctx.NewMsg cp
                 None
+            | _ -> raise (InternalError "2020080801")
             
 // ``Error: Expected %s type but '%O' found`` "float" typ.name |> ctx.NewMsg cp
 //        | [] ->
@@ -1513,11 +1533,12 @@ module Intrinsics =
                 | NegativeDelta -> +Ldc_I4 -1 // TODO ? Convert to float id needed ?
         ]
 
-//    let private deltaModify2 delta ci =
-//        ParamsBuilder(ci, None) {
-//            parameter into value
-//            doParameter ( value { var } ) []
-//        }
+    let private deltaModify2 delta ci =
+        ParamsBuilder(ci, None) {
+            parameter into value
+            doParameter ( value { varAs FloatTyp; OR; varAs OrdTyp } ) [
+            ]
+        }
 //        match ci with
 //        | FloatOrOrdParamIdent(inst, EofOptFloatOrOrdParamValue(typ, dInst)) ->
 //            let indKind = typ.IndKind
@@ -1654,7 +1675,7 @@ module Intrinsics =
         let pb = ParamsBuilder(ci, Some ci.ctx.sysTypes.unknown)
         pb {
             parameter into ident // TODO warning for untyped "Pointer"
-            doParameter ( ident { inBlock; byRef; ptrVar; inExpr; ptrType } ) [
+            doParameter ( ident { inBlock; byRef; ptrVar; OR; inExpr; ptrType } ) [
                 match ident.Result with
                 | VarParam (Some pt) -> // TODO more complicated New like New(foo.x^.x.z)
                     pb.ReturnType <- None // TODO allow return pointer result for New(varId) (forbridden in FPC)
@@ -1727,7 +1748,7 @@ module Intrinsics =
         ParamsBuilder(ci, Some ci.ctx.sysTypes.int64) {
             inExpr
             parameter into param
-            doParameter (param { float; int })
+            doParameter (param { float; OR; int })
                 [
                     yield! param.Instructions
                     if (f: MethodReference voption).IsSome then +Call f.Value
@@ -1742,7 +1763,7 @@ module Intrinsics =
         ParamsBuilder(ci, Some ci.ctx.sysTypes.int32) {
             inExpr
             parameter into ident
-            doParameter (ident { anyType; varType }) [+Ldc_I4 ident.Type.SizeOf]
+            doParameter (ident { anyType; OR; varType }) [+Ldc_I4 ident.Type.SizeOf]
         }
 
     let handleIntrinsic intrinsicSym =
