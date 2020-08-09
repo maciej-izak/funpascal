@@ -1063,7 +1063,7 @@ module Intrinsics =
         typ: (ParamTypPolicy * ParamRec option) option
     }
     with
-        static member Empty = { location = None; ref = None; (*modifier = None;*) typ = None }    
+        static member Empty = { location = None; ref = None; (*modifier = None;*) typ = None }
     
     type ParamBuildState =
         | PBProcess
@@ -1098,6 +1098,10 @@ module Intrinsics =
     
     module Result =
         
+        let noneLocation pbr = pbr.location.IsNone
+        let noneRef pbr = pbr.ref.IsNone
+        let noneTyp pbr = pbr.typ.IsNone
+        
         let bindParam r n f pr =
             match pr.state with
             | PBOk _ -> pr
@@ -1109,20 +1113,11 @@ module Intrinsics =
                         current = current }
                 else raise (InternalError "2020080203")
         
-        let bindParamLocation =
-            bindParam
-                (function | { location=None } -> true | _ -> false)
-                (fun c l -> { c with location = Some l })
+        let bindParamLocation = bindParam noneLocation (fun c l -> { c with location = Some l })
     
-        let bindParamRef =
-            bindParam
-                (function | { ref=None } -> true | _ -> false)
-                (fun c r -> { c with ref = Some r })
+        let bindParamRef = bindParam noneRef (fun c r -> { c with ref = Some r })
 
-        let bindParamTyp =
-            bindParam
-                (function | { typ=None } -> true | _ -> false)
-                (fun c t -> { c with typ = Some t })
+        let bindParamTyp = bindParam noneTyp (fun c t -> { c with typ = Some t })
                 
         let bindParamNextAttempt pr =
             match pr.state with
