@@ -1042,6 +1042,11 @@ module Intrinsics =
         | ByRef
         | ByVal
         
+//    type ParamModifierPolicy =
+//        | Var     // variable ident
+//        | VarType // variable ident, but return variable type
+//        | PasType // type ident
+
     type ParamTypPolicy = // typ is very generic term for this DU   
         | Var of ParamTypPolicy option // variable ident
         | VarType of ParamTypPolicy option // variable ident, but return variable type
@@ -1054,10 +1059,11 @@ module Intrinsics =
     type ParamBuildRec = {
         location: ParamLocationPolicy option
         ref: ParamRefPolicy option
+        //modifier: ParamModifierPolicy option
         typ: (ParamTypPolicy * ParamRec option) option
     }
     with
-        static member Empty = { location = None; ref = None; typ = None }    
+        static member Empty = { location = None; ref = None; (*modifier = None;*) typ = None }    
     
     type ParamBuildState =
         | PBProcess
@@ -1072,6 +1078,10 @@ module Intrinsics =
             | PBProcess, Error x -> PBError, x
             | PBError, Error x -> PBError, x
             | PBOk, Error _ -> raise (InternalError "2020080601")
+            
+        member this.bindMap v map =
+            let state, r = this.bind v
+            state, map r
     
     type ParamResult = {
         candidates: ParamBuildRec list
@@ -1087,41 +1097,32 @@ module Intrinsics =
             }
     
     module Result =
-        let bindParamLocation f pr =
+        
+        let bindParam r n f pr =
             match pr.state with
             | PBOk _ -> pr
             | PBError | PBProcess ->
-                match pr.current with
-                | { location=None } ->
-                    let newState, location = pr.state.bind (f pr.current)
+                if r pr.current then
+                    let newState, current = pr.state.bindMap (f pr.current) (n pr.current)
                     { pr with
                         state = newState
-                        current = { pr.current with location = Some location } }
-                | _ -> raise (InternalError "2020080203")
+                        current = current }
+                else raise (InternalError "2020080203")
+        
+        let bindParamLocation =
+            bindParam
+                (function | { location=None } -> true | _ -> false)
+                (fun c l -> { c with location = Some l })
     
-        let bindParamRef f pr =
-            match pr.state with
-            | PBOk _ -> pr
-            | PBError | PBProcess ->
-                match pr.current with
-                | { ref=None } ->
-                    let newState, ref = pr.state.bind (f pr.current)
-                    { pr with
-                        state = newState
-                        current = { pr.current with ref = Some ref } }
-                | _ -> raise (InternalError "2020080602")
+        let bindParamRef =
+            bindParam
+                (function | { ref=None } -> true | _ -> false)
+                (fun c r -> { c with ref = Some r })
 
-        let bindParamTyp f pr =
-            match pr.state with
-            | PBOk _ -> pr
-            | PBError | PBProcess ->
-                match pr.current with
-                | { typ=None } ->
-                    let newState, typ = pr.state.bind (f pr.current)
-                    { pr with
-                        state = newState
-                        current = { pr.current with typ = Some typ } }
-                | _ -> raise (InternalError "2020080604")
+        let bindParamTyp =
+            bindParam
+                (function | { typ=None } -> true | _ -> false)
+                (fun c t -> { c with typ = Some t })
                 
         let bindParamNextAttempt pr =
             match pr.state with
