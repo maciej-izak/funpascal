@@ -996,25 +996,25 @@ module Intrinsics =
 
     open EvalExpr
     
-    let (|VariablePasType|_|) (ctx: Ctx) id =
+    let VariablePasType (ctx: Ctx) id =
         match ctx.FindSymbol id |> chainToSLList with
-        | _, Some(t) -> Some(VariablePasType t)
+        | _, Some t -> Some([], t)
         | _ -> None
 
-    let (|TypePasType|_|) (ctx: Ctx) = function
+    let TypePasType (ctx: Ctx) = function
         | DIdent[Ident(id)] ->
             match ctx.FindSym(StringName id) with
-            | Some (TypeSym t) -> Some(TypePasType t)
+            | Some (TypeSym t) -> Some([], t)
             | _ -> None
         | _ -> None
         
     // TODO check only first ident part (see FromDIdent). More advanced cases are handled in findSymbolAndGetPtr
-    let (|VariableIdent|_|) (ctx: Ctx) byRef id =
+    let VariableIdent (ctx: Ctx) byRef id =
         match ctx.FindSym(TypeName.FromDIdent id) with
         | Some s ->
             match s with
             | VariableSym _ ->
-                VariableIdent(findSymbolInternal (not byRef) byRef ctx id) |> Some
+                (findSymbolInternal (not byRef) byRef ctx id) |> Some
             | _ -> None
         | _ -> None
 
@@ -1023,52 +1023,51 @@ module Intrinsics =
         | ParamIdent id -> Some(id)
         | _ -> None
 
-    type ParamBuilderResult =
-        | VarParam of deref: PasType option
-        | VarTypeParam of deref: PasType option
-        | TypeParam of deref: PasType option
-        | FloatParam
-        | IntParam
-        | OrdParam
-    
-    type ParamRec = { Instructions: IlInstruction list; Type: PasType; Result: ParamBuilderResult }
+    type ParamRec = { Instructions: IlInstruction list; Type: PasType }
 
     type ParamLocationPolicy =
+        | InAny
         | InExpr // param acceptable only in expressions
         | InBlock // param acceptable only in block
-        | InAny
         
     type ParamRefPolicy =
+        | ByDefault
         | ByRef
-        | ByVal
         
-//    type ParamModifierPolicy =
-//        | Var     // variable ident
-//        | VarType // variable ident, but return variable type
-//        | PasType // type ident
+    type ParamModifierPolicy =
+        | Expression
+        | VarIdent     // variable ident
+        | VarIdentType // variable ident, but return variable type
+        | PasType // type ident
 
-    type ParamTypPolicy = // typ is very generic term for this DU   
-        | Var of ParamTypPolicy option // variable ident
-        | VarType of ParamTypPolicy option // variable ident, but return variable type
-        | PasType of ParamTypPolicy option // type ident
-        | PtrType  // allow pointer types like PInteger (type ident for pointers, no variable of some type)
+    type ParamTypPolicy = // typ is very generic term for this DU
+        | AnyTyp
+        | PtrTyp  // allow pointer types like PInteger (type ident for pointers, no variable of some type)
         | FloatTyp
         | IntTyp
         | OrdTyp
+    with
+        member this.ToPattern() =
+            match this with
+            | IntTyp -> (|IntType|_|) 
+            | FloatTyp -> (|FloatType|_|)
+            | OrdTyp -> (|OrdType|_|)
+            | PtrTyp -> (|PointerType|_|)
+            | AnyTyp -> (fun _ -> Some())
         
     type ParamBuildRec = {
-        location: ParamLocationPolicy option
-        ref: ParamRefPolicy option
-        //modifier: ParamModifierPolicy option
-        typ: (ParamTypPolicy * ParamRec option) option
+        Location: ParamLocationPolicy option
+        Ref: ParamRefPolicy option
+        Modifier: ParamModifierPolicy option
+        Typ: ParamTypPolicy option
     }
     with
-        static member Empty = { location = None; ref = None; (*modifier = None;*) typ = None }
-    
+        static member Empty = { Location = None; Ref = None; Modifier = None; Typ = None }
+
     type ParamBuildState =
         | PBProcess
         | PBError
-        | PBOk
+        | PBOk of ParamRec
     with
         member this.bind v =
             match this, v with
@@ -1079,136 +1078,101 @@ module Intrinsics =
             | PBError, Error x -> PBError, x
             | PBOk, Error _ -> raise (InternalError "2020080601")
             
-        member this.bindMap v map =
-            let state, r = this.bind v
-            state, map r
+        member this.bindMap v map = let state, r = this.bind v in state, map r
     
-    type ParamResult = {
-        candidates: ParamBuildRec list
-        current: ParamBuildRec
-        state: ParamBuildState
+    type ParamBuilderResult = {
+        Candidates: ParamBuildRec list
+        Current: ParamBuildRec
+        State: ParamBuildState
     }
     with
         static member Empty =
             {
-                candidates = []
-                current = ParamBuildRec.Empty
-                state = PBProcess
+                Candidates = []
+                Current = ParamBuildRec.Empty
+                State = PBProcess
             }
+        member this.Location = defaultArg this.Current.Location InAny
+        member this.Ref = defaultArg this.Current.Ref ByDefault
+        member this.Modifier = defaultArg this.Current.Modifier Expression
+        member this.Typ = defaultArg this.Current.Typ AnyTyp    
     
     module Result =
         
-        let noneLocation pbr = pbr.location.IsNone
-        let noneRef pbr = pbr.ref.IsNone
-        let noneTyp pbr = pbr.typ.IsNone
+        let noneLocation pbr = pbr.Location.IsNone
+        let noneRef pbr = pbr.Ref.IsNone
+        let noneModifier pbr = pbr.Modifier.IsNone
+        let noneTyp pbr = pbr.Typ.IsNone
         
         let bindParam r n f pr =
-            match pr.state with
+            match pr.State with
             | PBOk _ -> pr
             | PBError | PBProcess ->
-                if r pr.current then
-                    let newState, current = pr.state.bindMap (f pr.current) (n pr.current)
+                if r pr.Current then
+                    let newState, current = pr.State.bindMap (f pr.Current) (n pr.Current)
                     { pr with
-                        state = newState
-                        current = current }
+                        State = newState
+                        Current = current }
                 else raise (InternalError "2020080203")
         
-        let bindParamLocation = bindParam noneLocation (fun c l -> { c with location = Some l })
-    
-        let bindParamRef = bindParam noneRef (fun c r -> { c with ref = Some r })
-
-        let bindParamTyp = bindParam noneTyp (fun c t -> { c with typ = Some t })
-                
-        let bindParamNextAttempt pr =
-            match pr.state with
-            | PBOk -> pr
-            | PBProcess -> { pr with state = PBOk } // TODO ? basic check pr.current ?
-            | PBError ->
-                { pr with
-                    candidates = pr.current::pr.candidates
-                    current = ParamBuildRec.Empty
-                    state = PBProcess }
+        let bindParamLocation = bindParam noneLocation (fun c l -> { c with Location = Some l })
+        let bindParamRef = bindParam noneRef (fun c r -> { c with Ref = Some r })
+        let bindParamModifier = bindParam noneModifier (fun c m -> { c with Modifier = Some m })
+        let bindParamTyp = bindParam noneTyp (fun c t -> { c with Typ = Some t })
     
     [<AllowNullLiteral>]
     type ParamBuilder(cp, ci) =
         let ctx = ci.ctx
         
-        let isExpr _ =
-            match ci.InExpr with
-            | true -> Ok InExpr
-            | false -> Error InExpr
-        
-        let isBlock _ =
-            match ci.InBlock with
-            | true -> Ok InBlock
-            | false -> Error InBlock
+        let isExpr _ = if ci.InExpr then Ok InExpr else Error InExpr
+        let isBlock _ = if ci.InBlock then Ok InBlock else Error InBlock
+            
+        let tryAsSimpleType (typ: ParamTypPolicy) =
+            let inst, t = callParamToIl ctx cp None
+            match typ.ToPattern() t with 
+            | Some -> Some{Instructions=inst; Type=t}
+            | _ -> None
+            
+        let tryAsCompilerType f (typ: ParamTypPolicy) =
+            match getParamIdent cp with
+            | Some t ->
+                match f t with
+                | Some (il, t) ->
+                    match t |> typ.ToPattern() with
+                    | Some -> Some{Instructions=il; Type=t}
+                    | _ -> None
+                | _ -> None
+            | _ -> None
+       
+        let tryAsPasType = tryAsCompilerType (TypePasType ctx)
+        let tryAsVarIdentType = tryAsCompilerType (VariablePasType ctx)
 
-        let doByRef _ = Ok ByRef
-            
-        let tryAsInt _ =
-            let inst, typ = callParamToIl ctx cp None
-            match typ with
-            | IntType -> Ok(IntTyp, Some{Instructions=inst; Type=typ; Result=IntParam})
-            | _ -> Error(IntTyp, None)
-            
-        let tryAsFloat _ =
-            let inst, typ = callParamToIl ctx cp None
-            match typ with
-            | FloatType -> Ok(FloatTyp, Some{Instructions=inst; Type=typ; Result=FloatParam})
-            | _ -> Error(FloatTyp, None)
-            
-        let tryAsOrd _ =
-            let inst, typ = callParamToIl ctx cp None
-            match typ with
-            | OrdType -> Ok(OrdTyp,  Some{Instructions=inst; Type=typ; Result=OrdParam})
-            | _ -> Error(OrdTyp, None)
-                
-        let tryAsPasType typ _ =
-            match getParamIdent cp with
-            | Some(TypePasType ctx t) ->
-                match typ with
-                | PasType None -> Ok(typ, Some{Instructions=[]; Type=t; Result=TypeParam None})
-                | PasType(Some(PtrType)) ->
-                    match t.kind with
-                    | TkPointer pt -> Ok(typ, Some{Instructions=[]; Type=t; Result=TypeParam(Some pt)})
-                    | _ -> Error(typ, None)
-                | _ -> raise(InternalError "2020080300")
-            | _ -> Error(typ, None)
-                
-        let tryAsVarType typ _ =
-            match getParamIdent cp with
-            | Some(VariablePasType ctx t) ->
-                match typ with
-                | VarType None -> Ok(typ, Some{Instructions=[]; Type=t; Result=VarTypeParam None})
-                | VarType(Some(PtrType)) ->
-                    match t.kind with
-                    | TkPointer pt -> Ok(typ, Some{Instructions=[]; Type=t; Result=VarTypeParam(Some pt)})
-                    | _ -> Error(typ, None)
-                | _ -> raise(InternalError "2020080301")    
-            | _ -> Error(typ, None)
-
-        let tryAsVarIdent typ pbr =
-            let byRef = match pbr.ref with | Some ByRef -> true | _ -> false
-            match getParamIdent cp with
-            | Some(VariableIdent ctx byRef (il, t)) ->
-                match typ with
-                | Var None -> Ok(typ, Some{Instructions=il; Type=t; Result=VarParam None})
-                | Var(Some(PtrType)) ->
-                    match t.kind with
-                    | TkPointer pt -> Ok(typ, Some{Instructions=il; Type=t; Result=VarParam(Some pt)})
-                    | _ -> Error(typ, None)
-                | Var(Some(FloatTyp)) ->
-                    match t with
-                    | FloatType -> Ok(typ, Some{Instructions=il; Type=t; Result=VarParam None})
-                    | _ -> Error(typ, None)
-                | Var(Some(OrdTyp)) ->
-                    match t with
-                    | OrdType -> Ok(typ, Some{Instructions=il; Type=t; Result=VarParam None})
-                    | _ -> Error(typ, None)
-                | _ -> raise(InternalError "2020080800")    
-            | _ -> Error(typ, None)
-            
-        member _.Yield (_: unit) = ParamResult.Empty
+        let tryAsVarIdent ref =
+            let byRef = match ref with | ByRef -> true | _ -> false
+            tryAsCompilerType (VariableIdent ctx byRef)
+             
+        let bindParamNextAttempt pr =
+            let doNext() =
+                { pr with
+                    Candidates = pr.Current::pr.Candidates
+                    Current = ParamBuildRec.Empty
+                    State = PBProcess }
+            match pr.State with
+            | PBOk -> pr
+            | PBProcess ->
+                let result =
+                    match pr.Modifier with
+                    | Expression -> tryAsSimpleType
+                    | VarIdent -> tryAsVarIdent pr.Ref
+                    | VarIdentType -> tryAsVarIdentType
+                    | PasType -> tryAsPasType
+                    <| pr.Typ
+                match result with
+                | Some r -> { pr with State = PBOk r } // TODO ? basic check pr.current ?
+                | None -> doNext()
+            | PBError -> doNext()
+                        
+        member _.Yield (_: unit) = ParamBuilderResult.Empty
         
         [<CustomOperation("inExpr",MaintainsVariableSpace=true)>]
         member _.InExpr v = Result.bindParamLocation isExpr v
@@ -1217,65 +1181,69 @@ module Intrinsics =
         member _.InBlock v = Result.bindParamLocation isBlock v
 
         [<CustomOperation("byRef",MaintainsVariableSpace=true)>]
-        member _.ByRef v = Result.bindParamRef doByRef v
+        member _.ByRef v = Result.bindParamRef (fun _ -> Ok ByRef) v
                 
         [<CustomOperation("int",MaintainsVariableSpace=true)>]
-        member _.TryAsInt v = Result.bindParamTyp tryAsInt v
+        member _.TryAsInt v = Result.bindParamTyp (fun _ -> Ok IntTyp) v
 
         [<CustomOperation("float",MaintainsVariableSpace=true)>]
-        member _.TryAsFloat v = Result.bindParamTyp tryAsFloat v
+        member _.TryAsFloat v = Result.bindParamTyp (fun _ -> Ok FloatTyp) v
 
         [<CustomOperation("ord",MaintainsVariableSpace=true)>]
-        member _.TryAsOrd v = Result.bindParamTyp tryAsOrd v
+        member _.TryAsOrd v = Result.bindParamTyp (fun _ -> Ok OrdTyp) v
 
-        [<CustomOperation("anyType",MaintainsVariableSpace=true)>]
-        member _.TryAsAnyType v = Result.bindParamTyp (tryAsPasType (PasType None)) v
+        [<CustomOperation("ptr",MaintainsVariableSpace=true)>]
+        member _.TryAsPtr v = Result.bindParamTyp (fun _ -> Ok PtrTyp) v
 
-        [<CustomOperation("ptrType",MaintainsVariableSpace=true)>]
-        member _.TryAsPtrType v = Result.bindParamTyp (tryAsPasType (PasType(Some(PtrType)))) v
+        [<CustomOperation("any",MaintainsVariableSpace=true)>]
+        member _.TryAsAny v = Result.bindParamTyp (fun _ -> Ok AnyTyp) v
+
+        [<CustomOperation("pasType",MaintainsVariableSpace=true)>]
+        member _.TryAsPasType v = Result.bindParamModifier (fun _ -> Ok PasType) v
 
         [<CustomOperation("varType",MaintainsVariableSpace=true)>]
-        member _.TryAsVarType v = Result.bindParamTyp (tryAsVarType (VarType None)) v
+        member _.TryAsVarType v = Result.bindParamModifier (fun _ -> Ok VarIdentType) v
 
         [<CustomOperation("var",MaintainsVariableSpace=true)>]
-        member _.TryAsVar v = Result.bindParamTyp (tryAsVarIdent (Var None)) v
-
-        [<CustomOperation("varAs",MaintainsVariableSpace=true)>]
-        member _.TryAsVarAs(v, t) = Result.bindParamTyp (tryAsVarIdent (Var (Some t))) v
-
-        [<CustomOperation("ptrVar",MaintainsVariableSpace=true)>]
-        member _.TryAsPtrVar v = Result.bindParamTyp (tryAsVarIdent (Var (Some(PtrType)))) v
+        member _.TryAsVar v = Result.bindParamModifier (fun _ -> Ok VarIdent) v
 
         [<CustomOperation("OR",MaintainsVariableSpace=true)>]
-        member _.TryAsOr v = Result.bindParamNextAttempt v
+        member _.TryAsOr v = bindParamNextAttempt v
                 
         member this.Run v =
-            let r = Result.bindParamNextAttempt v // finalize process
-            match r.state, r.current.typ with
-            | PBOk, Some(_, r) -> r
-            | PBError, _ -> raise (InternalError "2020080205")
-            | PBProcess, _ ->
+            let r = bindParamNextAttempt v // finalize process
+            match r.State with
+            | PBOk res ->
+                Some {| Instructions = res.Instructions
+                        Type = res.Type
+                        Location = r.Location
+                        Ref = r.Ref
+                        Modifier = r.Modifier
+                        Typ = r.Typ |}
+            | PBError -> raise (InternalError "2020080205")
+            | PBProcess ->
                 let finalList = List<string>()
-//                Seq.fold (
-//                    fun s i ->
-//                         match s, i with
-//                         | None, StandardExp s -> finalList.Add s; None
-//                         | None, LocationPolicyExp lpe ->
-//                             match lpe with
-//                             | InExpr -> Some "in expression"
-//                             | InBlock -> Some "in block"
-//                             | InAny -> None
-//                         | Some suffix, StandardExp s -> finalList.Add (sprintf "%s %s" s suffix); None
-//                         | _ -> raise (InternalError "2020080201")
-//                    ) None expectedTypes |> (fun s -> if s.IsSome then raise (InternalError "2020080202"))
+                for i in r.Candidates do
+                    match i.Modifier with
+                    | Some Expression | None -> "expression"
+                    | Some VarIdent | Some VarIdentType -> "variable"
+                    | Some PasType -> "identifier"
+                    + " of " +
+                    match i.Typ with
+                    | Some AnyTyp | None -> "any"
+                    | Some PtrTyp -> "pointer"
+                    | Some FloatTyp -> "float"
+                    | Some IntTyp -> "integer"
+                    | Some OrdTyp -> "ordinal"
+                    + " type" +
+                    match i.Location with
+                    | Some InExpr -> " in expression"
+                    | Some InBlock -> " in code block"
+                    | _ -> ""
+                    |> finalList.Add
                 ``Error: %s expected`` (String.concat " or " finalList) |> ctx.NewMsg cp
                 None
             | _ -> raise (InternalError "2020080801")
-            
-// ``Error: Expected %s type but '%O' found`` "float" typ.name |> ctx.NewMsg cp
-//        | [] ->
-//            ``Error: Expected %s type parameter but nothing found`` "ordinal or float" |> ci.ctx.NewMsg ci.ident
-//            None
 
     type ParamsBuilder(ci: CallInfo, rt: PasType option) =
         let ctx = ci.ctx
@@ -1532,7 +1500,7 @@ module Intrinsics =
     let private deltaModify2 delta ci =
         ParamsBuilder(ci, None) {
             parameter into value
-            doParameter ( value { varAs FloatTyp; OR; varAs OrdTyp } ) [
+            doParameter ( value { float; var; OR; ord; var } ) [
             ]
         }
 //        match ci with
@@ -1671,9 +1639,9 @@ module Intrinsics =
         let pb = ParamsBuilder(ci, Some ci.ctx.sysTypes.unknown)
         pb {
             parameter into ident // TODO warning for untyped "Pointer"
-            doParameter ( ident { inBlock; byRef; ptrVar; OR; inExpr; ptrType } ) [
-                match ident.Result with
-                | VarParam (Some pt) -> // TODO more complicated New like New(foo.x^.x.z)
+            doParameter ( ident { inBlock; byRef; ptr; var; OR; inExpr; ptr; pasType } ) [
+                match ident.Modifier, ident.Type with
+                | VarIdent, {kind=TkPointer pt} -> // TODO more complicated New like New(foo.x^.x.z)
                     pb.ReturnType <- None // TODO allow return pointer result for New(varId) (forbridden in FPC)
                     yield! ident.Instructions
                     +Ldc_I4 pt.SizeOf
@@ -1681,8 +1649,8 @@ module Intrinsics =
                     +Dup
                     +Initobj pt.raw
                     +Stind Ind_U
-                | TypeParam (Some pt) ->
-                    pb.ReturnType <- Some ident.Type
+                | PasType, ({kind=TkPointer pt} as t) ->
+                    pb.ReturnType <- Some t
                     +Ldc_I4 pt.SizeOf
                     +Call ci.ctx.sysProc.GetMem
                     +Dup
@@ -1694,7 +1662,7 @@ module Intrinsics =
         ParamsBuilder(ci, None) {
             inBlock
             parameter into ident
-            doParameter ( ident { ptrVar } ) [yield! ident.Instructions; +Call ci.ctx.sysProc.FreeMem]
+            doParameter ( ident { ptr; var } ) [yield! ident.Instructions; +Call ci.ctx.sysProc.FreeMem]
         }
     
     // TODO errorcode global variable
@@ -1759,7 +1727,7 @@ module Intrinsics =
         ParamsBuilder(ci, Some ci.ctx.sysTypes.int32) {
             inExpr
             parameter into ident
-            doParameter (ident { anyType; OR; varType }) [+Ldc_I4 ident.Type.SizeOf]
+            doParameter (ident { pasType; OR; varType }) [+Ldc_I4 ident.Type.SizeOf]
         }
 
     let handleIntrinsic intrinsicSym =
