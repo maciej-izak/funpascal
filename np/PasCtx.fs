@@ -695,7 +695,7 @@ module EvalExpr =
     let callParamToIl ctx cp (idxmr: Option<int * MethodInfo>) =
         let param, byRef =
             match idxmr with
-            | Some(idx,{paramList=pl}) ->
+            | Some(idx,{paramList=pl}) when idx < pl.Length -> // for foo() where () has meaning because idx is valid but pl.Length = 0
                 let p = pl.[idx]
                 Some p.typ, p.ref
             | _ -> None, false
@@ -843,9 +843,12 @@ module EvalExpr =
         ,match t with | Some t -> t | _ -> failwith "IE"
 
     let findSymbolInternal value addr (ctx: Ctx) ident =
-        ctx.FindSymbol ident
-        |> chainToSLList
-        |> loadSymList ctx value addr
+        let (_, t) as sid = ctx.FindSymbol ident |> chainToSLList
+        if t.IsNone then // handle x := foo; where foo is procedure
+            ``Error: %s expected`` "value" |> ctx.NewMsg ident 
+            [], ctx.sysTypes.unknown
+        else    
+            sid |> loadSymList ctx value addr
 
     let findSymbolAndLoad = findSymbolInternal true false
 
@@ -1513,7 +1516,7 @@ module Intrinsics =
     let private deltaModify delta ci =
         let valueIsFloat = ref false
         let valueType: PasType ref = ref ci.ctx.sysTypes.unknown
-        let pb = ParamsBuilder(ci, if ci.popResult then None else Some ci.ctx.sysTypes.unknown)
+        let pb = ParamsBuilder(ci, if ci.InBlock then None else Some ci.ctx.sysTypes.unknown)
         let handleDelta valueIls = [
                 let t = !valueType
                 let indKind = t.IndKind
