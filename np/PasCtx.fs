@@ -1464,10 +1464,92 @@ module Intrinsics =
         member self.InExpr = not self.popResult
         member self.InBlock = self.popResult
 
-    let (|EofParam|_|) (_,ci) =
-        match ci.cp with
-        | [] -> Some()
-        | cp::_ -> ``Error: Unexpected parameter`` |> ci.ctx.NewMsg cp; None
+    let private doWrite ci =
+        let _, writeParams = doGenWrite ci
+        (writeParams, None)
+
+    let private doWriteLn ci =
+        let file, writeParams = doGenWrite ci
+        ([
+            yield! writeParams
+            yield! file()
+            +Ldnull
+            +Call(ci.ctx.FindMethodReference "WRITENEWLINE")
+         ], None)
+
+    let private doRead ci =
+        let _, readParams = doGenRead ci
+        (readParams, None)
+
+    let private doReadLn ci =
+        let file, readParams = doGenRead ci
+        ([
+            yield! readParams
+            yield! file()
+            +Ldnull
+            +Call(ci.ctx.FindMethodReference "READNEWLINE")
+         ], None)
+
+    let private doReadLine ci =
+        let ctx, cp = ci.ctx, ci.cp
+        let high = ref 0
+        let cparams,str = cp |> List.mapi (fun i p -> incr high; callParamToIl ctx p None, sprintf "{%d}" i) |> List.unzip
+        let str = String.Concat(str)
+        ([
+            +Ldstr str
+            +Ldc_I4 !high
+            +Newarr ctx.sysTypes.net_obj.raw
+            yield! cparams
+                   |> List.mapi (
+                       fun idx (i, t) ->
+                           let putArrayElem i elems =
+                               +Dup::+Ldc_I4 idx::i @
+                               [yield! elems ; +Stelem Elem_Ref]
+                           match t with
+                           | StrType ->
+                               [+Call ctx.sysProc.PtrToStringAnsi]
+                               // TODO critical handle ptr to strings! bug found in .NET 32 bit
+                               |> putArrayElem (match ilToAtom i with | [Ldsfld f] -> [+Ldsflda f] | _ -> i)
+                           | ChrType ->
+                               [
+                                   +Conv Conv_U1
+                                   +Call ctx.sysProc.ConvertU1ToChar
+                                   +Box ctx.details.moduleBuilder.TypeSystem.Char
+                               ]
+                               |> putArrayElem i
+                           | _ -> [+Box t.raw] |> putArrayElem i
+                       )
+                   |> List.concat
+            +Call ctx.sysProc.WriteLine
+         ], None)
+        
+    type private LoopLabels =
+        | ContinueLabel
+        | BreakLabel
+    with
+        override self.ToString() =
+            match self with
+            | ContinueLabel -> "Continue"
+            | BreakLabel -> "Break"
+
+        member self.GetLabel (continueLabel, breakLabel) =
+            match self with
+            | ContinueLabel -> continueLabel
+            | BreakLabel -> breakLabel
+
+    let private doLoopBranch (label: LoopLabels) ci =
+        ParamsBuilder(ci, None) {
+            noParams (
+                match ci.ctx.loop.TryPeek() with
+                | true, labels -> [IlBranch(IlBr, label.GetLabel labels)]
+                | _ ->
+                    ``Error: %O intrinsic cannot be used outside loop`` label
+                    |> ci.ctx.NewMsg ci.ident
+                    []
+            )}
+
+    // TODO handle Exit(result);
+    let private doExit ci = ParamsBuilder(ci, None) { noParams [+.Ret] }
 
     type DeltaKind =
         | NegativeDelta
@@ -1536,96 +1618,6 @@ module Intrinsics =
                 (deltaToIl None delta)
             doIl [+AddInst]
         }
-
-    type private LoopLabels =
-        | ContinueLabel
-        | BreakLabel
-    with
-        override self.ToString() =
-            match self with
-            | ContinueLabel -> "Continue"
-            | BreakLabel -> "Break"
-
-        member self.GetLabel (continueLabel, breakLabel) =
-            match self with
-            | ContinueLabel -> continueLabel
-            | BreakLabel -> breakLabel
-
-    let private doLoopBranch (label: LoopLabels) ci =
-        match (), ci with
-        | EofParam ->
-            match ci.ctx.loop.TryPeek() with
-            | true, labels -> ([IlBranch(IlBr, label.GetLabel labels)], None)
-            | _ ->
-                ``Error: %O intrinsic cannot be used outside loop`` label
-                |> ci.ctx.NewMsg ci.ident
-                ([], None)
-        | _ -> ([], None)
-
-    // TODO handle Exit(result);
-    let private doExit ci =
-        match (), ci with
-        | EofParam -> ([+.Ret], None)
-        | _ -> ([], None)
-
-    let private doWrite ci =
-        let _, writeParams = doGenWrite ci
-        (writeParams, None)
-
-    let private doWriteLn ci =
-        let file, writeParams = doGenWrite ci
-        ([
-            yield! writeParams
-            yield! file()
-            +Ldnull
-            +Call(ci.ctx.FindMethodReference "WRITENEWLINE")
-         ], None)
-
-    let private doRead ci =
-        let _, readParams = doGenRead ci
-        (readParams, None)
-
-    let private doReadLn ci =
-        let file, readParams = doGenRead ci
-        ([
-            yield! readParams
-            yield! file()
-            +Ldnull
-            +Call(ci.ctx.FindMethodReference "READNEWLINE")
-         ], None)
-
-    let private doReadLine ci =
-        let ctx, cp = ci.ctx, ci.cp
-        let high = ref 0
-        let cparams,str = cp |> List.mapi (fun i p -> incr high; callParamToIl ctx p None, sprintf "{%d}" i) |> List.unzip
-        let str = String.Concat(str)
-        ([
-            +Ldstr str
-            +Ldc_I4 !high
-            +Newarr ctx.sysTypes.net_obj.raw
-            yield! cparams
-                   |> List.mapi (
-                       fun idx (i, t) ->
-                           let putArrayElem i elems =
-                               +Dup::+Ldc_I4 idx::i @
-                               [yield! elems ; +Stelem Elem_Ref]
-                           match t with
-                           | StrType ->
-                               [+Call ctx.sysProc.PtrToStringAnsi]
-                               // TODO critical handle ptr to strings! bug found in .NET 32 bit
-                               |> putArrayElem (match ilToAtom i with | [Ldsfld f] -> [+Ldsflda f] | _ -> i)
-                           | ChrType ->
-                               [
-                                   +Conv Conv_U1
-                                   +Call ctx.sysProc.ConvertU1ToChar
-                                   +Box ctx.details.moduleBuilder.TypeSystem.Char
-                               ]
-                               |> putArrayElem i
-                           | _ -> [+Box t.raw] |> putArrayElem i
-                       )
-                   |> List.concat
-            +Call ctx.sysProc.WriteLine
-         ], None)
 
     let private doNew ci =
         let pb = ParamsBuilder(ci, Some ci.ctx.sysTypes.unknown)
