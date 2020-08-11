@@ -769,10 +769,12 @@ module EvalExpr =
                     |> ctx.details.AddBytesConst
                     |> Ldsfld |> (~+)
                 ], ctx.sysTypes.string)
-        | VCallResult(ce), _ ->
+        | VCallResult((CallExpr(ident, _)) as ce), _ ->
             match doCall ctx ce false with
             | ils, Some t -> ils, t
-            | _ -> failwith "IE"
+            | _ ->
+                ``Error: %s expected`` "function" |> ctx.NewMsg ident
+                [], ctx.sysTypes.unknown
         | VNil, _ -> [+Ldnull], ctx.sysTypes.pointer
         | VSet al, _ ->
             let bytes, ft = match setValueToCER ctx expectedType al with
@@ -1067,6 +1069,7 @@ module Intrinsics =
     type ParamBuildState =
         | PBProcess
         | PBError
+        | PBIgnore
         | PBOk of ParamRec
     with
         member this.bind v =
@@ -1074,9 +1077,11 @@ module Intrinsics =
             | PBProcess, Ok x -> PBProcess, x
             | PBError, Ok x -> PBError, x
             | PBOk, Ok _ -> raise (InternalError "2020080600")
+            | PBIgnore, Ok _ -> raise (InternalError "2020081100")
             | PBProcess, Error x -> PBError, x
             | PBError, Error x -> PBError, x
             | PBOk, Error _ -> raise (InternalError "2020080601")
+            | PBIgnore, Error _ -> raise (InternalError "2020081101")
             
         member this.bindMap v map = let state, r = this.bind v in state, map r
     
@@ -1106,7 +1111,7 @@ module Intrinsics =
         
         let bindParam r n f pr =
             match pr.State with
-            | PBOk _ -> pr
+            | PBOk _ | PBIgnore -> pr
             | PBError | PBProcess ->
                 if r pr.Current then
                     let newState, current = pr.State.bindMap (f pr.Current) (n pr.Current)
@@ -1119,6 +1124,10 @@ module Intrinsics =
         let bindParamRef = bindParam noneRef (fun c r -> { c with Ref = Some r })
         let bindParamModifier = bindParam noneModifier (fun c m -> { c with Modifier = Some m })
         let bindParamTyp = bindParam noneTyp (fun c t -> { c with Typ = Some t })
+        let bindParamIF f pr =
+            match pr.State with
+            | PBProcess -> if f then pr else { pr with State = PBIgnore }
+            | PBOk | PBError | PBIgnore -> pr
     
     [<AllowNullLiteral>]
     type ParamBuilder(cp, ci) =
@@ -1152,9 +1161,9 @@ module Intrinsics =
             tryAsCompilerType (VariableIdent ctx byRef)
              
         let bindParamNextAttempt pr =
-            let doNext() =
+            let doNext addCurrent =
                 { pr with
-                    Candidates = pr.Current::pr.Candidates
+                    Candidates = if addCurrent then pr.Current::pr.Candidates else pr.Candidates
                     Current = ParamBuildRec.Empty
                     State = PBProcess }
             match pr.State with
@@ -1169,8 +1178,9 @@ module Intrinsics =
                     <| pr.Typ
                 match result with
                 | Some r -> { pr with State = PBOk r } // TODO ? basic check pr.current ?
-                | None -> doNext()
-            | PBError -> doNext()
+                | None -> doNext true
+            | PBError -> doNext true
+            | PBIgnore -> doNext false
                         
         member _.Yield (_: unit) = ParamBuilderResult.Empty
         
@@ -1207,8 +1217,11 @@ module Intrinsics =
         [<CustomOperation("var",MaintainsVariableSpace=true)>]
         member _.TryAsVar v = Result.bindParamModifier (fun _ -> Ok VarIdent) v
 
+        [<CustomOperation("IF",MaintainsVariableSpace=true)>]
+        member _.DoIf (v, f) = Result.bindParamIF f v
+
         [<CustomOperation("OR",MaintainsVariableSpace=true)>]
-        member _.TryAsOr v = bindParamNextAttempt v
+        member _.DoOr v = bindParamNextAttempt v
                 
         member this.Run v =
             let r = bindParamNextAttempt v // finalize process
@@ -1249,6 +1262,13 @@ module Intrinsics =
         let ctx = ci.ctx
         let cp = Queue(ci.cp)
         let finalIls = List<IlInstruction list>()
+        let paramsList =
+            List<{| Instructions: IlInstruction list
+                    Type: PasType
+                    Location: ParamLocationPolicy
+                    Ref: ParamRefPolicy
+                    Modifier: ParamModifierPolicy
+                    Typ: ParamTypPolicy |} option>()
         
         let nextParam() =
             match cp.TryDequeue() with
@@ -1274,16 +1294,25 @@ module Intrinsics =
         let paramSpecialize f1 f2 = function
             | Some p ->
                 match f1(p) with
-                | Some p -> f2(p) |> finalIls.Add; Some()
+                | Some p ->
+                    paramsList.Add(Some p)
+                    f2(p) |> finalIls.Add
+                    Some()
                 | _ -> None
             | None -> None
             
         let optionalParamSpecialize f1 f2 f3 = function
             | Some p ->
                 match f1(p) with
-                | Some p -> f2(p) |> finalIls.Add; Some()
+                | Some p ->
+                    paramsList.Add(Some p)
+                    f2(p) |> finalIls.Add
+                    Some()
                 | _ -> None
-            | None -> f3() |> finalIls.Add; Some()
+            | None ->
+                paramsList.Add None
+                f3() |> finalIls.Add
+                Some()
         
         member val ReturnType = rt with get, set
         
@@ -1335,6 +1364,8 @@ module Intrinsics =
                 [], rt
             | Some _, (false, _) -> finalIls |> Seq.concat |> List.ofSeq, rt // final generated    
             | _ -> [], rt // other error reported in some operators / other CE
+                
+        member _.Params = paramsList
                 
     let private doGenWrite ci =
         let ctx, cp = ci.ctx, ci.cp
@@ -1437,24 +1468,6 @@ module Intrinsics =
             ``Error: Expected %s type parameter but nothing found`` "ordinal or float" |> ci.ctx.NewMsg ci.ident
             None
 
-    let (|FloatOrOrdParamIdent|_|) ci =
-        match ci.cp with
-        | ((ParamIdent id) as cp)::t ->
-            // TODO : IDENT NOT FOUND?
-            let inst, typ = findSymbolAndGetPtr ci.ctx id
-            match typ with
-            // TODO ? Convert to float id needed ?
-            | FloatType | IntType -> Some(inst, (typ, {ci with cp=t}))
-            | _ ->
-                ``Error: Expected %s type but '%O' found`` "ordinal or float" typ.name |> ci.ctx.NewMsg cp
-                None
-        | cp::_ ->
-            ``Error: Expected ident parameter but expression found`` |> ci.ctx.NewMsg cp
-            None
-        | [] ->
-            ``Error: Expected ident parameter but nothing found`` |> ci.ctx.NewMsg ci.ident
-            None
-
     let (|EofOptFloatOrOrdParamValue|_|) (expectedType, ci) =
         match ci.cp with
         | cp::t ->
@@ -1497,42 +1510,36 @@ module Intrinsics =
                 | NegativeDelta -> +Ldc_I4 -1 // TODO ? Convert to float id needed ?
         ]
 
-    let private deltaModify2 delta ci =
-        ParamsBuilder(ci, None) {
-            parameter into value
-            doParameter ( value { float; var; OR; ord; var } ) [
-            ]
-        }
-//        match ci with
-//        | FloatOrOrdParamIdent(inst, EofOptFloatOrOrdParamValue(typ, dInst)) ->
-//            let indKind = typ.IndKind
-//            ([
-//                yield! inst
-//                if ci.popResult = false then +Dup
-//                +Dup
-//                +Ldind indKind
-//                yield! deltaToIl dInst delta
-//                +AddInst
-//                +Stind indKind
-//                if ci.popResult = false then +Ldind indKind
-//            ], if ci.popResult then None else Some typ)
-//        | _ -> ([], if ci.popResult then None else Some ci.ctx.sysTypes.unknown)
-
     let private deltaModify delta ci =
-        match ci with
-        | FloatOrOrdParamIdent(inst, EofOptFloatOrOrdParamValue(typ, dInst)) ->
-            let indKind = typ.IndKind
-            ([
-                yield! inst
-                if ci.popResult = false then +Dup
-                +Dup
+        let valueIsFloat = ref false
+        let valueType: PasType ref = ref ci.ctx.sysTypes.unknown
+        let pb = ParamsBuilder(ci, if ci.popResult then None else Some ci.ctx.sysTypes.unknown)
+        let handleDelta valueIls = [
+                let t = !valueType
+                let indKind = t.IndKind
                 +Ldind indKind
-                yield! deltaToIl dInst delta
+                yield! deltaToIl valueIls delta
                 +AddInst
                 +Stind indKind
-                if ci.popResult = false then +Ldind indKind
-            ], if ci.popResult then None else Some typ)
-        | _ -> ([], if ci.popResult then None else Some ci.ctx.sysTypes.unknown)
+                if ci.popResult = false then
+                    +Ldind indKind
+                    pb.ReturnType <- Some t
+            ]            
+        pb {
+            parameter into value
+            doParameter ( value { byRef; float; var; OR; byRef; ord; var } ) [
+                valueIsFloat := match value.Typ with | FloatTyp -> true | _ -> false
+                valueType := value.Type
+                yield! value.Instructions
+                if ci.popResult = false then +Dup
+                +Dup
+            ]
+            optional into deltaValue
+            doOptional
+                (deltaValue { IF !valueIsFloat; float; OR; ord })
+                (handleDelta (Some deltaValue.Instructions))
+                (handleDelta None)
+        }
 
     // TODO do not generate if ci.popResult ?
     let private deltaAdd delta ci =
