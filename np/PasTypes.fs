@@ -176,10 +176,6 @@ let (|UnitType|_|) = function
     | {name=AnonName;kind=TkUnknown 0} -> Some UnitType
     | _ -> None
 
-let (|FloatOrIntType|_|) = function
-    | {kind=TkFloat _} | {kind=TkOrd(OkInteger,_)} -> Some FloatOrIntType
-    | _ -> None
-
 let (|BoolOp|_|) = function | Clt | Cgt | Ceq | InInst -> Some BoolOp | _ -> None
 
 let isChrType = function | ChrType -> true | _ -> false

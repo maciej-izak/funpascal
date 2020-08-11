@@ -1060,6 +1060,8 @@ module Intrinsics =
             | PtrTyp -> (|PointerType|_|)
             | AnyTyp -> (fun _ -> Some())
         
+        member this.IsFloat = match this with | FloatTyp -> true | _ -> false
+        
     type ParamBuildRec = {
         Location: ParamLocationPolicy option
         Ref: ParamRefPolicy option
@@ -1317,6 +1319,8 @@ module Intrinsics =
                 f3() |> finalIls.Add
                 Some()
         
+        let doIl il () = finalIls.Add il; Some()
+
         member val ReturnType = rt with get, set
         
         member _.Return a = a
@@ -1358,6 +1362,9 @@ module Intrinsics =
         member _.OptionalParamSpecialize (p: ParamBuilder option option, [<ProjectionParameter>] f1, [<ProjectionParameter>] f2,
                                   [<ProjectionParameter>] f3) =
             Option.bind (optionalParamSpecialize f1 f2 f3) p
+
+        [<CustomOperation("doIl", MaintainsVariableSpaceUsingBind=true)>]
+        member _.DoIl(v, il) = Option.bind (doIl il) v
                 
         member self.Run(r) =
             let rt = self.ReturnType
@@ -1457,39 +1464,6 @@ module Intrinsics =
         member self.InExpr = not self.popResult
         member self.InBlock = self.popResult
 
-    let (|FloatOrOrdParam|_|) ci =
-        match ci.cp with
-        | cp::t ->
-            let inst, typ = callParamToIl ci.ctx cp None
-            match typ with
-            // TODO ? Convert to float if needed ?
-            | FloatType | IntType -> Some(inst, (typ, {ci with cp=t}))
-            | _ ->
-                ``Error: Expected %s type but '%O' found`` "ordinal or float" typ.name |> ci.ctx.NewMsg cp
-                None
-        | [] ->
-            ``Error: Expected %s type parameter but nothing found`` "ordinal or float" |> ci.ctx.NewMsg ci.ident
-            None
-
-    let (|EofOptFloatOrOrdParamValue|_|) (expectedType, ci) =
-        match ci.cp with
-        | cp::t ->
-            let inst, typ = callParamToIl ci.ctx cp None
-            match expectedType, typ, t with
-            // TODO ? Convert to float id needed ?
-            | FloatType, FloatOrIntType, [] -> Some(expectedType, Some inst)
-            | IntType, IntType, [] -> Some(expectedType, Some inst)
-            | FloatType, _, [] ->
-                ``Error: Expected %s type but '%O' found`` "ordinal or float" typ.name |> ci.ctx.NewMsg cp
-                None
-            | IntType, _, [] ->
-                ``Error: Expected integer type but '%O' found`` typ.name |> ci.ctx.NewMsg cp
-                None
-            | _, _, cp::_ ->
-                ``Error: Unexpected parameter`` |> ci.ctx.NewMsg cp
-                None
-        | [] -> Some(expectedType, None)
-
     let (|EofParam|_|) (_,ci) =
         match ci.cp with
         | [] -> Some()
@@ -1514,11 +1488,11 @@ module Intrinsics =
         ]
 
     let private deltaModify delta ci =
-        let valueIsFloat = ref false
-        let valueType: PasType ref = ref ci.ctx.sysTypes.unknown
+        let variableIsFloat = ref false
+        let variableType: PasType ref = ref ci.ctx.sysTypes.unknown
         let pb = ParamsBuilder(ci, if ci.InBlock then None else Some ci.ctx.sysTypes.unknown)
         let handleDelta valueIls = [
-                let t = !valueType
+                let t = !variableType
                 let indKind = t.IndKind
                 +Ldind indKind
                 yield! deltaToIl valueIls delta
@@ -1529,31 +1503,39 @@ module Intrinsics =
                     pb.ReturnType <- Some t
             ]            
         pb {
-            parameter into value
-            doParameter ( value { byRef; float; var; OR; byRef; ord; var } ) [
-                valueIsFloat := match value.Typ with | FloatTyp -> true | _ -> false
-                valueType := value.Type
-                yield! value.Instructions
+            parameter into variable
+            doParameter ( variable { byRef; float; var; OR; byRef; ord; var } ) [
+                variableIsFloat := variable.Typ.IsFloat
+                variableType := variable.Type
+                yield! variable.Instructions
                 if ci.popResult = false then +Dup
                 +Dup
             ]
             optional into deltaValue
             doOptional
-                (deltaValue { IF !valueIsFloat; float; OR; ord })
+                (deltaValue { IF !variableIsFloat; float; OR; ord })
                 (handleDelta (Some deltaValue.Instructions))
                 (handleDelta None)
         }
 
-    // TODO do not generate if ci.popResult ?
     let private deltaAdd delta ci =
-        match ci with
-        | FloatOrOrdParam(inst, EofOptFloatOrOrdParamValue(typ, dInst)) ->
-            ([
-                 yield! inst
-                 yield! deltaToIl dInst delta
-                 +AddInst
-            ], Some typ)
-        | _ -> ([], if ci.popResult then None else Some ci.ctx.sysTypes.unknown)
+        let variableIsFloat = ref false
+        let pb = ParamsBuilder(ci, if ci.InBlock then None else Some ci.ctx.sysTypes.unknown)
+        pb {
+            inExpr
+            parameter into value
+            doParameter ( value { float; OR; ord }) (
+                    variableIsFloat := value.Typ.IsFloat
+                    pb.ReturnType <- Some value.Type
+                    value.Instructions
+                )
+            optional into deltaValue
+            doOptional
+                (deltaValue { IF !variableIsFloat; float; OR; ord })
+                (deltaToIl (Some deltaValue.Instructions) delta)
+                (deltaToIl None delta)
+            doIl [+AddInst]
+        }
 
     type private LoopLabels =
         | ContinueLabel
