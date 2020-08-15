@@ -91,6 +91,7 @@ type Comment =
 type CompilerPassId =
     | InitialPassId
     | MainPassId
+    | TestPassId
 
 exception InternalError of string
 
@@ -152,7 +153,8 @@ and MacroHandle = MacroId * Macro -> CharStream<PasState> -> Reply<unit>
   ) 
 *)
 
-and PasStream(s: Stream) = class 
+and [<AllowNullLiteral>]
+    PasStream(s: Stream) = class 
     inherit Stream()
     let mainStream = s
     let mutable lastSubStream = {index=0;length=int mainStream.Length / 2};
@@ -355,6 +357,24 @@ type MainPass(proj) =
                     | _ -> raise (InternalError "2020061401") // lack should be found in pass1
                 | _ -> ()
             | Macro (mId, _) -> redirectParserTo stream (mId.ToString())
+            | _ -> ()
+
+type TestPass(proj) =
+    inherit GenericPass(proj)
+    let id = TestPassId
+
+    let unsupported() = raise (Exception "part of directives are not supported in test pass")
+
+    interface ICompilerPass with
+        member _.Id: CompilerPassId = id
+
+        member _.HandleComment(_, comment) =
+            match comment with
+            | Directive d ->
+                match d with
+                | Include _ | IfDef _ | Else -> unsupported()
+                | _ -> ()
+            | Macro _ -> unsupported()
             | _ -> ()
 
 type PasState with

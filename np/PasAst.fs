@@ -258,7 +258,26 @@ type Program =
     
 type Block = Block of decl: Declarations list * stmt: Statement list
 
-type ModuleAst = ModuleAst of name: string option * block: Block
+type ModuleSection = { uses: DIdent list; decl: Declarations list }
+
+type UnitModuleRec = {
+    name: DIdent
+    intf: ModuleSection
+    impl: ModuleSection
+    init: Statement list
+    fini: Statement list
+} with static member Create (name, (intfUses, intfDecl), (implUses, implDecl), (init, fini)) =
+    {
+        name = name
+        intf = { uses = intfUses; decl = intfDecl }
+        impl = { uses = implUses; decl = implDecl }
+        init = init
+        fini = fini
+    }
+
+type MainModuleRec = {
+    name: string option; block: Block
+} with static member Create(name, block) = { name = name; block = block }
 
 let (|UnitOp|_|) = function
     | TupleExpr[] -> Some UnitOp

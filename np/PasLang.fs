@@ -575,7 +575,7 @@ module LangBuilder =
                 let res = stmtListToIl stmt ctx result
                 if ctx.messages.HasError then Error ctx else Ok res
 
-        static member BuildModule (ModuleAst(name, block)) state =
+        static member BuildModule {name=name; block=block} state =
             let moduleName = match name with | Some n -> n | None -> "Program"
             let moduleNameWithoutExtension = System.IO.Path.GetFileNameWithoutExtension moduleName
             let assemblyBuilder =

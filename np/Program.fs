@@ -104,7 +104,36 @@ let main argv =
         |> tryCompileFile false
     | None ->
         // only proper for tests
-        match results.TryGetResult(Test) with
-        | Some testDir -> !! (testDir </> "*.pas") ++ (testDir </> "*.pp") |> Seq.iter (tryCompileFile true)
-        | _ -> failwith "No proper command found"
+        if results.Contains(Test) then
+            match results.TryGetResult(Test) with
+            | Some testDir -> !! (testDir </> "*.pas") ++ (testDir </> "*.pp") |> Seq.iter (tryCompileFile true)
+            | _ -> failwith "No proper command found"
+        else if results.Contains(TestParser) then
+            let proj = PascalProject.Create("test.pas", false)
+            FParsec.CharParsers.runParserOnString parseUnitModule (PasState.Create (TestPass(proj)) null "") "test"
+              """
+unit x;
+
+interface
+
+uses
+  System.SysUtils;
+
+type
+  TFoo = record
+  end;
+
+function foo: integer;
+begin
+end;
+
+implementation
+
+var
+  x: integer;
+finalization
+  if true then
+end.
+"""
+            |> printfn "%A"
     0

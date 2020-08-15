@@ -30,6 +30,8 @@ let ``file `` = str_wsc "file"
 let ``goto `` = str_wsc "goto"
 let ``then `` = str_wsc "then"
 let ``type `` = str_wsc "type"
+let ``unit `` = str_wsc "unit"
+let ``uses `` = str_wsc "uses"
 let ``with `` = str_wsc "with"
 let ``array `` = str_wsc "array"
 let ``begin `` = str_wsc "begin"
@@ -45,6 +47,10 @@ let ``string `` = str_wsc "string"
 let ``program `` = str_wsc "program"
 let ``function `` = str_wsc "function"
 let ``procedure `` = str_wsc "procedure"
+let ``interface `` = str_wsc "interface"
+let ``finalization `` = str_wsc "finalization"
+let ``implementation `` = str_wsc "implementation"
+let ``initialization `` = str_wsc "initialization"
 let ``^ `` = str_wsc "^"
 let ``[ `` = str_wsc "["
 let ``] `` = str_wsc "]"
@@ -86,6 +92,8 @@ let keywords = [
     "goto"
     "then"
     "type"
+    "unit"
+    "uses"
     "with"
     "array"
     "begin"
@@ -100,6 +108,10 @@ let keywords = [
     "program"
     "function"
     "procedure"
+    "interface"
+    "finalization"
+    "implementation"
+    "initialization"
   ]
 
 let expr = opp.ExpressionParser
@@ -200,6 +212,14 @@ let designator =
                                 | '.', '.' -> true
                                 | '^', _ | '[', _ | '.', _ -> false
                                 | _, _ -> true)))))
+            (fun h t -> h::t |> DIdent)
+
+let simpleDesignator =
+    let identifier_p = +(identifier |>> Ident)
+    pipe2   identifier_p
+            (manyTill
+                (``. `` >>. identifier_p)
+                (lookAhead(followedBy (nextCharSatisfies (function | '.' -> false | _ -> true)))))
             (fun h t -> h::t |> DIdent)
 
 let typeIdentifier, typeIdentifierRef = createParserForwardedToRef()
@@ -449,7 +469,7 @@ let whileStatement =
     |>> WhileStm
 
 let withStatement =
-    (``with `` >>. (sepEndBy designator ``, ``) .>> ``do ``)
+    (``with `` >>. (sepEndBy1 designator ``, ``) .>> ``do ``)
     .>>. !^(opt compoundStatement)
     |>> WithStm
 
@@ -481,14 +501,26 @@ let procFuncDeclarations, procFuncDeclarationsRef = createParserForwardedToRef()
 let declarations =
     many (choice[typeDeclarations; varDeclarations; constDeclarations; labelDeclarations; procFuncDeclarations])
 
-let beginEnd =
-    between ``begin `` ``end ``
-            (statementList
-             .>>. many(identifier .>>? (``: `` .>> many ``; ``) |>> LabelStm)
-             |>> function
-                 | (s, []) -> s |> List.concat
-                 | (s, l) -> [l] |> List.append s |> List.concat
-            )
+let intfDeclarations =
+    many (choice[typeDeclarations; varDeclarations; constDeclarations; procFuncDeclarations])
+
+let statements =
+    statementList
+    .>>. many(identifier .>>? (``: `` .>> many ``; ``) |>> LabelStm)
+    |>> function
+        | (s, []) -> s |> List.concat
+        | (s, l) -> [l] |> List.append s |> List.concat
+
+let beginEnd = between ``begin `` ``end `` statements
+let beginOrInit_End = between (``begin `` <|> ``initialization ``) ``end `` statements
+
+let moduleBeginEnd =
+    choice [
+        ``end `` >>% ([],[])
+        attempt((between ``initialization `` ``finalization `` statements) .>>. (statements .>> ``end ``))
+        (beginOrInit_End |>> fun s -> s, [])
+        (between ``finalization `` ``end `` statements |>> fun s -> [],s) 
+    ]
 
 statementListRef := (sepEndBy (statement <|> compoundStatement) (many1 ``; ``))
 
@@ -518,16 +550,37 @@ procFuncDeclarationsRef :=
     )
     |>> ProcAndFunc
 
-let pasModule =
+let mainModule =
     (opt(``program `` >>. identifier .>> ``; ``))
     .>>.
     ((include_system_inc >>. block .>> pstring ".") |>> Block)
-    |>> ModuleAst
+    |>> MainModuleRec.Create
+    
+let uses = (``uses `` >>. sepEndBy1 simpleDesignator (pstring ",") .>> ``; ``) <|>% []
 
-let pascalModule =
-    wsc >>. pasModule .>> (skipManyTill skipAnyChar eof)
+let moduleInterface =
+    ``interface `` >>. uses .>>. intfDeclarations
 
-let mainPassParser = pascalModule
+let moduleImplementation =
+    ``implementation `` >>. uses .>>. declarations
 
-let pGrammar: Parser<ModuleAst, PasState> =  // one type annotation is enough for the whole parser
-    pascalModule
+let unitModule =
+    tuple4
+        (``unit `` >>. simpleDesignator .>> ``; ``)
+        moduleInterface
+        moduleImplementation
+        moduleBeginEnd
+    |>> UnitModuleRec.Create
+
+let parseModule f = wsc >>. f .>> (skipManyTill skipAnyChar eof)
+
+let parseMainModule = parseModule mainModule
+
+let parseUnitModule = parseModule unitModule
+
+let mainPassParser = parseMainModule
+
+let pGrammar: Parser<MainModuleRec, PasState> =  // one type annotation is enough for the whole parser
+    parseMainModule
+//let pGrammar2: Parser<_, _> =  // one type annotation is enough for the whole parser
+//    unitModule
