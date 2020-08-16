@@ -110,30 +110,40 @@ let main argv =
             | _ -> failwith "No proper command found"
         else if results.Contains(TestParser) then
             let proj = PascalProject.Create("test.pas", false)
-            FParsec.CharParsers.runParserOnString parseUnitModule (PasState.Create (TestPass(proj)) null "") "test"
-              """
-unit x;
-
-interface
-
-uses
-  System.SysUtils;
+            FParsec.CharParsers.runParserOnString parseMainModule (PasState.Create (TestPass(proj)) null "") "test"
+                """
+uses Test;
 
 type
   TFoo = record
   end;
 
-function foo: integer;
 begin
-end;
-
-implementation
-
-var
-  x: integer;
-finalization
-  if true then
 end.
 """
+//              """
+//unit x;
+//
+//interface
+//
+//uses
+//  System.SysUtils;
+//
+//type
+//  TFoo = record
+//  end;
+//
+//function foo: integer;
+//begin
+//end;
+//
+//implementation
+//
+//var
+//  x: integer;
+//finalization
+//  if true then
+//end.
+//"""
             |> printfn "%A"
     0

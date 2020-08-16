@@ -550,13 +550,15 @@ procFuncDeclarationsRef :=
     )
     |>> ProcAndFunc
 
+let uses = (``uses `` >>. sepEndBy1 simpleDesignator (pstring ",") .>> ``; ``) <|>% []
+
 let mainModule =
-    (opt(``program `` >>. identifier .>> ``; ``))
-    .>>.
-    ((include_system_inc >>. block .>> pstring ".") |>> Block)
+    tuple3
+        (opt(``program `` >>. identifier .>> ``; ``))
+        uses
+        ((include_system_inc >>. block .>> pstring ".") |>> Block)
     |>> MainModuleRec.Create
     
-let uses = (``uses `` >>. sepEndBy1 simpleDesignator (pstring ",") .>> ``; ``) <|>% []
 
 let moduleInterface =
     ``interface `` >>. uses .>>. intfDeclarations

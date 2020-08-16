@@ -61,7 +61,7 @@ let doPas proj s =
     let result = doPasStream (strToStream s) @"C:\_projects\newpascal\np\npcli\test\xdpw" proj
     match result with
     | Ok(ast, us) ->
-        match Ctx.BuildModule ast us with
+        match Ctx.BuildModule (MainModule ast) us with
         | Ok asmDef ->
             let outName = proj.OutPath </> proj.Name + ".dll"
             asmDef.Write(outName)

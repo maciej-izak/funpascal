@@ -7,6 +7,19 @@ open Mono.Cecil
 open Mono.Cecil.Cil
 open Pas.Intrinsics
 
+type MainScopeRec = {
+    Namespace: string
+    State: PasState
+    Defs: TypeDefinition // all procedures and global variables are defined in special class
+    Module: ModuleDefinition // main module of application / library
+} with
+    static member Create ns state defs m = {
+            Namespace = ns
+            State = state
+            Defs = defs
+            Module = m
+        }
+
 module Utils =
     let stdIdent = Ident >> List.singleton >> DIdent
 
@@ -177,38 +190,39 @@ module Ctx =
             member _.Equals(x,y) = ec.Equals(x, y)
 
     type ModuleDetails = {
-            typesCount: int ref
-            moduleBuilder: ModuleDefinition
-            ns: string
-            tb: TypeDefinition
+            TypesCount: int ref
+            Module: ModuleDefinition
+            Namespace: string
+            Defs: TypeDefinition
             vt: TypeReference
             uvt: MethodReference
             anonSizeTypes: Dictionary<int, TypeDefinition>
         } with
-        static member Create moduleBuilder ns tb =
+        static member Create (msr: MainScopeRec) =
+            let m = msr.Module
             {
-                typesCount = ref 0
-                moduleBuilder = moduleBuilder
-                ns = ns
-                tb = tb
-                vt = moduleBuilder.ImportReference(typeof<ValueType>)
-                uvt = moduleBuilder.ImportReference(typeof<UnsafeValueTypeAttribute>.GetConstructor(Type.EmptyTypes))
+                TypesCount = ref 0
+                Module = m
+                Namespace = msr.Namespace
+                Defs = msr.Defs
+                vt = m.ImportReference(typeof<ValueType>)
+                uvt = m.ImportReference(typeof<UnsafeValueTypeAttribute>.GetConstructor(Type.EmptyTypes))
                 anonSizeTypes = Dictionary<_, _>()
             }
 
         member self.UniqueTypeName() =
-            incr self.typesCount
-            "T" + string !self.typesCount
+            incr self.TypesCount
+            "T" + string !self.TypesCount
 
         member self.NewSizedType size =
                 let attributes = TypeAttributes.SequentialLayout ||| TypeAttributes.AnsiClass ||| TypeAttributes.Sealed ||| TypeAttributes.Public
-                let at = TypeDefinition(self.ns, self.UniqueTypeName(), attributes)
+                let at = TypeDefinition(self.Namespace, self.UniqueTypeName(), attributes)
 
                 at.CustomAttributes.Add(CustomAttribute self.uvt)
                 at.ClassSize <- size
                 at.PackingSize <- 1s;
                 at.BaseType <- self.vt
-                self.moduleBuilder.Types.Add(at)
+                self.Module.Types.Add(at)
                 at
 
         member self.SelectAnonSizeType size =
@@ -223,7 +237,7 @@ module Ctx =
             let ast = self.SelectAnonSizeType bytes.Length
             let fd = FieldDefinition(null, FieldAttributes.Public ||| FieldAttributes.Static ||| FieldAttributes.HasFieldRVA, ast)
             fd.InitialValue <- bytes
-            self.tb.Fields.Add fd
+            self.Defs.Fields.Add fd
             fd
 
     type SystemTypes = {
@@ -256,7 +270,7 @@ module Ctx =
     }
 
     let private createSystemTypes details (symbols: Dictionary<TypeName, Symbol>) =
-        let mb = details.moduleBuilder
+        let mb = details.Module
         let vt = mb.ImportReference(typeof<ValueType>)
         let ot = mb.ImportReference(typeof<obj>)
         let addAnyType name raw kind =
@@ -307,7 +321,7 @@ module Ctx =
         }
 
     let private createSystemProc details =
-        let mb = details.moduleBuilder
+        let mb = details.Module
 //        let mathTrunc = typeof<System.MathF>.GetMethod("Truncate", [| typeof<single> |])  |> mb.ImportReference
         {
             GetMem = typeof<System.Runtime.InteropServices.Marshal>.GetMethod("AllocCoTaskMem")  |> mb.ImportReference
@@ -359,18 +373,18 @@ module Ctx =
                result = Some tsingle
                raw = raw
            }, ref[]) |> MethodSym
-        let mathLog = typeof<System.MathF>.GetMethod("Log", [| typeof<single> |])  |> ctx.details.moduleBuilder.ImportReference
-        let mathExp = typeof<System.MathF>.GetMethod("Exp", [| typeof<single> |])  |> ctx.details.moduleBuilder.ImportReference
+        let mathLog = typeof<System.MathF>.GetMethod("Log", [| typeof<single> |])  |> ctx.details.Module.ImportReference
+        let mathExp = typeof<System.MathF>.GetMethod("Exp", [| typeof<single> |])  |> ctx.details.Module.ImportReference
         symbols.Add(StringName "Exp", singleScalar mathExp)
         symbols.Add(StringName "Ln", singleScalar mathLog)
         ctx
 
-    let createCtx moduleBuilder ns tb owner messages =
+    let createCtx owner msr =
         let lang = LangCtx()
-        let details = ModuleDetails.Create moduleBuilder ns tb
+        let details = ModuleDetails.Create msr
         let symbols = Dictionary<TypeName,Symbol>(lang)
         {
-            messages = messages
+            messages = msr.State.messages
             variables = [List<VariableKind>()]
             labels = [Dictionary<_,_>()]
             symbols = [owner,symbols]
@@ -1081,11 +1095,11 @@ module Intrinsics =
             match this, v with
             | PBProcess, Ok x -> PBProcess, x
             | PBError, Ok x -> PBError, x
-            | PBOk, Ok _ -> raise (InternalError "2020080600")
+            | PBOk _, Ok _ -> raise (InternalError "2020080600")
             | PBIgnore, Ok _ -> raise (InternalError "2020081100")
             | PBProcess, Error x -> PBError, x
             | PBError, Error x -> PBError, x
-            | PBOk, Error _ -> raise (InternalError "2020080601")
+            | PBOk _, Error _ -> raise (InternalError "2020080601")
             | PBIgnore, Error _ -> raise (InternalError "2020081101")
             
         member this.bindMap v map = let state, r = this.bind v in state, map r
@@ -1132,7 +1146,7 @@ module Intrinsics =
         let bindParamIF f pr =
             match pr.State with
             | PBProcess -> if f then pr else { pr with State = PBIgnore }
-            | PBOk | PBError | PBIgnore -> pr
+            | PBOk _ | PBError | PBIgnore -> pr
     
     [<AllowNullLiteral>]
     type ParamBuilder(cp, ci) =
@@ -1144,7 +1158,7 @@ module Intrinsics =
         let tryAsSimpleType (typ: ParamTypPolicy) =
             let inst, t = callParamToIl ctx cp None
             match typ.ToPattern() t with 
-            | Some -> Some{Instructions=inst; Type=t}
+            | Some _ -> Some{Instructions=inst; Type=t}
             | _ -> None
             
         let tryAsCompilerType f (typ: ParamTypPolicy) =
@@ -1153,7 +1167,7 @@ module Intrinsics =
                 match f t with
                 | Some (il, t) ->
                     match t |> typ.ToPattern() with
-                    | Some -> Some{Instructions=il; Type=t}
+                    | Some _ -> Some{Instructions=il; Type=t}
                     | _ -> None
                 | _ -> None
             | _ -> None
@@ -1172,7 +1186,7 @@ module Intrinsics =
                     Current = ParamBuildRec.Empty
                     State = PBProcess }
             match pr.State with
-            | PBOk -> pr
+            | PBOk _ -> pr
             | PBProcess ->
                 let result =
                     match pr.Modifier with
@@ -1514,7 +1528,7 @@ module Intrinsics =
                                [
                                    +Conv Conv_U1
                                    +Call ctx.sysProc.ConvertU1ToChar
-                                   +Box ctx.details.moduleBuilder.TypeSystem.Char
+                                   +Box ctx.details.Module.TypeSystem.Char
                                ]
                                |> putArrayElem i
                            | _ -> [+Box t.raw] |> putArrayElem i

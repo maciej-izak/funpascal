@@ -276,8 +276,19 @@ type UnitModuleRec = {
     }
 
 type MainModuleRec = {
-    name: string option; block: Block
-} with static member Create(name, block) = { name = name; block = block }
+    name: string option
+    uses: DIdent list
+    block: Block
+} with static member Create(name, uses, block) = { name = name; uses = uses; block = block }
+
+type PasModule =
+    | MainModule of MainModuleRec
+    | UnitModule of UnitModuleRec
+with
+    member self.Name =
+        match self with
+        | MainModule {name=n} -> defaultArg n "Program"
+        | UnitModule {name=n} -> n.ToString()
 
 let (|UnitOp|_|) = function
     | TupleExpr[] -> Some UnitOp

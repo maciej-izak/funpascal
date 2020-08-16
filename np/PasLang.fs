@@ -8,7 +8,7 @@ open Mono.Cecil.Cil
 open Mono.Cecil.Rocks
 
 type BuildScope =
-    | MainScope of (string * TypeDefinition * PasState * ModuleDefinition)
+    | MainScope of MainScopeRec
     | LocalScope of Ctx
 
 [<AutoOpen>]
@@ -306,7 +306,7 @@ module LangDecl =
 
     let declTypeRecord (packed, fields) name ctx =
         let mutable size = 0;
-        let td = TypeDefinition(ctx.details.ns, ctx.details.UniqueTypeName(), TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout)
+        let td = TypeDefinition(ctx.details.Namespace, ctx.details.UniqueTypeName(), TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout)
         td.ClassSize <- 0
         td.BaseType <- ctx.sysTypes.value.raw
         td.PackingSize <- 1s // if packed then 1s else 0s
@@ -318,7 +318,7 @@ module LangDecl =
                 td.Fields.Add fd
                 fieldsMap.Add(name, (fd,typ))
                 size <- size + typ.SizeOf
-        ctx.details.moduleBuilder.Types.Add(td)
+        ctx.details.Module.Types.Add(td)
         let name = StringName name
         ctx.AddType name {name=name;kind=TkRecord(fieldsMap, size);raw=td}
 
@@ -349,7 +349,7 @@ module LangDecl =
                             fd |> GlobalVariable
                             |> fun vk ->
                                 ctx.NewSymbols.Add(StringName vn, VariableSym(vk,t))
-                                ctx.details.tb.Fields.Add fd
+                                ctx.details.Defs.Fields.Add fd
                                 addVar vk
         | _ -> failwith "IE"
         |> fun declVar -> declVar nt
@@ -473,14 +473,14 @@ module LangDecl =
             let scope = LocalScope(ctx.Inner (StandaloneMethod methodSym, newMethodSymbols))
             match Ctx.BuildIl(Block(decls, stmts),scope,("result",rVar)) with
             | Ok res ->
-                let mainBlock: MethodDefinition = Ctx.CompileBlock methodBuilder ctx.details.tb res
+                let mainBlock: MethodDefinition = Ctx.CompileBlock methodBuilder ctx.details.Defs res
                 mainBlock.Body.InitLocals <- true
                 // https://github.com/jbevain/cecil/issues/365
                 mainBlock.Body.OptimizeMacros()
             | Error _ -> ()
         | ExternalDeclr (lib, procName) ->
             let libRef = ModuleReference(lib)
-            ctx.details.moduleBuilder.ModuleReferences.Add(libRef)
+            ctx.details.Module.ModuleReferences.Add(libRef)
             let externalAttributes = MethodAttributes.HideBySig ||| MethodAttributes.PInvokeImpl
             methodBuilder.Attributes <- methodBuilder.Attributes ||| externalAttributes
             methodBuilder.IsPreserveSig <- true // as is
@@ -490,7 +490,7 @@ module LangDecl =
                          let flags = PInvokeAttributes.CharSetAnsi
                                  ||| PInvokeAttributes.SupportsLastError ||| PInvokeAttributes.CallConvWinapi
                          PInvokeInfo(flags, procName, libRef)
-            ctx.details.tb.Methods.Add(methodBuilder)
+            ctx.details.Defs.Methods.Add(methodBuilder)
         | ForwardDeclr ->
             ctx.forward.Add(name, (methodSym, newMethodSymbols, rVar))
 
@@ -556,7 +556,7 @@ module LangBuilder =
 
         static member BuildIl(Block(decl, stmt), buildScope, ?resVar) =
             let ctx = match buildScope with
-                      | MainScope (ns, tb, s, mb) -> Ctx.Create mb ns tb GlobalSpace s.messages
+                      | MainScope msr -> Ctx.Create GlobalSpace msr
                       | LocalScope ctx -> ctx
             let result = match resVar with
                          | Some (name, Some(v)) ->
@@ -575,46 +575,48 @@ module LangBuilder =
                 let res = stmtListToIl stmt ctx result
                 if ctx.messages.HasError then Error ctx else Ok res
 
-        static member BuildModule {name=name; block=block} state =
-            let moduleName = match name with | Some n -> n | None -> "Program"
-            let moduleNameWithoutExtension = System.IO.Path.GetFileNameWithoutExtension moduleName
-            let assemblyBuilder =
-                let assemblyName = AssemblyNameDefinition(moduleName, Version(0,0,0,0))
-                AssemblyDefinition.CreateAssembly(assemblyName, moduleNameWithoutExtension, ModuleKind.Console)
-            let moduleBuilder = assemblyBuilder.MainModule
-            // for 32 bit assembly
-            // moduleBuilder.Attributes <- ModuleAttributes.Required32Bit ||| moduleBuilder.Attributes
+        static member BuildModule (pasModule: PasModule) state =
+            let moduleName = pasModule.Name
+            match pasModule with
+            | MainModule {block = block} ->
+                let assemblyBuilder =
+                    let assemblyName = AssemblyNameDefinition(moduleName, Version(0,0,0,0))
+                    AssemblyDefinition.CreateAssembly(assemblyName, moduleName, ModuleKind.Console)
+                let moduleBuilder = assemblyBuilder.MainModule
+                // for 32 bit assembly
+                // moduleBuilder.Attributes <- ModuleAttributes.Required32Bit ||| moduleBuilder.Attributes
 
-            let typeBuilder =
-                let className = moduleName
-                let typeAttributes =
-                        TypeAttributes.Public
-                        ||| TypeAttributes.Abstract
-                        ||| TypeAttributes.Sealed
-                        ||| TypeAttributes.AutoLayout
-                        ||| TypeAttributes.AnsiClass
-                        ||| TypeAttributes.BeforeFieldInit
-                TypeDefinition(moduleName, className, typeAttributes, moduleBuilder.TypeSystem.Object)
-            moduleBuilder.Types.Add(typeBuilder)
-            let methodBuilder =
-                let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
-                let methodName = "Main"
-                MethodDefinition(methodName, methodAttributes, moduleBuilder.TypeSystem.Void)
-            match Ctx.BuildIl(block, MainScope(moduleName, typeBuilder, state, moduleBuilder)) with
-            | Error _ -> Error()
-            | Ok res ->
-                let mainBlock = Ctx.CompileBlock methodBuilder typeBuilder res
-                mainBlock.Body.InitLocals <- true
-                // https://github.com/jbevain/cecil/issues/365
-                mainBlock.Body.OptimizeMacros()
-                assemblyBuilder.EntryPoint <- mainBlock
-                Ok assemblyBuilder
-                // TODO version of target framework
-                (*
-                let v = moduleBuilder.ImportReference(typeof<TargetFrameworkAttribute>.GetConstructor([|typeof<string>|]));
-                let c = CustomAttribute(v);
-                let sr = moduleBuilder.ImportReference(typeof<string>)
-                let ca = CustomAttributeArgument(sr, box ".NETCoreApp,Version=v3.0")
-                c.ConstructorArguments.Add(ca)
-                assemblyBuilder.CustomAttributes.Add(c)
-                *)
+                let typeBuilder =
+                    let className = moduleName
+                    let typeAttributes =
+                            TypeAttributes.Public
+                            ||| TypeAttributes.Abstract
+                            ||| TypeAttributes.Sealed
+                            ||| TypeAttributes.AutoLayout
+                            ||| TypeAttributes.AnsiClass
+                            ||| TypeAttributes.BeforeFieldInit
+                    TypeDefinition(moduleName, className, typeAttributes, moduleBuilder.TypeSystem.Object)
+                moduleBuilder.Types.Add(typeBuilder)
+                let methodBuilder =
+                    let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
+                    let methodName = "Main"
+                    MethodDefinition(methodName, methodAttributes, moduleBuilder.TypeSystem.Void)
+                let msr = MainScopeRec.Create moduleName state typeBuilder moduleBuilder
+                match Ctx.BuildIl(block, MainScope msr) with
+                | Error _ -> Error()
+                | Ok res ->
+                    let mainBlock = Ctx.CompileBlock methodBuilder typeBuilder res
+                    mainBlock.Body.InitLocals <- true
+                    // https://github.com/jbevain/cecil/issues/365
+                    mainBlock.Body.OptimizeMacros()
+                    assemblyBuilder.EntryPoint <- mainBlock
+                    Ok assemblyBuilder
+                    // TODO version of target framework
+                    (*
+                    let v = moduleBuilder.ImportReference(typeof<TargetFrameworkAttribute>.GetConstructor([|typeof<string>|]));
+                    let c = CustomAttribute(v);
+                    let sr = moduleBuilder.ImportReference(typeof<string>)
+                    let ca = CustomAttributeArgument(sr, box ".NETCoreApp,Version=v3.0")
+                    c.ConstructorArguments.Add(ca)
+                    assemblyBuilder.CustomAttributes.Add(c)
+                    *)
