@@ -7,16 +7,16 @@ open Mono.Cecil
 open Mono.Cecil.Cil
 open Pas.Intrinsics
 
-type MainScopeRec = {
+type ScopeRec = {
     Namespace: string
     State: PasState
-    Defs: TypeDefinition // all procedures and global variables are defined in special class
+    Unit: TypeDefinition // all procedures and global variables are defined in special class
     Module: ModuleDefinition // main module of application / library
 } with
     static member Create ns state defs m = {
             Namespace = ns
             State = state
-            Defs = defs
+            Unit = defs
             Module = m
         }
 
@@ -193,20 +193,20 @@ module Ctx =
             TypesCount: int ref
             Module: ModuleDefinition
             Namespace: string
-            Defs: TypeDefinition
-            vt: TypeReference
-            uvt: MethodReference
+            Unit: TypeDefinition
+            ValueType: TypeReference
+            UnsafeValueTypeAttr: MethodReference
             anonSizeTypes: Dictionary<int, TypeDefinition>
         } with
-        static member Create (msr: MainScopeRec) =
-            let m = msr.Module
+        static member Create (sr: ScopeRec) =
+            let m = sr.Module
             {
                 TypesCount = ref 0
                 Module = m
-                Namespace = msr.Namespace
-                Defs = msr.Defs
-                vt = m.ImportReference(typeof<ValueType>)
-                uvt = m.ImportReference(typeof<UnsafeValueTypeAttribute>.GetConstructor(Type.EmptyTypes))
+                Namespace = sr.Namespace
+                Unit = sr.Unit
+                ValueType = m.ImportReference(typeof<ValueType>)
+                UnsafeValueTypeAttr = m.ImportReference(typeof<UnsafeValueTypeAttribute>.GetConstructor(Type.EmptyTypes))
                 anonSizeTypes = Dictionary<_, _>()
             }
 
@@ -218,10 +218,10 @@ module Ctx =
                 let attributes = TypeAttributes.SequentialLayout ||| TypeAttributes.AnsiClass ||| TypeAttributes.Sealed ||| TypeAttributes.Public
                 let at = TypeDefinition(self.Namespace, self.UniqueTypeName(), attributes)
 
-                at.CustomAttributes.Add(CustomAttribute self.uvt)
+                at.CustomAttributes.Add(CustomAttribute self.UnsafeValueTypeAttr)
                 at.ClassSize <- size
                 at.PackingSize <- 1s;
-                at.BaseType <- self.vt
+                at.BaseType <- self.ValueType
                 self.Module.Types.Add(at)
                 at
 
@@ -237,7 +237,7 @@ module Ctx =
             let ast = self.SelectAnonSizeType bytes.Length
             let fd = FieldDefinition(null, FieldAttributes.Public ||| FieldAttributes.Static ||| FieldAttributes.HasFieldRVA, ast)
             fd.InitialValue <- bytes
-            self.Defs.Fields.Add fd
+            self.Unit.Fields.Add fd
             fd
 
     type SystemTypes = {
@@ -379,12 +379,12 @@ module Ctx =
         symbols.Add(StringName "Ln", singleScalar mathLog)
         ctx
 
-    let createCtx owner msr =
+    let createCtx owner sr =
         let lang = LangCtx()
-        let details = ModuleDetails.Create msr
+        let details = ModuleDetails.Create sr
         let symbols = Dictionary<TypeName,Symbol>(lang)
         {
-            messages = msr.State.messages
+            messages = sr.State.messages
             variables = [List<VariableKind>()]
             labels = [Dictionary<_,_>()]
             symbols = [owner,symbols]

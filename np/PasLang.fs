@@ -8,7 +8,7 @@ open Mono.Cecil.Cil
 open Mono.Cecil.Rocks
 
 type BuildScope =
-    | MainScope of MainScopeRec
+    | MainScope of ScopeRec
     | LocalScope of Ctx
 
 [<AutoOpen>]
@@ -349,7 +349,7 @@ module LangDecl =
                             fd |> GlobalVariable
                             |> fun vk ->
                                 ctx.NewSymbols.Add(StringName vn, VariableSym(vk,t))
-                                ctx.details.Defs.Fields.Add fd
+                                ctx.details.Unit.Fields.Add fd
                                 addVar vk
         | _ -> failwith "IE"
         |> fun declVar -> declVar nt
@@ -473,7 +473,7 @@ module LangDecl =
             let scope = LocalScope(ctx.Inner (StandaloneMethod methodSym, newMethodSymbols))
             match Ctx.BuildIl(Block(decls, stmts),scope,("result",rVar)) with
             | Ok res ->
-                let mainBlock: MethodDefinition = Ctx.CompileBlock methodBuilder ctx.details.Defs res
+                let mainBlock: MethodDefinition = Ctx.CompileBlock methodBuilder ctx.details.Unit res
                 mainBlock.Body.InitLocals <- true
                 // https://github.com/jbevain/cecil/issues/365
                 mainBlock.Body.OptimizeMacros()
@@ -490,7 +490,7 @@ module LangDecl =
                          let flags = PInvokeAttributes.CharSetAnsi
                                  ||| PInvokeAttributes.SupportsLastError ||| PInvokeAttributes.CallConvWinapi
                          PInvokeInfo(flags, procName, libRef)
-            ctx.details.Defs.Methods.Add(methodBuilder)
+            ctx.details.Unit.Methods.Add(methodBuilder)
         | ForwardDeclr ->
             ctx.forward.Add(name, (methodSym, newMethodSymbols, rVar))
 
@@ -556,7 +556,7 @@ module LangBuilder =
 
         static member BuildIl(Block(decl, stmt), buildScope, ?resVar) =
             let ctx = match buildScope with
-                      | MainScope msr -> Ctx.Create GlobalSpace msr
+                      | MainScope sr -> Ctx.Create GlobalSpace sr
                       | LocalScope ctx -> ctx
             let result = match resVar with
                          | Some (name, Some(v)) ->
@@ -601,8 +601,8 @@ module LangBuilder =
                     let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
                     let methodName = "Main"
                     MethodDefinition(methodName, methodAttributes, moduleBuilder.TypeSystem.Void)
-                let msr = MainScopeRec.Create moduleName state typeBuilder moduleBuilder
-                match Ctx.BuildIl(block, MainScope msr) with
+                let sr = ScopeRec.Create moduleName state typeBuilder moduleBuilder
+                match Ctx.BuildIl(block, MainScope sr) with
                 | Error _ -> Error()
                 | Ok res ->
                     let mainBlock = Ctx.CompileBlock methodBuilder typeBuilder res
