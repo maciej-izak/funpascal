@@ -55,8 +55,8 @@ let doFullCompilation proj (testCase: TestCase option) logh =
     let handleTest(proj, isError) =
         if testCase.IsSome then
             handleTest proj testCase.Value isError
-    System.IO.File.ReadAllText(proj.File)
-    |> PasStreams.doPas proj
+    
+    PasStreams.doPas proj proj.File
     |> function
        | Ok(outName, msg) ->
            Seq.iter (fprintfn logh "%s") msg.Warnings
@@ -64,14 +64,14 @@ let doFullCompilation proj (testCase: TestCase option) logh =
            writeRuntimeConfig proj
            { proj with Exe = Some outName}, false
        | Error(msg) ->
+           msg.AddFatal (sprintf "Cannot compile module '%s'" proj.FileName)
            Seq.iter (fprintfn logh "%s") msg.Warnings
            Seq.iter (fprintfn logh "%s") msg.Errors
-           fprintfn logh "[Fatal Error] Cannot compile module '%s'" proj.FileName
            proj, true
     |> handleTest
 
 let tryCompileFile doTest mainFile =
-    let proj = PascalProject.Create(mainFile, doTest)
+    let proj = PascalProject.Create(mainFile, [@"C:\_projects\newpascal\np\npcli\rtl"], [@"C:\_projects\newpascal\np\npcli\test\xdpw"])
     let handle defSuffix =
         if doTest then
             let logFile = proj.OutPath </> sprintf "%s%s.log" proj.Name defSuffix
@@ -109,8 +109,8 @@ let main argv =
             | Some testDir -> !! (testDir </> "*.pas") ++ (testDir </> "*.pp") |> Seq.iter (tryCompileFile true)
             | _ -> failwith "No proper command found"
         else if results.Contains(TestParser) then
-            let proj = PascalProject.Create("test.pas", false)
-            FParsec.CharParsers.runParserOnString parseMainModule (PasState.Create (TestPass(proj)) null "") "test"
+            let proj = PascalProject.Create("test.pas", [], [])
+            FParsec.CharParsers.runParserOnString parseMainModule (PasState.Create (TestPass(proj)) null proj) "test"
                 """
 uses Test;
 

@@ -20,6 +20,42 @@
 // https://github.com/sgoguen/journal/blob/master/2019/12/fsharp-advent/05-active-patterns.md
 // Analiza CE : https://stackoverflow.com/questions/23122639/how-do-i-write-a-computation-expression-builder-that-accumulates-a-value-and-als
 
+// HOWTO implicity include inc file :
+
+(*
+1. add to stream
+
+    let doPasStream proj parser stream =
+        let addParserError (us: PasState) parserError =
+            us.messages.Errors.Add parserError
+            Error us
+        let us = PasState.Create (InitialPass proj) (new PasStream(stream)) proj
+        use stream1 = new CharStream<PasState>(us.stream, Encoding.Unicode)
+        stream1.UserState <- us
+        stream1.Name <- proj.FileName
+        // !!! -> HERE
+        match proj.FindInc "system.inc" with
+        | Some fileName ->  us.stream.AddInc fileName "system.inc"
+        | _ -> raise (InternalError "2020081800")
+
+2. must be part of paring
+
+let include_system_inc =
+    PasState.HandleComment(Include "system.inc" |> Directive) >>. wsc
+
+3. included in some part of parse process
+
+let mainModule =
+    tuple3
+        (opt(``program `` >>. identifier .>> ``; ``))
+        uses
+        (include_system_inc >>. block .>> pstring ".")
+    |>> MainModuleRec.Create
+
+
+*)
+
+
 // meta trick to get assembly methods reference:
 
 (*

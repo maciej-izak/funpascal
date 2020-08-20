@@ -6,6 +6,8 @@ open System.IO
 open System.Text
 open System.Collections.Generic
 open FParsec
+open Fake.IO
+open Fake.IO.FileSystemOperators
 
 [<Literal>]
 let DefaultBlockSize = 4096L;//196608L // 3*2^16 = 200k
@@ -20,6 +22,7 @@ type CompilerMessages() =
 
     let errorFmt = sprintf "[Error] %s(%d,%d) %s"
     let warningFmt = sprintf "[Warning] %s(%d,%d) %s"
+    let fatalFmt = sprintf "[Fatal Error] %s"
 
     member val Errors = List<string>()
     member val Warnings = List<string>()
@@ -35,6 +38,8 @@ type CompilerMessages() =
         match msg with
         | MsgError(_, msg) -> self.Errors.Add(errorFmt pos.StreamName (int pos.Line) (int pos.Column) msg)
         | MsgWarning(_, _, msg) -> self.Warnings.Add(warningFmt pos.StreamName (int pos.Line) (int pos.Column) msg)
+
+    member self.AddFatal msg = self.Errors.Add(fatalFmt msg)
 
 type LabelDef = {name: string; mutable stmtPoint: bool}
 
@@ -94,6 +99,7 @@ type CompilerPassId =
     | TestPassId
 
 exception InternalError of string
+let doInternalError str () = InternalError str |> raise 
 
 type ICompilerPassGeneric =
     abstract member Defines: HashSet<string>
@@ -107,6 +113,39 @@ type PasTestState = {
     static member HandleComment _ = preturn()
     static member Create() = { testEnv = TestEnvDict(StringComparer.OrdinalIgnoreCase) }
 
+type PascalProject = {
+    File: string
+    FileName: string
+    FilePath: string
+    OutPath: string
+    Exe: string option
+    Name: string
+    Defines: string list
+    UnitFiles: string list
+    IncludeFiles: string list
+}
+ with
+    static member Create(mainFile, unitFiles, includeFiles) =
+        let filePath = Path.GetDirectoryName (mainFile: string)
+        let outPath = filePath </> "out"
+        let mapDirectories = List.map (fun (p: string) -> if Path.IsPathFullyQualified p then p else Path.combine filePath p)
+        Directory.ensure outPath
+        {
+            File = mainFile
+            FileName = Path.GetFileName mainFile
+            FilePath = filePath
+            OutPath = outPath
+            Exe = None
+            Name = Path.GetFileNameWithoutExtension mainFile
+            Defines = []
+            UnitFiles = mapDirectories unitFiles
+            IncludeFiles = mapDirectories includeFiles
+        }
+
+    // TODO some map cache / optimization?
+    member self.FindInc name = self.IncludeFiles |> List.tryPick (Directory.tryFindFirstMatchingFile name) 
+    member self.FindUnit name = self.UnitFiles |> List.tryPick (Directory.tryFindFirstMatchingFile name) 
+
 type ICompilerPass =
     inherit ICompilerPassGeneric
     abstract member Id: CompilerPassId
@@ -114,8 +153,8 @@ type ICompilerPass =
 
 and PasState = {
     pass: ICompilerPass
+    proj: PascalProject
     stream: PasStream
-    incPath: string
     incStack: (int64 * string * CharStreamState<PasState>) Stack
     defGoto: Dictionary<Position, Position>
     moduled: ModuleDef
@@ -198,11 +237,7 @@ and [<AllowNullLiteral>]
         else
             stream.Close()
 
-    member self.AddInc fileName searchPath =
-        //printfn "AddInc %A %A" fileName searchPath
-        if File.Exists fileName then fileName else Path.Combine(searchPath, fileName)
-        |> File.ReadAllText
-        |> self.AddStr fileName
+    member self.AddInc filePath fileName = File.ReadAllText filePath |> self.AddStr fileName
 
     member _.AddStr strName str =
         //printfn "AddStr %s" str
@@ -233,17 +268,7 @@ and [<AllowNullLiteral>]
 
     member _.EndInc() = () 
   end
-
-type PascalProject = {
-    File: string
-    FileName: string
-    FilePath: string
-    OutPath: string
-    Exe: string option
-    Name: string
-    Defines: string list
-}
-
+  
 type GenericPass(proj) =
     let defines =
         let defs = HashSet<_>(StringComparer.OrdinalIgnoreCase)
@@ -260,8 +285,12 @@ type InitialPass(proj) =
     let id = InitialPassId
     let ifDefStack = Stack<IfDefPos>()
 
-    let includeFile us file = us.stream.AddInc file us.incPath
-
+    let includeFile comment (stream: CharStream<PasState>) fileName =
+        let us = stream.UserState
+        match us.proj.FindInc fileName with
+        | Some filePath -> us.stream.AddInc filePath fileName
+        | _ -> ``Error: Cannot find file '%O'`` fileName |> us.NewMsg (box comment)
+        
     let macro us (mId, m) =
         let addStr = us.stream.AddStr (mId.ToString())
         match m with
@@ -303,7 +332,7 @@ type InitialPass(proj) =
             match comment with
             | Directive d ->
                 match d with
-                | Include f -> includeFile stream.UserState f
+                | Include f -> includeFile comment stream f
                 | IfDef notDefined -> ifDef notDefined
                 | EndIf -> endIfElse comment stream EndIfBranch
                 | Else -> endIfElse comment stream ElseBranch
@@ -378,11 +407,11 @@ type TestPass(proj) =
             | _ -> ()
 
 type PasState with
-    static member Create pass s ip =
+    static member Create pass s proj =
         {
             pass = pass
+            proj = proj
             stream = s
-            incPath = ip
             incStack = Stack()
             defGoto = Dictionary<_,_>()
             moduled = ModuleDef()

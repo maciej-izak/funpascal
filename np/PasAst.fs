@@ -256,7 +256,10 @@ type Program =
     | Program of string
     | Library of string
     
-type Block = Block of decl: Declarations list * stmt: Statement list
+type MainBlockRec = {
+    decl: Declarations list; stmt: Statement list
+} with
+    static member Create (decl, stmt) = { decl = decl; stmt = stmt }
 
 type ModuleSection = { uses: DIdent list; decl: Declarations list }
 
@@ -266,29 +269,27 @@ type UnitModuleRec = {
     impl: ModuleSection
     init: Statement list
     fini: Statement list
-} with static member Create (name, (intfUses, intfDecl), (implUses, implDecl), (init, fini)) =
-    {
-        name = name
-        intf = { uses = intfUses; decl = intfDecl }
-        impl = { uses = implUses; decl = implDecl }
-        init = init
-        fini = fini
-    }
+} with
+    static member Create (name, ((intfUses, intfDecl), (implUses, implDecl), (init, fini))) =
+        {
+            name = name
+            intf = { uses = intfUses; decl = intfDecl }
+            impl = { uses = implUses; decl = implDecl }
+            init = init
+            fini = fini
+        }
+        
+    member self.UnitName = self.name.ToString()
 
 type MainModuleRec = {
     name: string option
     uses: DIdent list
-    block: Block
-} with static member Create(name, uses, block) = { name = name; uses = uses; block = block }
+    block: MainBlockRec
+} with
+    static member Create(name, uses, block) = { name = name; uses = uses; block = MainBlockRec.Create block }
+    
+    member self.ProgramName = defaultArg self.name "Program"
 
-type PasModule =
-    | MainModule of MainModuleRec
-    | UnitModule of UnitModuleRec
-with
-    member self.Name =
-        match self with
-        | MainModule {name=n} -> defaultArg n "Program"
-        | UnitModule {name=n} -> n.ToString()
 
 let (|UnitOp|_|) = function
     | TupleExpr[] -> Some UnitOp

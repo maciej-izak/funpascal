@@ -146,8 +146,8 @@ module Symbols =
     type ChainLoad = SymbolLoad list * PasType option
 
     let chainToSLList = function
-        | Ok sl -> sl
-        | Error() -> [],None
+        | Some sl -> sl
+        | None -> [],None
 
     let caseSensitive = HashIdentity.Structural<TypeName>
     let caseInsensitive =

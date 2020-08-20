@@ -71,6 +71,9 @@ module Errors =
 
     let ``Error: More parameters expected`` =
         MsgError(Some 20, "More parameters expected")
+        
+    let ``Error: Cannot find file '%O'`` o =
+        MsgError(Some 21, sprintf "Cannot find file '%O'" o)
 
 [<AutoOpen>]
 module Warnings =

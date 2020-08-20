@@ -53,6 +53,7 @@ type SymOwner =
     | WithSpace
 
 type Ctx = {
+        units: Ctx list
         messages: CompilerMessages
         variables: List<VariableKind> list
         labels: Dictionary<string, BranchLabel ref> list
@@ -68,9 +69,11 @@ type Ctx = {
         sysProc: Ctx.SystemProc
     } with
 
-    member inline self.NewMsg (pos: ^T) =
+    member inline self.NewMsg (pos: ^T) mk =
         let p = (^T : (member BoxPos : obj) pos)
-        self.messages.AddMsg (self.messages.PosMap.[p])
+        match self.messages.PosMap.TryGetValue p with
+        | true, p -> self.messages.AddMsg p mk
+        | _ -> raise (InternalError "2020082001") // for example possible if system symbol not found (BoxPos not exist)
 
     static member Create = Ctx.createCtx
 
@@ -114,7 +117,10 @@ type Ctx = {
         | Some(_, sym) -> Some sym
         | _ -> None
 
-    member self.FindType sym = match self.PickSym sym with | Some(_,TypeSym ts) -> Some ts | _ -> None
+    member self.InUnits f = List.tryPick f (self::self.units)
+    
+    member self.FindType sym = 
+        self.InUnits (fun c -> match c.PickSym sym with | Some(_,TypeSym ts) -> Some ts | _ -> None)
 
     member self.FindTypeId = TypeName.FromTypeId >> self.FindType
 
@@ -153,15 +159,15 @@ type Ctx = {
 
     // SymSearch module
     member self.FindSymbol did =
-        match SymSearch.findSymbol self did with
-        | Error() as res -> ``Error: Cannot find symbol '%O'`` did |> self.NewMsg did; res
-        | res -> res
+        let res = self.InUnits (SymSearch.findSymbol did)
+        if res.IsNone then ``Error: Cannot find symbol '%O'`` did |> self.NewMsg did
+        res
 
     member self.FindMethodReferenceOpt =
         Utils.stdIdent >> self.FindSymbol >> chainToSLList >>
         function | [CallableLoad(Referenced({raw=mr}, _))], _ -> Some mr | _ -> None
-    member self.FindMethodReferenceUnsafe = self.FindMethodReferenceOpt >> function | Some r -> r | _ -> null
-    member self.FindMethodReference = self.FindMethodReferenceOpt >> function | Some r -> r | _ -> failwith "IE"
+    member self.FindMethodReferenceUnsafe = self.FindMethodReferenceOpt >> Option.defaultValue null
+    member self.FindMethodReference = self.FindMethodReferenceOpt >> Option.defaultWith (doInternalError "2020082000")
     member self.FindConstSym =
         self.FindSymbol >> chainToSLList >>
         function | [ValueLoad(v)], Some(t) -> v, t | _ -> failwith "IE"
@@ -193,7 +199,7 @@ module Ctx =
             TypesCount: int ref
             Module: ModuleDefinition
             Namespace: string
-            Unit: TypeDefinition
+            UnitScope: TypeDefinition
             ValueType: TypeReference
             UnsafeValueTypeAttr: MethodReference
             anonSizeTypes: Dictionary<int, TypeDefinition>
@@ -204,7 +210,7 @@ module Ctx =
                 TypesCount = ref 0
                 Module = m
                 Namespace = sr.Namespace
-                Unit = sr.Unit
+                UnitScope = sr.Unit
                 ValueType = m.ImportReference(typeof<ValueType>)
                 UnsafeValueTypeAttr = m.ImportReference(typeof<UnsafeValueTypeAttribute>.GetConstructor(Type.EmptyTypes))
                 anonSizeTypes = Dictionary<_, _>()
@@ -237,7 +243,7 @@ module Ctx =
             let ast = self.SelectAnonSizeType bytes.Length
             let fd = FieldDefinition(null, FieldAttributes.Public ||| FieldAttributes.Static ||| FieldAttributes.HasFieldRVA, ast)
             fd.InitialValue <- bytes
-            self.Unit.Fields.Add fd
+            self.UnitScope.Fields.Add fd
             fd
 
     type SystemTypes = {
@@ -379,11 +385,12 @@ module Ctx =
         symbols.Add(StringName "Ln", singleScalar mathLog)
         ctx
 
-    let createCtx owner sr =
+    let createCtx owner sr units =
         let lang = LangCtx()
         let details = ModuleDetails.Create sr
         let symbols = Dictionary<TypeName,Symbol>(lang)
         {
+            units = units
             messages = sr.State.messages
             variables = [List<VariableKind>()]
             labels = [Dictionary<_,_>()]
@@ -492,7 +499,7 @@ module TypesDef =
 
 module SymSearch =
 
-    let findSymbol (ctx: Ctx) (DIdent ident) =
+    let findSymbol (DIdent ident) (ctx: Ctx) =
         let mainSym = ident.Head |> function | Ident n -> ctx.FindSym(StringName n)
 
         let rec findSym ref acc = function
@@ -535,26 +542,26 @@ module SymSearch =
 
         let varLoadChain vt dlist vd =
             let (tail, finalType) = resolveTail [] vt dlist
-            Ok(VariableLoad(vd)::tail, Some finalType)
+            Some(VariableLoad(vd)::tail, Some finalType)
 
         let mainSym = defaultArg mainSym UnknownSym
 
         match mainSym with
         | VariableSym (v, t as vt) -> vt |> varLoadChain t ident.Tail
         | WithSym (v, t as vt) -> vt |> varLoadChain t ident
-        | EnumValueSym(i, t) when ident.Tail = [] -> Ok([ValueLoad(ValueInt(i))], Some t)
-        | MethodSym m ->  Ok([CallableLoad m], m.ReturnType)
+        | EnumValueSym(i, t) when ident.Tail = [] -> Some([ValueLoad(ValueInt(i))], Some t)
+        | MethodSym m ->  Some([CallableLoad m], m.ReturnType)
         | ConstSym v ->
             match v with
-            | ConstInt i -> Ok([ValueLoad(ValueInt i)], Some ctx.sysTypes.int32)
-            | ConstFloat f -> Ok([ValueLoad(ValueFloat f)], Some ctx.sysTypes.single)
+            | ConstInt i -> Some([ValueLoad(ValueInt i)], Some ctx.sysTypes.int32)
+            | ConstFloat f -> Some([ValueLoad(ValueFloat f)], Some ctx.sysTypes.single)
             | ConstValue(fd, pt) -> (GlobalVariable fd, pt) |> varLoadChain pt ident.Tail
             | ConstBool b ->
                 let i = int b
-                Ok([ValueLoad(ValueInt i)], Some ctx.sysTypes.boolean)
+                Some([ValueLoad(ValueInt i)], Some ctx.sysTypes.boolean)
             | _ -> failwith "IE"
-        | TypeSym t -> Ok([TypeCastLoad t], Some t)
-        | _ -> Error()
+        | TypeSym t -> Some([TypeCastLoad t], Some t)
+        | _ -> None
 
     type FoundFunction =
         | RealFunction of (MethodSym * IlInstruction option)
@@ -565,11 +572,11 @@ module SymSearch =
         let callChain = ctx.FindSymbol ident
         // TODO more advanced calls like foo().x().z^ := 10
         match callChain with
-        | Ok([CallableLoad cl], _) ->
+        | Some([CallableLoad cl], _) ->
            match cl with
            | Referenced ({raw=mr}, _) -> RealFunction(cl, +Call(mr) |> Some)
            | Intrinsic _ -> RealFunction(cl, None)
-        | Ok([TypeCastLoad t], _) -> TypeCast t
+        | Some([TypeCastLoad t], _) -> TypeCast t
         | _ ->
             // TODO replace first error "Cannot find symbol" with
             // ctx.NewError ident (sprintf "Unknown function '%O'" ident)

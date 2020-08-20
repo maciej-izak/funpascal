@@ -556,9 +556,8 @@ let mainModule =
     tuple3
         (opt(``program `` >>. identifier .>> ``; ``))
         uses
-        ((include_system_inc >>. block .>> pstring ".") |>> Block)
+        (block .>> pstring ".")
     |>> MainModuleRec.Create
-    
 
 let moduleInterface =
     ``interface `` >>. uses .>>. intfDeclarations
@@ -567,11 +566,18 @@ let moduleImplementation =
     ``implementation `` >>. uses .>>. declarations
 
 let unitModule =
-    tuple4
-        (``unit `` >>. simpleDesignator .>> ``; ``)
-        moduleInterface
-        moduleImplementation
-        moduleBeginEnd
+    (``unit `` >>. simpleDesignator .>> ``; ``)
+    .>>.
+    choice [
+        tuple3
+            moduleInterface
+            moduleImplementation
+            moduleBeginEnd
+        tuple3
+            (uses .>>. declarations)
+            (preturn ([],[]))
+            moduleBeginEnd
+    ]
     |>> UnitModuleRec.Create
 
 let parseModule f = wsc >>. f .>> (skipManyTill skipAnyChar eof)
@@ -579,8 +585,6 @@ let parseModule f = wsc >>. f .>> (skipManyTill skipAnyChar eof)
 let parseMainModule = parseModule mainModule
 
 let parseUnitModule = parseModule unitModule
-
-let mainPassParser = parseMainModule
 
 let pGrammar: Parser<MainModuleRec, PasState> =  // one type annotation is enough for the whole parser
     parseMainModule

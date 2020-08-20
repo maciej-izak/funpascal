@@ -8,7 +8,7 @@ open Mono.Cecil.Cil
 open Mono.Cecil.Rocks
 
 type BuildScope =
-    | MainScope of ScopeRec
+    | MainScope of ScopeRec * Ctx list
     | LocalScope of Ctx
 
 [<AutoOpen>]
@@ -24,7 +24,7 @@ module LangStmt =
     let doAssignStm (ident, expr) (ctx: Ctx) =
         // add param for findSymbol to set purpose (like this `assign`)
         match ctx.FindSymbol ident with
-        | Ok(symbols,_) -> // TODO type chceck
+        | Some(symbols,_) -> // TODO type chceck
             let ltp = ref LTPNone
             let loadDest =
                 let load = List.collect (ctx.ChainLoadToIl ltp (ctx.ChainReaderFactory false false)) symbols
@@ -41,7 +41,7 @@ module LangStmt =
                 yield! expr
                 yield! ctx.ChainWriterFactory ltp
             ]
-        | Error() -> []
+        | None -> []
         |> fun ils -> (ils, [])
 
     let doWithStm (idents, stmt) (ctx: Ctx) =
@@ -49,7 +49,7 @@ module LangStmt =
         let foldWithSymbols symbols i =
             let loadVarW =
                 match ctx.FindSymbol i with
-                | Ok (symbols, _) ->
+                | Some (symbols, _) ->
                     let ltp = ref LTPNone
                     let cl = List.collect (ctx.ChainLoadToIl ltp (ctx.ChainReaderFactory false false)) symbols
                     let vt = match !ltp with // TODO allow structs only ? (ValueType as records/classes only)
@@ -66,7 +66,7 @@ module LangStmt =
                             yield! ctx.ChainReaderFactory false true !ltp
                             +Stloc vv
                         ], (vv, vt.raw :?> TypeDefinition, pvt))
-                | Error() -> None
+                | None -> None
 
             match loadVarW with
             | Some loadVarW ->
@@ -208,7 +208,7 @@ module LangStmt =
 
     let doForStm (ident, initExpr, delta, finiExpr, stmt) (ctx: Ctx) =
         let var, varType = ctx.FindSymbol ident |> function
-                             | Ok([VariableLoad(vs, vt)], _) -> vs, vt
+                             | Some([VariableLoad(vs, vt)], _) -> vs, vt
                              | _ -> failwith "IE"
         // TODO allow only specified kind of variables for loops
         let (varFinalName, varFinal) = ctx.EnsureVariable varType
@@ -349,7 +349,7 @@ module LangDecl =
                             fd |> GlobalVariable
                             |> fun vk ->
                                 ctx.NewSymbols.Add(StringName vn, VariableSym(vk,t))
-                                ctx.details.Unit.Fields.Add fd
+                                ctx.details.UnitScope.Fields.Add fd
                                 addVar vk
         | _ -> failwith "IE"
         |> fun declVar -> declVar nt
@@ -470,13 +470,10 @@ module LangDecl =
         let methodBuilder = (fst methodSym).raw :?> MethodDefinition
         match d with
         | BodyDeclr (decls, stmts) ->
+            // TODO better handle forward ?
             let scope = LocalScope(ctx.Inner (StandaloneMethod methodSym, newMethodSymbols))
-            match Ctx.BuildIl(Block(decls, stmts),scope,("result",rVar)) with
-            | Ok res ->
-                let mainBlock: MethodDefinition = Ctx.CompileBlock methodBuilder ctx.details.Unit res
-                mainBlock.Body.InitLocals <- true
-                // https://github.com/jbevain/cecil/issues/365
-                mainBlock.Body.OptimizeMacros()
+            match Ctx.BuildDeclIl(decls,scope,("result",rVar)) |> Ctx.BuildStmtIl stmts with
+            | Ok(res, _) -> Ctx.CompileBlock methodBuilder ctx.details.UnitScope res |> ignore
             | Error _ -> ()
         | ExternalDeclr (lib, procName) ->
             let libRef = ModuleReference(lib)
@@ -490,7 +487,7 @@ module LangDecl =
                          let flags = PInvokeAttributes.CharSetAnsi
                                  ||| PInvokeAttributes.SupportsLastError ||| PInvokeAttributes.CallConvWinapi
                          PInvokeInfo(flags, procName, libRef)
-            ctx.details.Unit.Methods.Add(methodBuilder)
+            ctx.details.UnitScope.Methods.Add(methodBuilder)
         | ForwardDeclr ->
             ctx.forward.Add(name, (methodSym, newMethodSymbols, rVar))
 
@@ -504,8 +501,56 @@ module LangDecl =
         <| ctx
 
 [<AutoOpen>]
+module LangParser =
+    
+    open System.Text
+    open System.IO
+    open FParsec
+    open Microsoft.FSharp.Core
+    
+    let applyParser (parser: Parser<'Result,'UserState>) (stream: CharStream<'UserState>) =
+        let reply = parser stream
+        if reply.Status = FParsec.Primitives.Ok then
+            Success(reply.Result, stream.UserState, stream.Position)
+        else
+            let error = ParserError(stream.Position, stream.UserState, reply.Error)
+            FParsec.CharParsers.Failure(error.ToString(stream), error, stream.UserState)
+    
+    let doPasStream proj parser stream =
+        let addParserError (us: PasState) parserError =
+            us.messages.Errors.Add parserError
+            Error us
+        let us = PasState.Create (InitialPass proj) (new PasStream(stream)) proj
+        use stream1 = new CharStream<PasState>(us.stream, Encoding.Unicode)
+        stream1.UserState <- us
+        stream1.Name <- proj.FileName
+        match proj.FindInc "system.inc" with
+        | Some fileName ->  us.stream.AddInc fileName "system.inc"
+        | _ -> raise (InternalError "2020081800")
+        match applyParser initialPassParser stream1 with
+        | Success _ when not us.messages.HasError -> // Do second pass, parsing success may means failure in AST
+            let us = { us with pass = MainPass(proj) }
+            use stream2 = new CharStream<PasState>(us.stream, Encoding.Unicode)
+            stream2.UserState <- us
+            stream2.Name <- proj.FileName
+            match applyParser parser stream2 with
+            | Success(ast, _, _) when not us.messages.HasError -> Ok(ast, us)
+            | FParsec.CharParsers.Failure(s, _, _) -> addParserError us s
+            | _ -> Error us
+        | FParsec.CharParsers.Failure(s, _, _) -> addParserError us s
+        | _ -> Error us
+        
+    let loadAndDoFile proj parser file =
+        System.IO.File.ReadAllText file
+        |> Encoding.Unicode.GetBytes
+        |> MemoryStream // rework for warning about IDisposable
+        |> doPasStream proj parser
+
+[<AutoOpen>]
 module LangBuilder =
 
+    open Fake.IO.FileSystemOperators
+    
     let stmtListToIl sl (ctx: Ctx) (res: VariableDefinition) =
         let finalizeVariables =
             ctx.variables.Head
@@ -526,9 +571,6 @@ module LangBuilder =
                      | _ -> []
                 )
             |> List.ofSeq
-        match ctx.symbols.Head with
-        | GlobalSpace, _ -> ctx.res.Add(InstructionList([+Call(ctx.FindMethodReference "InitSystem")]))
-        | _ -> ()
         let (instructions, labels) = stmtListToIlList ctx sl
         let returnBlock = [
             if res <> null then +Ldloc res
@@ -547,16 +589,31 @@ module LangBuilder =
         |> ctx.res.Add
         ctx.res
 
+    let moduleTypeAttr =
+        TypeAttributes.Public
+        ||| TypeAttributes.Abstract
+        ||| TypeAttributes.Sealed
+        ||| TypeAttributes.AutoLayout
+        ||| TypeAttributes.AnsiClass
+        ||| TypeAttributes.BeforeFieldInit
+    
+    let sysMethodBuilder name mb =
+        let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
+        MethodDefinition(name, methodAttributes, (mb: ModuleDefinition).TypeSystem.Void)
+    
     type Ctx with
         static member CompileBlock (methodBuilder: MethodDefinition) (typeBuilder : TypeDefinition) (instr: List<MetaInstruction>) =
             let ilGenerator = methodBuilder.Body.GetILProcessor() |> emit
             typeBuilder.Methods.Add(methodBuilder)
             Seq.iter ilGenerator instr
+            methodBuilder.Body.InitLocals <- true
+            // https://github.com/jbevain/cecil/issues/365
+            methodBuilder.Body.OptimizeMacros()
             methodBuilder
 
-        static member BuildIl(Block(decl, stmt), buildScope, ?resVar) =
+        static member BuildDeclIl(decl, buildScope, ?resVar) =
             let ctx = match buildScope with
-                      | MainScope sr -> Ctx.Create GlobalSpace sr
+                      | MainScope(sr, units) -> Ctx.Create GlobalSpace sr units
                       | LocalScope ctx -> ctx
             let result = match resVar with
                          | Some (name, Some(v)) ->
@@ -566,57 +623,81 @@ module LangBuilder =
                             | _ -> null
                          | Some (_, None) -> null // no result (void)
                          | _ -> null // main program
-
             decl |> List.iter (doDecl ctx)
+            ctx, result
+
+        static member BuildStmtIl stmt (ctx: Ctx, result) =
             // do implementation section only if interface section has no error
             match ctx.messages.HasError with
             | true -> Error ctx
             | _ -> // after implementation analise, check for errors again
                 let res = stmtListToIl stmt ctx result
-                if ctx.messages.HasError then Error ctx else Ok res
+                if ctx.messages.HasError then Error ctx else Ok (res, ctx)
+        
+        static member BuildMainModule (pasModule: MainModuleRec, state) =
+            let moduleName = pasModule.ProgramName
+            let assemblyBuilder =
+                let assemblyName = AssemblyNameDefinition(moduleName, Version(0,0,0,0))
+                AssemblyDefinition.CreateAssembly(assemblyName, moduleName, ModuleKind.Console)
+            let moduleBuilder = assemblyBuilder.MainModule
+            // for 32 bit assembly
+            // moduleBuilder.Attributes <- ModuleAttributes.Required32Bit ||| moduleBuilder.Attributes
 
-        static member BuildModule (pasModule: PasModule) state =
-            let moduleName = pasModule.Name
-            match pasModule with
-            | MainModule {block = block} ->
-                let assemblyBuilder =
-                    let assemblyName = AssemblyNameDefinition(moduleName, Version(0,0,0,0))
-                    AssemblyDefinition.CreateAssembly(assemblyName, moduleName, ModuleKind.Console)
-                let moduleBuilder = assemblyBuilder.MainModule
-                // for 32 bit assembly
-                // moduleBuilder.Attributes <- ModuleAttributes.Required32Bit ||| moduleBuilder.Attributes
+            let typeBuilder =
+                TypeDefinition(moduleName, moduleName, moduleTypeAttr, moduleBuilder.TypeSystem.Object)
+            moduleBuilder.Types.Add(typeBuilder)
+            let sr = ScopeRec.Create moduleName state typeBuilder moduleBuilder
+            
+            // TODO parse uses ?
+            
+            let units =
+                match state.proj.FindUnit "system.pas" with
+                | Some f ->
+                    match loadAndDoFile state.proj parseUnitModule f with
+                    | Ok res ->
+                        match Ctx.BuildUnitModule res moduleBuilder with
+                        | Some ctx -> [ctx]
+                        | None -> [] // TODO ? handle errorsin module    
+                    | Error us -> []
+                | _ -> state.messages.AddFatal "Cannot find module 'System'"; []
+            
+            let (ctx, _) as ctxvd = Ctx.BuildDeclIl(pasModule.block.decl, MainScope(sr, units))
+            ctx.res.Add(InstructionList([+Call(ctx.FindMethodReference "InitSystem")]))
+            match Ctx.BuildStmtIl pasModule.block.stmt ctxvd with
+            | Error _ -> Error()
+            | Ok (res, _) ->
+                let mainBlock = Ctx.CompileBlock (sysMethodBuilder "Main" moduleBuilder) typeBuilder res
+                assemblyBuilder.EntryPoint <- mainBlock
+                Ok assemblyBuilder
+                // TODO version of target framework
+                (*
+                let v = moduleBuilder.ImportReference(typeof<TargetFrameworkAttribute>.GetConstructor([|typeof<string>|]));
+                let c = CustomAttribute(v);
+                let sr = moduleBuilder.ImportReference(typeof<string>)
+                let ca = CustomAttributeArgument(sr, box ".NETCoreApp,Version=v3.0")
+                c.ConstructorArguments.Add(ca)
+                assemblyBuilder.CustomAttributes.Add(c)
+                *)
+        
+        static member BuildUnitModule (pasModule: UnitModuleRec, state) (moduleBuilder: ModuleDefinition) =
+            let moduleName = pasModule.UnitName
+            let typeBuilder =
+                TypeDefinition(moduleName, moduleName, moduleTypeAttr, moduleBuilder.TypeSystem.Object)
+            moduleBuilder.Types.Add(typeBuilder)
 
-                let typeBuilder =
-                    let className = moduleName
-                    let typeAttributes =
-                            TypeAttributes.Public
-                            ||| TypeAttributes.Abstract
-                            ||| TypeAttributes.Sealed
-                            ||| TypeAttributes.AutoLayout
-                            ||| TypeAttributes.AnsiClass
-                            ||| TypeAttributes.BeforeFieldInit
-                    TypeDefinition(moduleName, className, typeAttributes, moduleBuilder.TypeSystem.Object)
-                moduleBuilder.Types.Add(typeBuilder)
-                let methodBuilder =
-                    let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
-                    let methodName = "Main"
-                    MethodDefinition(methodName, methodAttributes, moduleBuilder.TypeSystem.Void)
-                let sr = ScopeRec.Create moduleName state typeBuilder moduleBuilder
-                match Ctx.BuildIl(block, MainScope sr) with
-                | Error _ -> Error()
-                | Ok res ->
-                    let mainBlock = Ctx.CompileBlock methodBuilder typeBuilder res
-                    mainBlock.Body.InitLocals <- true
-                    // https://github.com/jbevain/cecil/issues/365
-                    mainBlock.Body.OptimizeMacros()
-                    assemblyBuilder.EntryPoint <- mainBlock
-                    Ok assemblyBuilder
-                    // TODO version of target framework
-                    (*
-                    let v = moduleBuilder.ImportReference(typeof<TargetFrameworkAttribute>.GetConstructor([|typeof<string>|]));
-                    let c = CustomAttribute(v);
-                    let sr = moduleBuilder.ImportReference(typeof<string>)
-                    let ca = CustomAttributeArgument(sr, box ".NETCoreApp,Version=v3.0")
-                    c.ConstructorArguments.Add(ca)
-                    assemblyBuilder.CustomAttributes.Add(c)
-                    *)
+            let sr = ScopeRec.Create moduleName state typeBuilder moduleBuilder
+            // TODO uses handle for module
+            let ctxvdIntf = Ctx.BuildDeclIl(pasModule.intf.decl, MainScope(sr, []))
+            let ctxvdImpl = Ctx.BuildDeclIl(pasModule.impl.decl, LocalScope (fst ctxvdIntf))
+            match ctxvdImpl |> Ctx.BuildStmtIl pasModule.init with
+            | Ok (res, ctx) ->
+                Ctx.CompileBlock (sysMethodBuilder ("module$init") moduleBuilder) typeBuilder res |> ignore
+                Some ctx
+            | Error _ -> None
+            //()
+            // TODO parse uses ?
+//            state.proj.FindUnit "system.pas"
+//            |> Option.defaultValue ""
+//            |> loadAndDoFile state.proj parseUnitModule
+//            |> buildModule state.proj (fun ast -> Ctx.BuildModule (UnitModule ast))
+//            |> ignore

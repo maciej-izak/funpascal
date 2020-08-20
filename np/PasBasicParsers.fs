@@ -236,9 +236,5 @@ let initialPassParser =
     pass1Parser stdComments (eof .>> (getUserState |>> checkIfDefBalance))
 
 let wsc: Parser<unit, PasState> = skipMany stdComments
-let str_wsc s =
-    pstringCI s .>> wsc
-let include_system_inc =
-    PasState.HandleComment(Include "system.inc" |> Directive) >>. wsc
-let wrd_wsc s =
-    pstringCI s .>> (notFollowedBy (choice[letter; digit; pchar '_']) .>> wsc)
+let str_wsc s = pstringCI s .>> wsc
+let wrd_wsc s = pstringCI s .>> (notFollowedBy (choice[letter; digit; pchar '_']) .>> wsc)
