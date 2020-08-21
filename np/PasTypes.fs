@@ -13,31 +13,26 @@ type ParamRefKind =
     | RefUntypedConst
     | RefNone
 
-type TypeName =
-    | StringName of string
-    | TypedName of TypeIdentifier
+type CompilerName =
+    | CompilerName of TypeIdentifier
     | AnonName
     | ErrorName
 with
-    static member FromTypeId = function
-        | TIdIdent(DIdent([Ident id])) -> StringName id
-        | TIdIdent _ -> raise (InternalError "2020082102")
-        | ti -> TypedName ti
-
+    static member FromTypeId = CompilerName
+    static member FromString = TypeIdentifier.FromString >> CompilerName
     static member FromDIdent = function
-        | DIdent(Ident id::_) -> StringName id
+        | DIdent(Ident id::_) -> TypeIdentifier.FromString id |> CompilerName
         | _ -> raise <| InternalError "2020062301"
 
     override self.ToString() =
         match self with
-        | StringName s -> s
-        | TypedName tib -> tib.ToString()
+        | CompilerName tib -> tib.ToString()
         | AnonName -> "<anon>"
         | ErrorName -> "<error>"
         
     member self.BoxPos =
         match self with
-        | TypedName tn -> tn.BoxPos
+        | CompilerName tn -> tn.BoxPos
         | _ -> raise(InternalError "2020082100")
 
 type TOrdType =
@@ -78,14 +73,14 @@ type TypeKind =
     | TkSet of PasType
 
 and PasType = {
-      name: TypeName
+      name: CompilerName
       kind: TypeKind
       raw : TypeReference
     }
 with
     static member NewPtr(pt, ?name) =
         let name = defaultArg name ""
-        {name=StringName name;raw=PointerType(pt.raw);kind=TkPointer(pt)}
+        {name=CompilerName.FromString name;raw=PointerType(pt.raw);kind=TkPointer(pt)}
 
     member this.SizeOf =
         let ordTypeSize = function

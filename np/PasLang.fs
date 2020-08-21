@@ -73,7 +73,7 @@ module LangStmt =
                 let newSymbols = Dictionary<_,_>()
                 let (v, td, ptd) = snd loadVarW
                 for f in td.Fields do
-                    newSymbols.Add(StringName f.Name, WithSym(LocalVariable v, ptd))
+                    newSymbols.Add(CompilerName.FromString f.Name, WithSym(LocalVariable v, ptd))
                 ils.Add(fst loadVarW)
                 (WithSpace, newSymbols)::symbols
             | None -> symbols
@@ -285,25 +285,24 @@ module LangStmt =
 module LangDecl =
 
     let declTypeAlias (isStrong, origin) name (ctx: Ctx) =
-        let name = StringName name
+        let name = CompilerName.FromString name
         let originType = ctx.FindTypeId origin
         {originType with name = name} |> ctx.AddType name
 
     let declTypePtr (count, typeId) name (ctx: Ctx) =
         let typ = ctx.FindTypeId typeId
-        ctx.AddTypePointer count typ.name (StringName name)
+        ctx.AddTypePointer count typ.name (CompilerName.FromString name)
 
     let declTypeSet (packed, typeId) name (ctx: Ctx) =
-        let typ = ctx.FindTypeId typeId
-        // below as second parameter can be used (TypeName.FromTypeId typeId) but we don't want declare new
-        // internal type, this is error too 
-        ctx.AddTypeSet typ.name (StringName name)
+        // other approach : let typ = ctx.FindTypeId typeId
+        // below as second parameter can be used typ.name, but it is bad for internal types like arrays
+        ctx.AddTypeSet (CompilerName.FromTypeId typeId) (CompilerName.FromString name)
 
     let declTypeEnum enumValues name (ctx: Ctx) =
-        let name = StringName name
+        let name = CompilerName.FromString name
         let max = (enumValues: string list).Length // TODO get explicit max value
         let enumType = ctx.AddType name {name=name;kind=TkOrd(OkEnumeration, OtULong(0, max));raw=ctx.sysTypes.int32.raw}
-        enumValues |> List.iteri (fun i v -> ctx.NewSymbols.Add (StringName v, EnumValueSym(i, enumType)))
+        enumValues |> List.iteri (fun i v -> ctx.NewSymbols.Add (CompilerName.FromString v, EnumValueSym(i, enumType)))
         enumType
 
     let declTypeRecord (packed, fields) name ctx =
@@ -321,10 +320,10 @@ module LangDecl =
                 fieldsMap.Add(name, (fd,typ))
                 size <- size + typ.SizeOf
         ctx.details.Module.Types.Add(td)
-        let name = StringName name
+        let name = CompilerName.FromString name
         ctx.AddType name {name=name;kind=TkRecord(fieldsMap, size);raw=td}
 
-    let declTypeArray (packed, dimensions, tname) name (ctx: Ctx) = ctx.AddTypeArray dimensions tname (StringName name)
+    let declTypeArray (packed, dimensions, tname) name (ctx: Ctx) = ctx.AddTypeArray dimensions tname (CompilerName.FromString name)
 
     let declType = function
         | TypeAlias decl -> declTypeAlias decl
@@ -344,13 +343,13 @@ module LangDecl =
                             VariableDefinition (t: PasType).raw
                             |> LocalVariable
                             |> fun vk ->
-                                ctx.NewSymbols.Add(StringName vn, VariableSym(vk, t))
+                                ctx.NewSymbols.Add(CompilerName.FromString vn, VariableSym(vk, t))
                                 addVar vk
         | GlobalSpace -> fun (vn, t) ->
                             let fd = FieldDefinition(vn, FieldAttributes.Public ||| FieldAttributes.Static, t.raw)
                             fd |> GlobalVariable
                             |> fun vk ->
-                                ctx.NewSymbols.Add(StringName vn, VariableSym(vk,t))
+                                ctx.NewSymbols.Add(CompilerName.FromString vn, VariableSym(vk,t))
                                 ctx.details.UnitScope.Fields.Add fd
                                 addVar vk
         | _ -> failwith "IE"
@@ -413,7 +412,7 @@ module LangDecl =
         match addConstAtom ctype valueExpr with
         | ConstTempValue(b, t) -> ConstValue(ctx.details.AddBytesConst b, t) // add final as static value
         | c -> c
-        |> fun sym -> ctx.NewSymbols.Add(StringName name, ConstSym sym)
+        |> fun sym -> ctx.NewSymbols.Add(CompilerName.FromString name, ConstSym sym)
 
     let declConstants constants ctx = List.iter (declConst ctx) constants
 
@@ -423,7 +422,7 @@ module LangDecl =
         let name = match name with
                    | Some n -> n
                    | _ -> failwith "name expected"
-        let methodName = StringName name
+        let methodName = CompilerName.FromString name
         let methodSym, newMethodSymbols, rVar =
             match ctx.forward.TryGetValue name with
             | true, md ->
@@ -436,7 +435,7 @@ module LangDecl =
                                  | Some r ->
                                        let res = ctx.FindTypeId r
                                        let resultVar = VariableDefinition res.raw |> LocalVariable
-                                       newMethodSymbols.Add(StringName "result", (resultVar, res) |> VariableSym)
+                                       newMethodSymbols.Add(CompilerName.FromString "Result", (resultVar, res) |> VariableSym)
                                        res, Some resultVar
                                  | _ -> ctx.sysTypes.net_void, None
 
@@ -454,7 +453,7 @@ module LangDecl =
                                      | None, Some t -> t.raw, RefNone, t, false
                                      | _ -> raise(InternalError "2020082101")
                                  let pd = ParameterDefinition(p, ParameterAttributes.None, typ)
-                                 newMethodSymbols.Add(StringName p, VariableSym(ParamVariable(byref, pd), t))
+                                 newMethodSymbols.Add(CompilerName.FromString p, VariableSym(ParamVariable(byref, pd), t))
                                  yield (pd, {typ=t;ref=isref})]
                             )
                 let ps, mp = ps |> List.unzip
@@ -518,23 +517,20 @@ module LangParser =
             let error = ParserError(stream.Position, stream.UserState, reply.Error)
             FParsec.CharParsers.Failure(error.ToString(stream), error, stream.UserState)
     
-    let doPasStream proj parser stream =
+    let doPasStream proj parser file stream =
         let addParserError (us: PasState) parserError =
             us.messages.Errors.Add parserError
             Error us
         let us = PasState.Create (InitialPass proj) (new PasStream(stream)) proj
         use stream1 = new CharStream<PasState>(us.stream, Encoding.Unicode)
         stream1.UserState <- us
-        stream1.Name <- proj.FileName
-        match proj.FindInc "system.inc" with
-        | Some fileName ->  us.stream.AddInc fileName "system.inc"
-        | _ -> raise (InternalError "2020081800")
+        stream1.Name <- file
         match applyParser initialPassParser stream1 with
         | Success _ when not us.messages.HasError -> // Do second pass, parsing success may means failure in AST
             let us = { us with pass = MainPass(proj) }
             use stream2 = new CharStream<PasState>(us.stream, Encoding.Unicode)
             stream2.UserState <- us
-            stream2.Name <- proj.FileName
+            stream2.Name <- file
             match applyParser parser stream2 with
             | Success(ast, _, _) when not us.messages.HasError -> Ok(ast, us)
             | FParsec.CharParsers.Failure(s, _, _) -> addParserError us s
@@ -546,7 +542,7 @@ module LangParser =
         System.IO.File.ReadAllText file
         |> Encoding.Unicode.GetBytes
         |> MemoryStream // rework for warning about IDisposable
-        |> doPasStream proj parser
+        |> doPasStream proj parser (Path.GetFileName file)
 
 [<AutoOpen>]
 module LangBuilder =

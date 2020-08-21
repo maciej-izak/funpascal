@@ -149,13 +149,12 @@ module Symbols =
         | Some sl -> sl
         | None -> [],None
 
-    let caseSensitive = HashIdentity.Structural<TypeName>
+    let caseSensitive = HashIdentity.Structural<CompilerName>
     let caseInsensitive =
         HashIdentity.FromFunctions
             (function
-             | StringName s -> s.GetHashCode(StringComparison.InvariantCultureIgnoreCase)
-             | TypedName t -> t.GetHashCode()
-             | AnonName -> failwith "IE")
+             | CompilerName ti -> (ti.ToString()).GetHashCode(StringComparison.InvariantCultureIgnoreCase)
+             | _ -> raise(InternalError "2020082102"))
             (fun a b -> String.Equals(string a, string b, StringComparison.InvariantCultureIgnoreCase))
 
     type SymbolsDict<'T>() =

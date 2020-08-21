@@ -8,6 +8,7 @@ open System.Collections.Generic
 open FParsec
 open Fake.IO
 open Fake.IO.FileSystemOperators
+open Microsoft.FSharp.Collections
 
 [<Literal>]
 let DefaultBlockSize = 4096L;//196608L // 3*2^16 = 200k
@@ -26,7 +27,7 @@ type CompilerMessages() =
 
     member val Errors = List<string>()
     member val Warnings = List<string>()
-    member val PosMap = Dictionary<obj, Position>()
+    member val PosMap = Dictionary<obj, Position>(HashIdentity.Reference)
 
     member self.HasError = self.Errors.Count > 0
     member self.GetPos(o: obj): Position option =
@@ -86,7 +87,6 @@ type Directive =
      | Else
      | AppType of AppType
 
-[<ReferenceEquality>]
 type Comment =
      | Directive of Directive
      | TestEnvVar of string * string list

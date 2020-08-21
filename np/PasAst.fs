@@ -1,6 +1,8 @@
 [<AutoOpen>]
 module Pas.Ast
 
+open Microsoft.FSharp.Core
+
 exception InternalError of string
 let doInternalError str () = InternalError str |> raise 
 
@@ -18,6 +20,8 @@ let compareOn f x (yobj: obj) =
 
 type DIdent = DIdent of Designator list
 with
+    static member FromString str = DIdent[Ident str]
+    
     override self.ToString() =
         match self with
         | DIdent (id::ids) ->
@@ -66,8 +70,7 @@ with
         | VNil -> "nil"
         | VSet sa -> sprintf "[%s]" ((List.fold (fun s i -> sprintf "%s, %O" s i) "" sa).Substring(2))
 
-and [<ReferenceEquality>]
-    ExprEl =
+and ExprEl =
     | Value of Value
     | Expr of ExprEl
     | Add of ExprEl * ExprEl
@@ -131,8 +134,7 @@ with
 
     member self.BoxPos = box self
 
-and [<ReferenceEquality>]
-    Designator =
+and Designator =
     | Ident of string
     | Deref
     | Array of ExprEl list
@@ -168,32 +170,49 @@ type ConstExpr =
     | ConstExpr of ExprEl
     | ConstConstr of ConstExpr list
     | ConstStructConstr of (string * ConstExpr) list
+with
+    override self.ToString() =
+        match self with
+        | ConstExpr ce -> ce.ToString()
+        | ConstConstr cc -> cc |> List.map (sprintf "%O") |> String.concat "," |> sprintf "(%s)"
+        | ConstStructConstr csc -> csc |> List.map (fun (name, expr) -> sprintf "%s: %O" name expr)
+                                   |> String.concat ";" |> sprintf "(%s)"
 
 type ConstExprRange = (ConstExpr * ConstExpr)
 
 type ArrayDimension =
     | DimensionType of string
     | DimensionExpr of ConstExprRange
+with
+    override self.ToString() =
+        match self with
+        | DimensionType s -> s
+        | DimensionExpr(l, h) -> sprintf "%O..%O" l h 
 
 type ParamKind = Var | Const
 
 type ArrayDef = ArrayDef of (bool * ArrayDimension list * TypeIdentifier)
 with
     override self.ToString() =
-        match self with | ArrayDef (_, _, t) -> "array of " + t.ToString()
+        match self with
+        | ArrayDef (p, ad, t) ->
+            let dims = ad |> List.map (sprintf "%O") |> String.concat ", "
+            sprintf "array[%s] of %O" dims t
 
 and TypeIdentifier =
-    | TIdString
-    | TIdFile
+    | TIdString of unit
+    | TIdFile of unit
     | TIdPointer of int * TypeIdentifier
     | TIdSet of packed: bool * TypeIdentifier
     | TIdIdent of DIdent
     | TIdArray of ArrayDef
 with
+    static member FromString str = TIdIdent(DIdent.FromString str)
+    
     override self.ToString() =
         match self with
-        | TIdString -> "string"
-        | TIdFile -> "file"
+        | TIdString _ -> "string"
+        | TIdFile _ -> "file"
         | TIdPointer (_, t) -> "^" + t.ToString()
         | TIdSet (_, t) -> "set of " + t.ToString()
         | TIdIdent id -> id.ToString()

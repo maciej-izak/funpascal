@@ -23,7 +23,7 @@ type ScopeRec = {
 module Utils =
     let stdIdent = Ident >> List.singleton >> DIdent
 
-    let addMetaType (symbols: Dictionary<_,_>) (name: TypeName) typ =
+    let addMetaType (symbols: Dictionary<_,_>) (name: CompilerName) typ =
         match name with
         | AnonName -> () // ie for char sets
         | _ -> symbols.Add(name, TypeSym typ)
@@ -57,8 +57,8 @@ type Ctx = {
         messages: CompilerMessages
         variables: List<VariableKind> list
         labels: Dictionary<string, BranchLabel ref> list
-        symbols: (SymOwner * Dictionary<TypeName, Symbol>) list
-        forward: Dictionary<string, ReferencedDef * Dictionary<TypeName,Symbol> * VariableKind option>
+        symbols: (SymOwner * Dictionary<CompilerName, Symbol>) list
+        forward: Dictionary<string, ReferencedDef * Dictionary<CompilerName,Symbol> * VariableKind option>
         localVariables: int ref
         lang: Ctx.LangCtx
         res: List<MetaInstruction>
@@ -106,7 +106,7 @@ type Ctx = {
                         let paramName = sprintf "@nested$%d" symbols.Count
                         let pd = ParameterDefinition(paramName, ParameterAttributes.None, ByReferenceType(t.raw))
                         let newSym = VariableSym(ParamVariable(RefVar, pd), t)
-                        symbols.Add(StringName paramName, newSym)
+                        symbols.Add(CompilerName.FromString paramName, newSym)
                         originMd.raw.Parameters.Add pd
                         nestedParams := (sym, newSym)::!nestedParams
                         Some newSym
@@ -124,7 +124,7 @@ type Ctx = {
         | ErrorName -> Some self.sysTypes.unknown
         | _ -> self.InUnits (fun c -> match c.PickSym sym with | Some(_,TypeSym ts) -> Some ts | _ -> None)
 
-    member self.TryFindTypeId = TypeName.FromTypeId >> self.FindType
+    member self.TryFindTypeId = CompilerName.FromTypeId >> self.FindType
         
     member self.FindTypeId t =
         let reportError = fun() -> ``Error: Cannot find type identifier '%O'`` t |> self.NewMsg t; self.sysTypes.unknown
@@ -144,7 +144,7 @@ type Ctx = {
         let varKind = varDef |> LocalVariable
         self.res.Add(DeclareLocal(varDef))
         self.variables.Head.Add(varKind)
-        (snd self.symbols.Head).Add(StringName key, VariableSym(varKind, varType))
+        (snd self.symbols.Head).Add(CompilerName.FromString key, VariableSym(varKind, varType))
         (key, varDef)
 
     member self.FindLabel name =
@@ -197,7 +197,7 @@ module Ctx =
             with get() = ec = caseSensitive
             and set(cs) =  ec <- if cs then caseSensitive else caseInsensitive
 
-        interface IEqualityComparer<TypeName> with
+        interface IEqualityComparer<CompilerName> with
             member _.GetHashCode(x) = ec.GetHashCode(x)
             member _.Equals(x,y) = ec.Equals(x, y)
 
@@ -281,15 +281,15 @@ module Ctx =
         Round: MethodReference
     }
 
-    let private createSystemTypes details (symbols: Dictionary<TypeName, Symbol>) =
+    let private createSystemTypes details (symbols: Dictionary<CompilerName, Symbol>) =
         let mb = details.Module
         let vt = mb.ImportReference(typeof<ValueType>)
         let ot = mb.ImportReference(typeof<obj>)
         let addAnyType name raw kind =
             let t = {name=name;raw=raw;kind=kind}
             Utils.addMetaType symbols name t
-        let addOrdType name raw ordKind ordType = TkOrd(ordKind, ordType) |> addAnyType (StringName name) raw
-        let addFloatType name raw = TkFloat(FtSingle) |> addAnyType (StringName name) raw
+        let addOrdType name raw ordKind ordType = TkOrd(ordKind, ordType) |> addAnyType (CompilerName.FromString name) raw
+        let addFloatType name raw = TkFloat(FtSingle) |> addAnyType (CompilerName.FromString name) raw
         let addArrayType name (p: PasType) ad = addAnyType name p.raw ad
 
         addOrdType "Byte" mb.TypeSystem.Byte OkInteger (OtUByte(int Byte.MinValue, int Byte.MaxValue)) |> ignore
@@ -312,17 +312,18 @@ module Ctx =
 
         // file = name + handle
         let fileType = (details.NewSizedType (256 + ptrSize)) :> TypeReference
-        let fileType = Utils.addMetaType symbols (TypedName TIdFile) {name=TypedName TIdFile;kind=TkUnknown(256 + ptrSize);raw=fileType}
+        let tidf = CompilerName <| TIdFile()
+        let fileType = Utils.addMetaType symbols tidf {name=tidf;kind=TkUnknown(256 + ptrSize);raw=fileType}
         {
             int32 = addOrdType "Integer" mb.TypeSystem.Int32 OkInteger (OtSLong(int Int32.MinValue, int Int32.MaxValue))
             int64 = addOrdType "Int64" mb.TypeSystem.Int64 OkInteger (OtSQWord(Int64.MinValue, Int64.MaxValue))
             single = addFloatType "Real" mb.TypeSystem.Single
-            string = addArrayType (TypedName TIdString) strType (TkArray(AkSString 255uy, [strDim], charType))
+            string = addArrayType (CompilerName <| TIdString()) strType (TkArray(AkSString 255uy, [strDim], charType))
             setStorage = {name=AnonName;raw=details.NewSizedType 256;kind=TkUnknown 0}
             char = charType
             file = fileType
             value = {name=AnonName;raw=vt;kind=TkUnknown 0}
-            pointer = addAnyType (StringName "Pointer") (PointerType mb.TypeSystem.Void) (TkPointer({name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}))
+            pointer = addAnyType (CompilerName.FromString "Pointer") (PointerType mb.TypeSystem.Void) (TkPointer({name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}))
             unit = {name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}
             unknown = {name=ErrorName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}
             constParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown 0}
@@ -348,11 +349,11 @@ module Ctx =
     let private addSystemRoutines ctx =
         let symbols = snd ctx.symbols.Head
         let tsingle = ctx.sysTypes.single
-        symbols.Add(StringName "true", ConstBool 0xFFuy |> ConstSym)
-        symbols.Add(StringName "false", ConstBool 0uy |> ConstSym)
+        symbols.Add(CompilerName.FromString "true", ConstBool 0xFFuy |> ConstSym)
+        symbols.Add(CompilerName.FromString "false", ConstBool 0uy |> ConstSym)
         //newSymbols.Add("GetMem", Referenced allocMem |> MethodSym)
         //newSymbols.Add("FreeMem", Referenced freeMem |> MethodSym)
-        let intrinsic name i = symbols.Add(StringName name, Intrinsic i |> MethodSym)
+        let intrinsic name i = symbols.Add(CompilerName.FromString name, Intrinsic i |> MethodSym)
         intrinsic "Inc" IncProc
         intrinsic "Dec" DecProc 
         intrinsic "Read" ReadProc 
@@ -387,14 +388,14 @@ module Ctx =
            }, ref[]) |> MethodSym
         let mathLog = typeof<System.MathF>.GetMethod("Log", [| typeof<single> |])  |> ctx.details.Module.ImportReference
         let mathExp = typeof<System.MathF>.GetMethod("Exp", [| typeof<single> |])  |> ctx.details.Module.ImportReference
-        symbols.Add(StringName "Exp", singleScalar mathExp)
-        symbols.Add(StringName "Ln", singleScalar mathLog)
+        symbols.Add(CompilerName.FromString "Exp", singleScalar mathExp)
+        symbols.Add(CompilerName.FromString "Ln", singleScalar mathLog)
         ctx
 
     let createCtx owner sr units =
         let lang = LangCtx()
         let details = ModuleDetails.Create sr
-        let symbols = Dictionary<TypeName,Symbol>(lang)
+        let symbols = Dictionary<CompilerName,Symbol>(lang)
         {
             units = units
             messages = sr.State.messages
@@ -427,10 +428,10 @@ module TypesDef =
                 t
             | Some(ChrType as t) -> t
             | Some(ErrorType as t) -> t // error handled
-            | Some _ ->
-                ``Illegal type for set construction`` |> ctx.NewMsg typeName
+            | Some _ | None ->
+                ``Illegal type for set construction`` typeName |> ctx.NewMsg typeName
                 ctx.sysTypes.unknown
-            | _ -> raise (InternalError "2020082103") // type not found should be handled in ErrorType
+
         addTypeSetForEnum ctx t name
 
     let addType ctx = Utils.addMetaType (snd ctx.symbols.Head)
@@ -449,9 +450,9 @@ module TypesDef =
         | Some t -> t
         | None -> // inline type?
             match t with
-            | TIdPointer(count, typeId) -> addTypePointer ctx count (TypeName.FromTypeId typeId) (TypedName t)
-            | TIdArray(ArrayDef(_, dimensions, tname)) -> addTypeArray ctx dimensions tname (TypedName t)
-            | TIdSet(_, typeId) -> addTypeSet ctx (TypeName.FromTypeId typeId) (TypedName t)
+            | TIdPointer(count, typeId) -> addTypePointer ctx count (CompilerName.FromTypeId typeId) (CompilerName t)
+            | TIdArray(ArrayDef(_, dimensions, tname)) -> addTypeArray ctx dimensions tname (CompilerName t)
+            | TIdSet(_, typeId) -> addTypeSet ctx (CompilerName.FromTypeId typeId) (CompilerName t)
             | _ ->
                 ``Error: Cannot find type identifier '%O'`` t |> ctx.NewMsg t
                 ctx.sysTypes.unknown
@@ -462,7 +463,7 @@ module TypesDef =
             let at = ctx.details.NewSizedType size
             FieldDefinition("item0", FieldAttributes.Public, typ.raw)
             |> at.Fields.Add
-            let name = StringName name
+            let name = CompilerName.FromString name
             {name=name;raw=at;kind=TkArray(AkArray,dims,typ)}.ResolveArraySelfType()
 
         let rec doArrayDef dimensions tname dims name =
@@ -508,7 +509,7 @@ module TypesDef =
 module SymSearch =
 
     let findSymbol (DIdent ident) (ctx: Ctx) =
-        let mainSym = ident.Head |> function | Ident n -> ctx.FindSym(StringName n)
+        let mainSym = ident.Head |> function | Ident n -> ctx.FindSym(CompilerName.FromString n)
 
         let rec findSym ref acc = function
         | (Designator.Array a)::t -> acc, Designator.Array(a)::t // TODO ?
@@ -1037,14 +1038,14 @@ module Intrinsics =
 
     let TypePasType (ctx: Ctx) = function
         | DIdent[Ident(id)] ->
-            match ctx.FindSym(StringName id) with
+            match ctx.FindSym(CompilerName.FromString id) with
             | Some (TypeSym t) -> Some([], t)
             | _ -> None
         | _ -> None
         
     // TODO check only first ident part (see FromDIdent). More advanced cases are handled in findSymbolAndGetPtr
     let VariableIdent (ctx: Ctx) byRef id =
-        match ctx.FindSym(TypeName.FromDIdent id) with
+        match ctx.FindSym(CompilerName.FromDIdent id) with
         | Some s ->
             match s with
             | VariableSym _ ->

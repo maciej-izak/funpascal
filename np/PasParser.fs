@@ -240,8 +240,8 @@ typeIdentifierRef :=
     +choice[
             typePtrDef |>> TIdPointer
             designator |>> TIdIdent
-            ``string `` >>% TIdString
-            ``file `` >>% TIdFile
+            ``string `` |>> fun _ -> TIdString() // unique instance for position support
+            ``file `` |>> fun _ -> TIdFile()
             arrayDecl |>> (ArrayDef >> TIdArray)
             typeSetDef |>> TIdSet
           ]

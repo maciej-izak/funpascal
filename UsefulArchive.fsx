@@ -20,6 +20,8 @@
 // https://github.com/sgoguen/journal/blob/master/2019/12/fsharp-advent/05-active-patterns.md
 // Analiza CE : https://stackoverflow.com/questions/23122639/how-do-i-write-a-computation-expression-builder-that-accumulates-a-value-and-als
 
+// Custom comparers : HashIdentity.Reference
+
 // HOWTO implicity include inc file :
 
 (*

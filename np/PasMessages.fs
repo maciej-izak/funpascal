@@ -75,8 +75,8 @@ module Errors =
     let ``Error: Cannot find file '%O'`` o =
         MsgError(Some 21, sprintf "Cannot find file '%O'" o)
         
-    let ``Illegal type for set construction`` =
-        MsgError(Some 22, "Illegal type for set construction")
+    let ``Illegal type for set construction`` o =
+        MsgError(Some 22, sprintf "Illegal type '%O' for set construction" o)
 
 [<AutoOpen>]
 module Warnings =
