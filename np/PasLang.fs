@@ -286,15 +286,17 @@ module LangDecl =
 
     let declTypeAlias (isStrong, origin) name (ctx: Ctx) =
         let name = StringName name
-        let originType = match ctx.FindTypeId origin with | Some t -> t | _ -> failwith "IE not found"
+        let originType = ctx.FindTypeId origin
         {originType with name = name} |> ctx.AddType name
 
     let declTypePtr (count, typeId) name (ctx: Ctx) =
-        let typ = match ctx.FindTypeId typeId with | Some t -> t | _ -> failwith "IE not found"
+        let typ = ctx.FindTypeId typeId
         ctx.AddTypePointer count typ.name (StringName name)
 
     let declTypeSet (packed, typeId) name (ctx: Ctx) =
-        let typ = match ctx.FindTypeId typeId with | Some t -> t | _ -> failwith "IE not found"
+        let typ = ctx.FindTypeId typeId
+        // below as second parameter can be used (TypeName.FromTypeId typeId) but we don't want declare new
+        // internal type, this is error too 
         ctx.AddTypeSet typ.name (StringName name)
 
     let declTypeEnum enumValues name (ctx: Ctx) =
@@ -432,7 +434,7 @@ module LangDecl =
                 let newMethodSymbols = Dictionary<_,_>(ctx.lang)
                 let mRes, rVar = match mRes with
                                  | Some r ->
-                                       let res = match ctx.FindTypeId r with | Some t -> t | _ -> failwith "IE"
+                                       let res = ctx.FindTypeId r
                                        let resultVar = VariableDefinition res.raw |> LocalVariable
                                        newMethodSymbols.Add(StringName "result", (resultVar, res) |> VariableSym)
                                        res, Some resultVar
@@ -441,7 +443,7 @@ module LangDecl =
                 let ps = defaultArg mPara []
                          |> List.collect
                             (fun (k, (ps, t)) ->
-                             let t = match t with Some t -> ctx.FindTypeId t | _ -> None
+                             let t = match t with Some t -> Some(ctx.FindTypeId t) | _ -> None
                              [for p in ps do
                                  let (typ, byref, t, isref) =
                                      match k, t with
@@ -450,7 +452,7 @@ module LangDecl =
                                      | Some Const, None -> ctx.sysTypes.constParam.raw, RefUntypedConst, ctx.sysTypes.constParam, true
                                      | Some Var, None -> ctx.sysTypes.varParam.raw, RefUntypedVar, ctx.sysTypes.varParam, true
                                      | None, Some t -> t.raw, RefNone, t, false
-                                     | _ -> failwith "IE"
+                                     | _ -> raise(InternalError "2020082101")
                                  let pd = ParameterDefinition(p, ParameterAttributes.None, typ)
                                  newMethodSymbols.Add(StringName p, VariableSym(ParamVariable(byref, pd), t))
                                  yield (pd, {typ=t;ref=isref})]

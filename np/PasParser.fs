@@ -237,7 +237,7 @@ let typeSetDef =
   ``?packed `` .>>.? (``set `` >>. ``of `` >>. typeIdentifier)
 
 typeIdentifierRef :=
-    choice[
+    +choice[
             typePtrDef |>> TIdPointer
             designator |>> TIdIdent
             ``string `` >>% TIdString

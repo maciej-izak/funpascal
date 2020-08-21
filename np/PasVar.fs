@@ -98,9 +98,6 @@ type CompilerPassId =
     | MainPassId
     | TestPassId
 
-exception InternalError of string
-let doInternalError str () = InternalError str |> raise 
-
 type ICompilerPassGeneric =
     abstract member Defines: HashSet<string>
 

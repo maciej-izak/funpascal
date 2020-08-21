@@ -119,10 +119,16 @@ type Ctx = {
 
     member self.InUnits f = List.tryPick f (self::self.units)
     
-    member self.FindType sym = 
-        self.InUnits (fun c -> match c.PickSym sym with | Some(_,TypeSym ts) -> Some ts | _ -> None)
+    member self.FindType sym =
+        match sym with
+        | ErrorName -> Some self.sysTypes.unknown
+        | _ -> self.InUnits (fun c -> match c.PickSym sym with | Some(_,TypeSym ts) -> Some ts | _ -> None)
 
-    member self.FindTypeId = TypeName.FromTypeId >> self.FindType
+    member self.TryFindTypeId = TypeName.FromTypeId >> self.FindType
+        
+    member self.FindTypeId t =
+        let reportError = fun() -> ``Error: Cannot find type identifier '%O'`` t |> self.NewMsg t; self.sysTypes.unknown
+        self.TryFindTypeId t |> Option.defaultWith reportError
 
     member self.EnsureVariable ?kind =
         let ikey = !self.localVariables
@@ -420,8 +426,11 @@ module TypesDef =
                 // TODO check ord size (for int max / min values)
                 t
             | Some(ChrType as t) -> t
-            | Some _ -> failwith "IE illegal type for set construction"
-            | _ -> failwith "IE unknown type"
+            | Some(ErrorType as t) -> t // error handled
+            | Some _ ->
+                ``Illegal type for set construction`` |> ctx.NewMsg typeName
+                ctx.sysTypes.unknown
+            | _ -> raise (InternalError "2020082103") // type not found should be handled in ErrorType
         addTypeSetForEnum ctx t name
 
     let addType ctx = Utils.addMetaType (snd ctx.symbols.Head)
@@ -436,8 +445,7 @@ module TypesDef =
         addType ctx name {name=name;kind=TkPointer(t);raw=pt:>TypeReference}
 
     let getInternalType (ctx: Ctx) t =
-        let name = TypeName.FromTypeId t
-        match ctx.FindType name with
+        match ctx.TryFindTypeId t with
         | Some t -> t
         | None -> // inline type?
             match t with

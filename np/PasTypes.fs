@@ -21,7 +21,7 @@ type TypeName =
 with
     static member FromTypeId = function
         | TIdIdent(DIdent([Ident id])) -> StringName id
-        | TIdIdent _ -> failwith "IE"
+        | TIdIdent _ -> raise (InternalError "2020082102")
         | ti -> TypedName ti
 
     static member FromDIdent = function
@@ -34,6 +34,11 @@ with
         | TypedName tib -> tib.ToString()
         | AnonName -> "<anon>"
         | ErrorName -> "<error>"
+        
+    member self.BoxPos =
+        match self with
+        | TypedName tn -> tn.BoxPos
+        | _ -> raise(InternalError "2020082100")
 
 type TOrdType =
     | OtSByte of int * int

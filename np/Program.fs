@@ -104,9 +104,13 @@ let main argv =
         |> tryCompileFile false
     | None ->
         // only proper for tests
-        if results.Contains(Test) then
-            match results.TryGetResult(Test) with
+        if results.Contains(TestAll) then
+            match results.TryGetResult(TestAll) with
             | Some testDir -> !! (testDir </> "*.pas") ++ (testDir </> "*.pp") |> Seq.iter (tryCompileFile true)
+            | _ -> failwith "No proper command found"
+        else if results.Contains(Test) then
+            match results.TryGetResult(Test) with
+            | Some testFile -> tryCompileFile true testFile
             | _ -> failwith "No proper command found"
         else if results.Contains(TestParser) then
             let proj = PascalProject.Create("test.pas", [], [])

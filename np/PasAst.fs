@@ -1,6 +1,9 @@
 [<AutoOpen>]
 module Pas.Ast
 
+exception InternalError of string
+let doInternalError str () = InternalError str |> raise 
+
 let equalsOn f x (yobj:obj) =
     match yobj with
     | :? 'T as y -> (f x = f y)
@@ -196,11 +199,7 @@ with
         | TIdIdent id -> id.ToString()
         | TIdArray ad -> ad.ToString()
 
-    member self.BoxPos =
-        match self with
-        | TIdIdent id -> id.BoxPos
-        | _ -> failwith "IE"
-
+    member self.BoxPos = box self
 
 type ParamList = (ParamKind option * (string list * TypeIdentifier option)) list option
 type ProcHeader = string option * TypeIdentifier option * ParamList

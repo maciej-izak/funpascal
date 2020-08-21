@@ -4,8 +4,6 @@ module Pas.BasicParsers
 open FParsec
 open Fake.Runtime.Environment
 
-exception InternalErrorException of string
-
 let ws = spaces
 let str s = pstring s
 let mws: Parser<unit, 'u> = fun stream -> skipMany spaces1 stream
@@ -177,7 +175,7 @@ let c0 =
           let i = us.stream.FindStream name
           // printfn "%s %i = %i" name (i.index + i.length + 1) stream.Index
           if i.index + i.length + 1 <> int stream.Index then
-            raise (InternalErrorException("201909150"))
+            raise (InternalError "201909150")
           stream.Seek pos
           // important to omit FParsec bug i.e. {$I foo.inc}i f
           // otherwise the following error is raised
