@@ -77,6 +77,9 @@ module Errors =
         
     let ``Illegal type for set construction`` o =
         MsgError(Some 22, sprintf "Illegal type '%O' for set construction" o)
+        
+    let ``Duplicated identifier of '%O'`` o =
+        MsgError(Some 23, sprintf "Duplicated identifier of '%O'" o)
 
 [<AutoOpen>]
 module Warnings =

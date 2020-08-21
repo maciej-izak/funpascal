@@ -35,6 +35,8 @@ with
         match self with
         | DIdent(h::_) -> h.BoxPos
         | _ -> failwith "IE"
+        
+    static member Singleton i = DIdent[i]
 
 and CallExpr = CallExpr of DIdent * CallParam list
 with
@@ -208,6 +210,7 @@ and TypeIdentifier =
     | TIdArray of ArrayDef
 with
     static member FromString str = TIdIdent(DIdent.FromString str)
+    static member FromDIdent did = TIdIdent did
     
     override self.ToString() =
         match self with
@@ -233,7 +236,7 @@ type TypeDecl =
     | SimpleRange of ConstExprRange
     | ProcType of ProcHeader
     
-type Type = (string * TypeDecl)
+type Type = (DIdent * TypeDecl)
 
 type CaseLabel =
     | CaseExpr of ConstExpr
@@ -264,8 +267,8 @@ and ProcDeclaration =
 
 and Declarations =
     | Types of Type list
-    | Variables of (string list * TypeIdentifier) list
-    | Constants of (string * TypeIdentifier option * ConstExpr) list
+    | Variables of (DIdent list * TypeIdentifier) list
+    | Constants of (DIdent * TypeIdentifier option * ConstExpr) list
     | Labels of string list
     | ProcAndFunc of (ProcHeader * ProcDeclaration)
 

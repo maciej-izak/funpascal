@@ -285,23 +285,23 @@ module LangStmt =
 module LangDecl =
 
     let declTypeAlias (isStrong, origin) name (ctx: Ctx) =
-        let name = CompilerName.FromString name
         let originType = ctx.FindTypeId origin
         {originType with name = name} |> ctx.AddType name
 
     let declTypePtr (count, typeId) name (ctx: Ctx) =
+        // TODO like for declTypeSet?
         let typ = ctx.FindTypeId typeId
-        ctx.AddTypePointer count typ.name (CompilerName.FromString name)
+        ctx.AddTypePointer count typ.name name
 
     let declTypeSet (packed, typeId) name (ctx: Ctx) =
         // other approach : let typ = ctx.FindTypeId typeId
         // below as second parameter can be used typ.name, but it is bad for internal types like arrays
-        ctx.AddTypeSet (CompilerName.FromTypeId typeId) (CompilerName.FromString name)
+        ctx.AddTypeSet (CompilerName.FromTypeId typeId) name
 
     let declTypeEnum enumValues name (ctx: Ctx) =
-        let name = CompilerName.FromString name
         let max = (enumValues: string list).Length // TODO get explicit max value
         let enumType = ctx.AddType name {name=name;kind=TkOrd(OkEnumeration, OtULong(0, max));raw=ctx.sysTypes.int32.raw}
+        // TODO set items duplicated identifier error ?
         enumValues |> List.iteri (fun i v -> ctx.NewSymbols.Add (CompilerName.FromString v, EnumValueSym(i, enumType)))
         enumType
 
@@ -319,11 +319,10 @@ module LangDecl =
                 td.Fields.Add fd
                 fieldsMap.Add(name, (fd,typ))
                 size <- size + typ.SizeOf
-        ctx.details.Module.Types.Add(td)
-        let name = CompilerName.FromString name
+        ctx.details.MainModule.Types.Add(td)
         ctx.AddType name {name=name;kind=TkRecord(fieldsMap, size);raw=td}
 
-    let declTypeArray (packed, dimensions, tname) name (ctx: Ctx) = ctx.AddTypeArray dimensions tname (CompilerName.FromString name)
+    let declTypeArray (packed, dimensions, tname) name (ctx: Ctx) = ctx.AddTypeArray dimensions tname name
 
     let declType = function
         | TypeAlias decl -> declTypeAlias decl
@@ -334,26 +333,26 @@ module LangDecl =
         | TypeArray(ArrayDef decl) -> declTypeArray decl
         | _ -> failwith "IE"
 
-    let declTypes types ctx = List.iter (fun (n, t) -> declType t n ctx |> ignore) types
+    let tryDeclType td (name: DIdent) (ctx: Ctx) =
+        let cname = CompilerName.FromDIdent name
+        match ctx.NewSymbols.ContainsKey cname with
+        | true -> ``Duplicated identifier of '%O'`` name |> ctx.NewMsg name
+        | false -> declType td cname ctx |> ignore
+    
+    let declTypes types ctx = List.iter (fun (n, t) -> tryDeclType t n ctx) types
 
-    let declVar (ctx: Ctx) nt =
-        let addVar vk = vk |> ctx.variables.Head.Add
+    let declVar (ctx: Ctx) (vn, t) =
+        let tryAddSymbol vk =
+            match ctx.NewSymbols.TryAdd(CompilerName.FromDIdent vn, VariableSym(vk, t)) with
+            | true -> ctx.variables.Head.Add vk
+            | false -> ``Duplicated identifier of '%O'`` vn |> ctx.NewMsg vn
         match ctx.SymOwner with
-        | StandaloneMethod _ -> fun (vn, t) ->
-                            VariableDefinition (t: PasType).raw
-                            |> LocalVariable
-                            |> fun vk ->
-                                ctx.NewSymbols.Add(CompilerName.FromString vn, VariableSym(vk, t))
-                                addVar vk
-        | GlobalSpace -> fun (vn, t) ->
-                            let fd = FieldDefinition(vn, FieldAttributes.Public ||| FieldAttributes.Static, t.raw)
-                            fd |> GlobalVariable
-                            |> fun vk ->
-                                ctx.NewSymbols.Add(CompilerName.FromString vn, VariableSym(vk,t))
-                                ctx.details.UnitScope.Fields.Add fd
-                                addVar vk
-        | _ -> failwith "IE"
-        |> fun declVar -> declVar nt
+        | StandaloneMethod _ -> VariableDefinition (t: PasType).raw |> LocalVariable |> tryAddSymbol
+        | GlobalSpace -> 
+            let fd = FieldDefinition(vn.ToString(), FieldAttributes.Public ||| FieldAttributes.Static, t.raw)
+            ctx.details.UnitModule.Fields.Add fd
+            fd |> GlobalVariable |> tryAddSymbol
+        | _ -> raise(InternalError "2020082103")
 
     let declVariables variables (ctx: Ctx) =
         let doTypedList (l, t) = let dt = ctx.GetInternalType t in l |> List.map (fun v -> v, dt)
@@ -412,7 +411,9 @@ module LangDecl =
         match addConstAtom ctype valueExpr with
         | ConstTempValue(b, t) -> ConstValue(ctx.details.AddBytesConst b, t) // add final as static value
         | c -> c
-        |> fun sym -> ctx.NewSymbols.Add(CompilerName.FromString name, ConstSym sym)
+        |> fun sym ->
+            if not <| ctx.NewSymbols.TryAdd(CompilerName.FromDIdent name, ConstSym sym) then
+                ``Duplicated identifier of '%O'`` name |> ctx.NewMsg name
 
     let declConstants constants ctx = List.iter (declConst ctx) constants
 
@@ -474,11 +475,11 @@ module LangDecl =
             // TODO better handle forward ?
             let scope = LocalScope(ctx.Inner (StandaloneMethod methodSym, newMethodSymbols))
             match Ctx.BuildDeclIl(decls,scope,("result",rVar)) |> Ctx.BuildStmtIl stmts with
-            | Ok(res, _) -> Ctx.CompileBlock methodBuilder ctx.details.UnitScope res |> ignore
+            | Ok(res, _) -> Ctx.CompileBlock methodBuilder ctx.details.UnitModule res |> ignore
             | Error _ -> ()
         | ExternalDeclr (lib, procName) ->
             let libRef = ModuleReference(lib)
-            ctx.details.Module.ModuleReferences.Add(libRef)
+            ctx.details.MainModule.ModuleReferences.Add(libRef)
             let externalAttributes = MethodAttributes.HideBySig ||| MethodAttributes.PInvokeImpl
             methodBuilder.Attributes <- methodBuilder.Attributes ||| externalAttributes
             methodBuilder.IsPreserveSig <- true // as is
@@ -488,7 +489,7 @@ module LangDecl =
                          let flags = PInvokeAttributes.CharSetAnsi
                                  ||| PInvokeAttributes.SupportsLastError ||| PInvokeAttributes.CallConvWinapi
                          PInvokeInfo(flags, procName, libRef)
-            ctx.details.UnitScope.Methods.Add(methodBuilder)
+            ctx.details.UnitModule.Methods.Add(methodBuilder)
         | ForwardDeclr ->
             ctx.forward.Add(name, (methodSym, newMethodSymbols, rVar))
 

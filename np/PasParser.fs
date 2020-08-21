@@ -175,6 +175,8 @@ let identifier : Parser<string, PasState> =
         else // result is keyword, so backtrack to before the string
             stream.BacktrackTo(state)
             Reply(Error, expectedIdentifier)
+            
+let identifierIdent = +(identifier |>> Ident) |>> DIdent.Singleton
 
 let constRangeExpression =
     (expr .>> wsc)
@@ -189,12 +191,6 @@ let arrayIndex =
 
 let arrayIndexes =
     ``[ `` >>. (sepEndBy1 arrayIndex ``, ``) .>> ``] ``
-
-let (~+) p =
-    tuple3 getPosition getUserState p |>>
-    fun (pos, us: PasState, pr) ->
-        us.messages.PosMap.TryAdd(box pr, pos) |> ignore
-        pr
 
 let designator =
     let identifier_p = +(identifier |>> Ident)
@@ -307,7 +303,7 @@ let typePtr = typePtrDef |>> TypePtr
 let typeDeclarations =
     (``type `` >>.
         many1 (
-            (identifier .>> ``= ``)
+            (identifierIdent .>> ``= ``)
             .>>. ((choice[structType;attempt(arrayType);typePtr;attempt(typeRange);attempt(typeSet);attempt(typeProc);typeAlias;attempt(typeEnum)]).>> ``; ``)
             |>> Type))
     |>> Types
@@ -369,7 +365,7 @@ addOperators()
 
 let varDeclarations =
     ``var ``
-    >>. many1 (tuple2 ((sepEndBy1 identifier ``, ``) .>> ``: ``)
+    >>. many1 (tuple2 ((sepEndBy1 identifierIdent ``, ``) .>> ``: ``)
               (typeIdentifier .>> ``; ``))
     |>> Variables
 
@@ -388,7 +384,7 @@ let constDeclarations =
     ``const ``
     >>. many1 (
             tuple3
-                (identifier)
+                (identifierIdent)
                 (opt(``: `` >>. typeIdentifier))
                 (
                     ``= `` >>. constConstr .>> ``; ``

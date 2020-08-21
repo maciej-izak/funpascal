@@ -4,6 +4,12 @@ module Pas.BasicParsers
 open FParsec
 open Fake.Runtime.Environment
 
+let (~+) p =
+    tuple3 getPosition getUserState p |>>
+    fun (pos, us: PasState, pr) ->
+        us.messages.PosMap.TryAdd(box pr, pos) |> ignore
+        pr
+
 let ws = spaces
 let str s = pstring s
 let mws: Parser<unit, 'u> = fun stream -> skipMany spaces1 stream

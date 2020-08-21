@@ -23,11 +23,16 @@ type ScopeRec = {
 module Utils =
     let stdIdent = Ident >> List.singleton >> DIdent
 
-    let addMetaType (symbols: Dictionary<_,_>) (name: CompilerName) typ =
+    let tryAddMetaType (symbols: Dictionary<_,_>) (name: CompilerName) typ =
         match name with
-        | AnonName -> () // ie for char sets
-        | _ -> symbols.Add(name, TypeSym typ)
-        typ
+        | AnonName -> Some typ // ie for char sets
+        | _ ->
+            match symbols.TryAdd(name, TypeSym typ) with
+            | true -> Some typ
+            | false -> None
+            
+    let addMetaType (symbols: Dictionary<_,_>) (name: CompilerName) typ =
+        tryAddMetaType symbols name typ |> Option.defaultWith (doInternalError "2020082200")
 
     let typeCheck ctx at bt =
         // at is used for function params
@@ -203,9 +208,9 @@ module Ctx =
 
     type ModuleDetails = {
             TypesCount: int ref
-            Module: ModuleDefinition
+            MainModule: ModuleDefinition
             Namespace: string
-            UnitScope: TypeDefinition
+            UnitModule: TypeDefinition
             ValueType: TypeReference
             UnsafeValueTypeAttr: MethodReference
             anonSizeTypes: Dictionary<int, TypeDefinition>
@@ -214,9 +219,9 @@ module Ctx =
             let m = sr.Module
             {
                 TypesCount = ref 0
-                Module = m
+                MainModule = m
                 Namespace = sr.Namespace
-                UnitScope = sr.Unit
+                UnitModule = sr.Unit
                 ValueType = m.ImportReference(typeof<ValueType>)
                 UnsafeValueTypeAttr = m.ImportReference(typeof<UnsafeValueTypeAttribute>.GetConstructor(Type.EmptyTypes))
                 anonSizeTypes = Dictionary<_, _>()
@@ -234,7 +239,7 @@ module Ctx =
                 at.ClassSize <- size
                 at.PackingSize <- 1s;
                 at.BaseType <- self.ValueType
-                self.Module.Types.Add(at)
+                self.MainModule.Types.Add(at)
                 at
 
         member self.SelectAnonSizeType size =
@@ -249,7 +254,7 @@ module Ctx =
             let ast = self.SelectAnonSizeType bytes.Length
             let fd = FieldDefinition(null, FieldAttributes.Public ||| FieldAttributes.Static ||| FieldAttributes.HasFieldRVA, ast)
             fd.InitialValue <- bytes
-            self.UnitScope.Fields.Add fd
+            self.UnitModule.Fields.Add fd
             fd
 
     type SystemTypes = {
@@ -282,7 +287,7 @@ module Ctx =
     }
 
     let private createSystemTypes details (symbols: Dictionary<CompilerName, Symbol>) =
-        let mb = details.Module
+        let mb = details.MainModule
         let vt = mb.ImportReference(typeof<ValueType>)
         let ot = mb.ImportReference(typeof<obj>)
         let addAnyType name raw kind =
@@ -334,7 +339,7 @@ module Ctx =
         }
 
     let private createSystemProc details =
-        let mb = details.Module
+        let mb = details.MainModule
 //        let mathTrunc = typeof<System.MathF>.GetMethod("Truncate", [| typeof<single> |])  |> mb.ImportReference
         {
             GetMem = typeof<System.Runtime.InteropServices.Marshal>.GetMethod("AllocCoTaskMem")  |> mb.ImportReference
@@ -386,8 +391,8 @@ module Ctx =
                result = Some tsingle
                raw = raw
            }, ref[]) |> MethodSym
-        let mathLog = typeof<System.MathF>.GetMethod("Log", [| typeof<single> |])  |> ctx.details.Module.ImportReference
-        let mathExp = typeof<System.MathF>.GetMethod("Exp", [| typeof<single> |])  |> ctx.details.Module.ImportReference
+        let mathLog = typeof<System.MathF>.GetMethod("Log", [| typeof<single> |])  |> ctx.details.MainModule.ImportReference
+        let mathExp = typeof<System.MathF>.GetMethod("Exp", [| typeof<single> |])  |> ctx.details.MainModule.ImportReference
         symbols.Add(CompilerName.FromString "Exp", singleScalar mathExp)
         symbols.Add(CompilerName.FromString "Ln", singleScalar mathLog)
         ctx
@@ -434,7 +439,9 @@ module TypesDef =
 
         addTypeSetForEnum ctx t name
 
-    let addType ctx = Utils.addMetaType (snd ctx.symbols.Head)
+    let addType ctx name typ =
+        Utils.tryAddMetaType ctx.NewSymbols name typ
+        |> Option.defaultWith (doInternalError "2020082201")
 
     let addTypePointer (ctx: Ctx) count typeName name =
         let t =
@@ -1544,7 +1551,7 @@ module Intrinsics =
                                [
                                    +Conv Conv_U1
                                    +Call ctx.sysProc.ConvertU1ToChar
-                                   +Box ctx.details.Module.TypeSystem.Char
+                                   +Box ctx.details.MainModule.TypeSystem.Char
                                ]
                                |> putArrayElem i
                            | _ -> [+Box t.raw] |> putArrayElem i
