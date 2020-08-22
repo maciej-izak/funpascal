@@ -80,6 +80,12 @@ module Errors =
         
     let ``Duplicated identifier of '%O'`` o =
         MsgError(Some 23, sprintf "Duplicated identifier of '%O'" o)
+        
+    let ``Error: Cannot find label '%O'`` o =
+        MsgError(Some 24, sprintf "Cannot find label '%O'" o)
+        
+    let ``Error: Cannot use label '%O' from different code block`` o =
+        MsgError(Some 25, sprintf "Cannot use label '%O' from different code block" o)        
 
 [<AutoOpen>]
 module Warnings =

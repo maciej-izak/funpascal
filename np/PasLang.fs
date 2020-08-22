@@ -258,15 +258,35 @@ module LangStmt =
 
     let doCallStm ce (ctx: Ctx) = (fst (ctx.DoCall ce true), [])
     let doIdentStm i = doCallStm (CallExpr(i,[]))
-    let doLabelStm l (ctx: Ctx) = ([],[ctx.FindLabelUnsafe l])
-    let doGotoStm s (ctx: Ctx) = ([IlBranch(IlBr,ctx.FindLabelUnsafe s)],[]) // will do LazyLabel
+    let doLabelStm l (ctx: Ctx) =
+        match ctx.FindLabel l with
+        | Some(owner, label) ->
+            match LanguagePrimitives.PhysicalEquality ctx.SymLabelOwner owner with
+            | true -> Some label
+            | false ->
+                ``Error: Cannot use label '%O' from different code block`` l |> ctx.NewMsg l
+                None
+        | _ ->
+            ``Error: Cannot find label '%O'`` l |> ctx.NewMsg l
+            None
+            
+    let doLabelSpecStm l (ctx: Ctx) =
+        match doLabelStm l ctx with
+        | Some l -> [],[l]
+        | _ -> [],[]
+        
+    let doGotoStm l (ctx: Ctx) =
+        match doLabelStm l ctx with
+        | Some l -> [IlBranch(IlBr,l)],[] // will do LazyLabel
+        | _ -> [],[]
+        
     let doEmptyStm = fun _ -> ([],[])
     let doStm = function
         | CallStm stm -> doCallStm stm
         | IdentStm stm -> doIdentStm stm
         | AssignStm stm -> doAssignStm stm
         | IfStm stm -> doIfStm stm
-        | LabelStm stm -> doLabelStm stm
+        | LabelStm stm -> doLabelSpecStm stm
         | GotoStm stm -> doGotoStm stm
         | CaseStm stm -> doCaseStm stm
         | WhileStm stm -> doWhileStm stm
@@ -277,7 +297,11 @@ module LangStmt =
 
     // TODO fix peepholes about jump to next opcode
     let stmtListToIlList ctx stmtList: (IlInstruction list * BranchLabel ref list) =
-        let resolveLabels = function | (i, _) as r, l -> resolveLabels i l ; r // return new labels
+        let resolveLabels =
+            fun ((i, nl) as r, l) ->
+                resolveLabels i l
+                // return new labels or new and unresolved old (for example for empty instruction)
+                if i.IsEmpty then (i, nl @ l) else r
         let doStmt labels stmt = resolveLabels(doStm stmt ctx, labels)
         stmtList |> List.mapFold doStmt [] |> fun (i, l) -> List.concat i, l
 
@@ -417,18 +441,19 @@ module LangDecl =
 
     let declConstants constants ctx = List.iter (declConst ctx) constants
 
-    let declLabels labels ctx = List.iter (fun l -> ctx.labels.Head.Add(l, ref (UserLabel l))) labels
+    let declLabels labels (ctx: Ctx) =
+        let tryAddLabel l =
+            if not <| ctx.NewSymbols.TryAdd(CompilerName.FromDIdent l, LabelSym(ref UserLabel)) then
+                ``Duplicated identifier of '%O'`` l |> ctx.NewMsg l
+        List.iter tryAddLabel labels
 
-    let declProcAndFunc ((name, mRes, mPara), d) ctx =
-        let name = match name with
-                   | Some n -> n
-                   | _ -> failwith "name expected"
-        let methodName = CompilerName.FromString name
+    let doDeclProcAndFunc (name, mRes, mPara, decl) (ctx: Ctx) =
+        let methodName = CompilerName.FromDIdent name
         let methodSym, newMethodSymbols, rVar =
-            match ctx.forward.TryGetValue name with
+            match ctx.forward.TryGetValue methodName with
             | true, md ->
                 // TODO check signature - must be identical
-                ctx.forward.Remove name |> ignore
+                ctx.forward.Remove methodName |> ignore
                 md
             | _ ->
                 let newMethodSymbols = Dictionary<_,_>(ctx.lang)
@@ -459,7 +484,7 @@ module LangDecl =
                             )
                 let ps, mp = ps |> List.unzip
                 let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
-                let md = MethodDefinition(name, methodAttributes, mRes.raw)
+                let md = MethodDefinition(name.ToString(), methodAttributes, mRes.raw)
                 List.iter md.Parameters.Add ps
                 let methodInfo = {
                     paramList = Array.ofList mp
@@ -467,10 +492,11 @@ module LangDecl =
                     raw = md
                 }
                 let ms = methodInfo, ref []
-                ctx.NewSymbols.Add(methodName, ms |> Referenced |> MethodSym)
+                if not <| ctx.NewSymbols.TryAdd(methodName, ms |> Referenced |> MethodSym) then
+                    ``Duplicated identifier of '%O'`` name |> ctx.NewMsg name
                 ms, newMethodSymbols, rVar
         let methodBuilder = (fst methodSym).raw :?> MethodDefinition
-        match d with
+        match decl with
         | BodyDeclr (decls, stmts) ->
             // TODO better handle forward ?
             let scope = LocalScope(ctx.Inner (StandaloneMethod methodSym, newMethodSymbols))
@@ -491,7 +517,14 @@ module LangDecl =
                          PInvokeInfo(flags, procName, libRef)
             ctx.details.UnitModule.Methods.Add(methodBuilder)
         | ForwardDeclr ->
-            ctx.forward.Add(name, (methodSym, newMethodSymbols, rVar))
+            ctx.forward.Add(methodName, (methodSym, newMethodSymbols, rVar))
+
+    let declProcAndFunc ({head = (name, mRes, mPara); decl = d} as proc) (ctx: Ctx) =
+        match name with
+        | Some n -> doDeclProcAndFunc (n, mRes, mPara, d) ctx
+        | _ ->
+            if (mRes: TypeIdentifier option).IsNone then "procedure" else "function"
+            |> sprintf "name for %s" |> ``Error: %s expected`` |> ctx.NewMsg proc
 
     let doDecl ctx decl =
         match decl with

@@ -176,6 +176,8 @@ let identifier : Parser<string, PasState> =
             stream.BacktrackTo(state)
             Reply(Error, expectedIdentifier)
             
+let labelIdentifier = +(identifier <|> (number |>> string) |>> Ident) |>> DIdent.Singleton
+
 let identifierIdent = +(identifier |>> Ident) |>> DIdent.Singleton
 
 let constRangeExpression =
@@ -280,14 +282,13 @@ let procDecl =
     tuple3
         ((``procedure `` >>. preturn Procedure)
          <|> (``function `` >>. preturn Function))
-        (opt identifier)
+        (opt identifierIdent)
         (opt formalParamsList)
      >>= fun (k, n, p) -> match k with
                           | Function -> (``: `` >>. typeIdentifier) |>> fun i -> (n, Some(i), p)
                           | Procedure -> preturn(n, None, p)
 
-let typeProc =
-    procDecl |>> ProcType
+let typeProc = procDecl |>> ProcType
 
 let typeRange =
     expr .>>. (``.. `` >>. expr) |>> ((castAs ConstExpr) >> SimpleRange)
@@ -394,7 +395,7 @@ let constDeclarations =
 
 let labelDeclarations =
     ``label ``
-    >>. sepBy1 identifier ``, `` .>> ``; ``
+    >>. sepBy1 labelIdentifier ``, `` .>> ``; ``
     |>> Labels
 
 let expression =
@@ -429,7 +430,7 @@ let statementList, statementListRef = createParserForwardedToRef()
 
 let innerStatementList =
         (statementList
-         .>>. many(identifier .>>? (``: `` .>> many ``; ``) |>> LabelStm)
+         .>>. many(labelIdentifier .>>? (``: `` .>> many ``; ``) |>> LabelStm)
          |>> function
              | (s, []) -> s |> List.concat
              | (s, l) -> [l] |> List.append s |> List.concat
@@ -470,10 +471,12 @@ let withStatement =
     |>> WithStm
 
 let gotoStatement =
-    ``goto `` >>. identifier |>> GotoStm
+    ``goto `` >>. labelIdentifier |>> GotoStm
+
+let labels = many(labelIdentifier .>>? (lookAhead(notFollowedBy (pstring ":=")) >>. ``: ``) |>> LabelStm)
 
 let statement =
-    many(identifier .>>? (lookAhead(notFollowedBy (pstring ":=")) >>. ``: ``) |>> LabelStm)
+    labels
     .>>.
     choice[
             simpleStatement
@@ -500,12 +503,7 @@ let declarations =
 let intfDeclarations =
     many (choice[typeDeclarations; varDeclarations; constDeclarations; procFuncDeclarations])
 
-let statements =
-    statementList
-    .>>. many(identifier .>>? (``: `` .>> many ``; ``) |>> LabelStm)
-    |>> function
-        | (s, []) -> s |> List.concat
-        | (s, l) -> [l] |> List.append s |> List.concat
+let statements = statementList |>> List.concat
 
 let beginEnd = between ``begin `` ``end `` statements
 let beginOrInit_End = between (``begin `` <|> ``initialization ``) ``end `` statements
@@ -518,7 +516,8 @@ let moduleBeginEnd =
         (between ``finalization `` ``end `` statements |>> fun s -> [],s) 
     ]
 
-statementListRef := (sepEndBy (statement <|> compoundStatement) (many1 ``; ``))
+statementListRef :=
+    (sepEndBy (attempt(statement) <|> labels <|> compoundStatement) (many1 ``; ``))
 
 let block = declarations .>>. beginEnd
 
@@ -537,14 +536,14 @@ let nonDeclKind =
     (str_wsc "external" >>. (strWsc .>>. (str_wsc "name" >>. strWsc)) .>> ``; `` |>> ExternalKind)
 
 procFuncDeclarationsRef :=
-    ((procDecl .>>. (``; `` >>. (opt nonDeclKind)))
+    +(((procDecl .>>. (``; `` >>. (opt nonDeclKind)))
         >>= fun (d, f) ->
               match f with
               | Some ForwardKind -> preturn(d, ForwardDeclr)
               | Some (ExternalKind es) -> preturn(d, ExternalDeclr es)
               | None -> ((block .>> ``; ``) |>> fun b -> (d, BodyDeclr(b)))
     )
-    |>> ProcAndFunc
+    |>> ProcAndFuncRec.Create) |>> ProcAndFunc
 
 let uses = (``uses `` >>. sepEndBy1 simpleDesignator (pstring ",") .>> ``; ``) <|>% []
 

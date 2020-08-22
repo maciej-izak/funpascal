@@ -11,7 +11,7 @@ module TestParser =
     let testEnvVar =
         let isProperFirstChar c = isLetter c || c = '_'
         let isProperChar c = isLetter c || c = '_' || isDigit c
-        let isProperValChar c = isProperChar c || c = '-' || c = ' ' || c = ':'
+        let isProperValChar c = isProperChar c || c = '-' || c = '+' || c = ' ' || c = ':'
         let simpleIdentName = many1Satisfy2L isProperFirstChar isProperChar "test ident"
         let simpleIdent = many1SatisfyL isProperValChar "test value"
         simpleIdentName .>>.
@@ -58,9 +58,10 @@ let prepareTest proj =
                 match s.Split(':', 2) with
                 | [|d|] -> {defCase with Define=Some d}
                 | [|d;"-"|] -> {defCase with FailExpected=true; Define=Some d}
+                | [|d;"+"|] -> {defCase with FailExpected=false; Define=Some d}
                 | [|d;r|] ->
                     match Int32.TryParse r with
-                    | true, r -> {defCase with Result=r; Define=Some d}
+                    | true, r -> {defCase with Result=r; FailExpected=false; Define=Some d}
                     | _ -> {defCase with Define=Some d}
                 | _ -> defCase
             match us.testEnv.TryGetValue "RESULTS" with | true, v -> v | _ -> []

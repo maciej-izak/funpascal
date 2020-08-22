@@ -61,9 +61,8 @@ type Ctx = {
         units: Ctx list
         messages: CompilerMessages
         variables: List<VariableKind> list
-        labels: Dictionary<string, BranchLabel ref> list
         symbols: (SymOwner * Dictionary<CompilerName, Symbol>) list
-        forward: Dictionary<string, ReferencedDef * Dictionary<CompilerName,Symbol> * VariableKind option>
+        forward: Dictionary<CompilerName, ReferencedDef * Dictionary<CompilerName,Symbol> * VariableKind option>
         localVariables: int ref
         lang: Ctx.LangCtx
         res: List<MetaInstruction>
@@ -84,13 +83,15 @@ type Ctx = {
 
     member self.NewSymbols = snd self.symbols.Head
     member self.SymOwner = fst self.symbols.Head
+    member self.SymLabelOwner =
+        List.tryFind (fun (o, _) -> match o with | GlobalSpace _ | StandaloneMethod _ -> true | _ -> false) self.symbols
+        |> Option.defaultWith (doInternalError "2020082202") |> fst
 
     member self.Inner symbolsEntry =
         { self with
             symbols = symbolsEntry::self.symbols
             localVariables = ref 0
             variables = List<_>()::self.variables
-            labels = Dictionary<_,_>()::self.labels
             res = List<MetaInstruction>()
             loop = Stack<_>()}
 
@@ -153,12 +154,9 @@ type Ctx = {
         (key, varDef)
 
     member self.FindLabel name =
-        self.labels |> List.tryPick (fun l -> match l.TryGetValue name with | true, bl-> Some bl | _ -> None)
-
-    member self.FindLabelUnsafe name =
-        match self.FindLabel name with
-        | Some bl -> bl
-        | _ -> failwithf "IE cannot find label %s" name
+        match self.PickSym (CompilerName.FromDIdent name) with
+        | Some(owner, LabelSym l) -> Some(owner, l)
+        | _ -> None
 
     // Types module
     member self.AddTypeSetForEnum = TypesDef.addTypeSetForEnum self
@@ -405,9 +403,8 @@ module Ctx =
             units = units
             messages = sr.State.messages
             variables = [List<VariableKind>()]
-            labels = [Dictionary<_,_>()]
             symbols = [owner,symbols]
-            forward = Dictionary<_, _>()
+            forward = Dictionary<_, _>(lang)
             localVariables = ref 0
             lang = LangCtx()
             res = List<MetaInstruction>()

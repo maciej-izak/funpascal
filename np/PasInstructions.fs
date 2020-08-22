@@ -136,7 +136,7 @@ let nullRef() = ref Unchecked.defaultof<Instruction>
 type BranchLabel =
     | LazyLabel of IlInstruction * Instruction ref
     | ForwardLabel
-    | UserLabel of string
+    | UserLabel
 
 and IlInstruction =
     | IlBranch of IlBranch * BranchLabel ref

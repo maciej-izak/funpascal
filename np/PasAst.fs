@@ -224,7 +224,7 @@ with
     member self.BoxPos = box self
 
 type ParamList = (ParamKind option * (string list * TypeIdentifier option)) list option
-type ProcHeader = string option * TypeIdentifier option * ParamList
+type ProcHeader = DIdent option * TypeIdentifier option * ParamList
 
 type TypeDecl =
     | TypeRecord of (bool * (string list * TypeIdentifier) list)
@@ -253,8 +253,8 @@ type Statement =
     | RepeatStm of (Statement list * ExprEl)
     | ForStm of (DIdent * ExprEl * int * ExprEl * Statement list)
     | WithStm of (DIdent list * Statement list)
-    | GotoStm of string
-    | LabelStm of string
+    | GotoStm of DIdent
+    | LabelStm of DIdent
 
 type ProcKind = Procedure | Function
 
@@ -265,12 +265,17 @@ and ProcDeclaration =
     | ForwardDeclr
     | BodyDeclr of ProcBodyDeclr
 
+and ProcAndFuncRec = { head: ProcHeader; decl: ProcDeclaration }
+with
+    static member Create(head, decl) = { head = head; decl = decl }
+    member self.BoxPos = box self
+
 and Declarations =
     | Types of Type list
     | Variables of (DIdent list * TypeIdentifier) list
     | Constants of (DIdent * TypeIdentifier option * ConstExpr) list
-    | Labels of string list
-    | ProcAndFunc of (ProcHeader * ProcDeclaration)
+    | Labels of DIdent list
+    | ProcAndFunc of ProcAndFuncRec
 
 type Program =
     | Unit of string

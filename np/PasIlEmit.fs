@@ -13,7 +13,7 @@ let rec brtoinstr l =
          | IlResolved(_, i) -> i
          | IlResolvedEx(_, i, _) -> i
          , ref
-    | _ -> failwithf "IE"
+    | _ -> raise (InternalError "2020082300")
 
 and private atomInstr = function
     | AddInst      -> Instruction.Create(OpCodes.Add)

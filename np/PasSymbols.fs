@@ -115,6 +115,7 @@ module Symbols =
         | EnumValueSym of int * PasType
         | WithSym of (VariableKind * PasType)
         | ConstSym of ConstSym
+        | LabelSym of BranchLabel ref
         | UnknownSym
 
     let (|NestedRoutineId|) = function
