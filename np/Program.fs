@@ -83,7 +83,8 @@ let tryCompileFile doTest mainFile =
             let proj = { proj with Defines = newDefs}
             using (handle testCase.DefSuffix) (doFullCompilation proj (Some testCase))
         match prepareTest proj with
-        | Ok cases -> cases |> List.iter (doCompile >> ignore) // first defines has meaning see handleTest
+        | Ok(Some cases) -> cases |> List.iter (doCompile >> ignore) // first defines has meaning see handleTest
+        | Ok None -> () // ignore, probably unit
         | _ -> printfn "TEST ERROR : %s" proj.Name
     else doFullCompilation proj None stdout
 

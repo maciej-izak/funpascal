@@ -722,7 +722,7 @@ module LangBuilder =
             let ctxvdIntf = Ctx.BuildDeclIl(pasModule.intf.decl, MainScope(sr, []))
             let ctxvdImpl = Ctx.BuildDeclIl(pasModule.impl.decl, LocalScope (fst ctxvdIntf))
             match ctxvdImpl |> Ctx.BuildStmtIl pasModule.init with
-            | Ok (res, ctx) ->
+            | Ok (res, ctx) -> // TODO fini ?
                 Ctx.CompileBlock (sysMethodBuilder ("module$init") moduleBuilder) typeBuilder res |> ignore
                 Some ctx
             | Error _ -> None

@@ -218,9 +218,10 @@ let comments<'u>
 
 let stdComments = comments<PasState> stdParseComments PasState.HandleComment (Some c0)
 
-let pass1Parser comments endParser =
+let pass1Parser<'u> comments (moduleKind: Parser<unit, 'u>) endParser =
     skipMany(
           (skipMany1 comments)
+          <|> moduleKind
           <|> (skipMany1Till anyChar (
                 next2CharsSatisfy (
                   fun c1 c2 ->
@@ -237,7 +238,7 @@ let initialPassParser =
             let pos = ifDefStack.Pop()
             ``Error: Unfinished '{$%O}' block detected`` pos.Branch
             |> us.NewMsg (pos.Pos |> box)
-    pass1Parser stdComments (eof .>> (getUserState |>> checkIfDefBalance))
+    pass1Parser stdComments pzero (eof .>> (getUserState |>> checkIfDefBalance))
 
 let wsc: Parser<unit, PasState> = skipMany stdComments
 let str_wsc s = pstringCI s .>> wsc

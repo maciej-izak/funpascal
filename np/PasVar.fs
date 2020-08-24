@@ -104,11 +104,12 @@ type ICompilerPassGeneric =
 type TestEnvDict = Dictionary<string, string list>
 
 type PasTestState = {
+    isUnit: bool 
     testEnv: TestEnvDict
 }   with
     // TODO as parser ?
     static member HandleComment _ = preturn()
-    static member Create() = { testEnv = TestEnvDict(StringComparer.OrdinalIgnoreCase) }
+    static member Create() = { isUnit = false; testEnv = TestEnvDict(StringComparer.OrdinalIgnoreCase) }
 
 type PascalProject = {
     File: string

@@ -38,8 +38,9 @@ module TestParser =
 
     let testComments = comments<PasTestState> testParseComments PasTestState.HandleComment None
 
-    let testPassParser = pass1Parser testComments eof
+    let moduleCheck = pstringCI "unit" >>. updateUserState(fun us -> {us with isUnit = true})
 
+    let testPassParser = pass1Parser testComments moduleCheck eof
 
 type TestCase = {
     Result: int
@@ -51,6 +52,7 @@ type TestCase = {
 let prepareTest proj =
     runParserOnFile TestParser.testPassParser (PasTestState.Create()) (proj.File) (System.Text.Encoding.UTF8)
     |>  function
+        | Success (_, us, _) when us.isUnit -> Ok None
         | Success (_, us, _) ->
             let result = match us.testEnv.TryGetValue "RESULT" with | true, [r] -> int r | _ -> 0
             let defCase = { Result=result; FailExpected=(us.testEnv.ContainsKey "FAIL"); Define=None }
@@ -68,5 +70,5 @@ let prepareTest proj =
             |>  function
                 | [] -> [defCase]
                 | results -> List.map strToTestCase results
-            |> Ok
+            |> Some |> Ok
         | Failure _ -> Result.Error()
