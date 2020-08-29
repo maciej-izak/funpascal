@@ -4,11 +4,11 @@ module Pas.Var
 open System
 open System.IO
 open System.Text
+open Microsoft.FSharp.Collections
 open System.Collections.Generic
 open FParsec
 open Fake.IO
 open Fake.IO.FileSystemOperators
-open Microsoft.FSharp.Collections
 
 [<Literal>]
 let DefaultBlockSize = 4096L;//196608L // 3*2^16 = 200k
@@ -121,28 +121,50 @@ type PascalProject = {
     Defines: string list
     UnitFiles: string list
     IncludeFiles: string list
+    ModulesMessages: List<string> * Dictionary<string, CompilerMessages>
 }
  with
     static member Create(mainFile, unitFiles, includeFiles) =
-        let filePath = Path.GetDirectoryName (mainFile: string)
+        let file, filePath, fileName =
+            let fileName = Path.GetFileName (mainFile: string)
+            let p = Path.GetDirectoryName mainFile
+            let filePath = if Path.IsPathFullyQualified p then p else Path.Combine(Directory.GetCurrentDirectory(), p)
+            Path.Combine(filePath, fileName), filePath, fileName
         let outPath = filePath </> "out"
         let mapDirectories = List.map (fun (p: string) -> if Path.IsPathFullyQualified p then p else Path.combine filePath p)
         Directory.ensure outPath
         {
-            File = mainFile
-            FileName = Path.GetFileName mainFile
+            File = file
+            FileName = fileName
             FilePath = filePath
             OutPath = outPath
             Exe = None
             Name = Path.GetFileNameWithoutExtension mainFile
             Defines = []
-            UnitFiles = mapDirectories unitFiles
-            IncludeFiles = mapDirectories includeFiles
+            UnitFiles = ""::unitFiles |> List.rev |> mapDirectories // "" = search in module directory
+            IncludeFiles = ""::includeFiles |> List.rev |> mapDirectories // "" = search in module directory
+            ModulesMessages = (List<_>(), Dictionary<_, _>())
         }
 
     // TODO some map cache / optimization?
     member self.FindInc name = self.IncludeFiles |> List.tryPick (Directory.tryFindFirstMatchingFile name) 
-    member self.FindUnit name = self.UnitFiles |> List.tryPick (Directory.tryFindFirstMatchingFile name) 
+    member self.FindUnit name = self.UnitFiles |> List.tryPick (Directory.tryFindFirstMatchingFile name)
+            
+    member self.AddCompilerMessages f m =
+        let l, d = self.ModulesMessages
+        l.Add f; d.Add(f, m)
+        
+    member self.NextIteration newDefs =
+        let l, d = self.ModulesMessages
+        l.Clear(); d.Clear()
+        { self with Defines = newDefs }
+        
+    member private self.DoMessages cm =
+        let l, d = self.ModulesMessages
+        seq { for f in l do yield! cm d.[f] }
+        
+    member self.Warnings = self.DoMessages (fun cm -> cm.Warnings)
+    member self.Errors = self.DoMessages (fun cm -> cm.Errors)
 
 type ICompilerPass =
     inherit ICompilerPassGeneric
@@ -152,6 +174,7 @@ type ICompilerPass =
 and PasState = {
     pass: ICompilerPass
     proj: PascalProject
+    fileName: string
     stream: PasStream
     incStack: (int64 * string * CharStreamState<PasState>) Stack
     defGoto: Dictionary<Position, Position>
@@ -171,10 +194,11 @@ and PasState = {
             | Some pos -> self.messages.AddMsg pos
             | _ -> raise (InternalError "2020061001")
 
-    member self.NewMsg (o: obj) msg =
-        match self.pass.Id with
-        | InitialPassId -> self.NewMessage o msg
-        | _ -> ()
+    member self.NewMsg (o: obj) msg = self.NewMessage o msg
+
+    member self.HasError =
+        self.messages.Errors.Count > 0
+        || (Seq.exists (fun (v:CompilerMessages) -> v.HasError) (snd self.proj.ModulesMessages).Values)
 
 and IncludeHandle = string -> CharStream<PasState> -> Reply<unit>
 and MacroHandle = MacroId * Macro -> CharStream<PasState> -> Reply<unit>
@@ -405,10 +429,11 @@ type TestPass(proj) =
             | _ -> ()
 
 type PasState with
-    static member Create pass s proj =
+    static member Create pass s proj fileName =
         {
             pass = pass
             proj = proj
+            fileName = fileName
             stream = s
             incStack = Stack()
             defGoto = Dictionary<_,_>()

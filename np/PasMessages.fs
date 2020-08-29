@@ -85,7 +85,10 @@ module Errors =
         MsgError(Some 24, sprintf "Cannot find label '%O'" o)
         
     let ``Error: Cannot use label '%O' from different code block`` o =
-        MsgError(Some 25, sprintf "Cannot use label '%O' from different code block" o)        
+        MsgError(Some 25, sprintf "Cannot use label '%O' from different code block" o)
+        
+    let ``Improper unit name '%O' (expected name: '%s')`` o s =
+        MsgError(Some 26, sprintf "Improper unit name '%O' (expected name: '%s')" o s)
 
 [<AutoOpen>]
 module Warnings =

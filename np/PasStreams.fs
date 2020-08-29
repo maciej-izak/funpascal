@@ -10,15 +10,20 @@ open Fake.IO.FileSystemOperators
 let doPas proj =
     loadAndDoFile proj parseMainModule
     >>
-    function
+    function // TODO very similar code to Ctx.BuildUnit, might be worth to merge
     | Ok (_, us as res) ->
         match Ctx.BuildMainModule res with
-        | Ok asmDef ->
+        | Some asmDef ->
             let outName = proj.OutPath </> proj.Name + ".dll"
             asmDef.Write(outName)
-            Ok(outName, us.messages)
-        | Error() -> Error(us.messages)
-    | Error us -> Error(us.messages)
+            proj.AddCompilerMessages proj.File us.messages
+            Some outName
+        | None ->
+            proj.AddCompilerMessages proj.File us.messages
+            None
+    | Error us ->
+        proj.AddCompilerMessages proj.File us.messages
+        None
 
 let toString (x:'a) = 
     match FSharpValue.GetUnionFields(x, typeof<'a>) with

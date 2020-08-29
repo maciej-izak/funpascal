@@ -56,17 +56,17 @@ let doFullCompilation proj (testCase: TestCase option) logh =
         if testCase.IsSome then
             handleTest proj testCase.Value isError
     
-    PasStreams.doPas proj proj.File
+    doPas proj proj.File
     |> function
-       | Ok(outName, msg) ->
-           Seq.iter (fprintfn logh "%s") msg.Warnings
+       | Some outName ->
+           Seq.iter (fprintfn logh "%s") proj.Warnings
            fprintfn logh "Compilation success!"
            writeRuntimeConfig proj
            { proj with Exe = Some outName}, false
-       | Error(msg) ->
-           msg.AddFatal (sprintf "Cannot compile module '%s'" proj.FileName)
-           Seq.iter (fprintfn logh "%s") msg.Warnings
-           Seq.iter (fprintfn logh "%s") msg.Errors
+       | None ->
+           (snd proj.ModulesMessages).[proj.File].AddFatal (sprintf "Cannot compile project '%s'" proj.FileName)
+           Seq.iter (fprintfn logh "%s") proj.Warnings
+           Seq.iter (fprintfn logh "%s") proj.Errors
            proj, true
     |> handleTest
 
@@ -80,7 +80,7 @@ let tryCompileFile doTest mainFile =
     if doTest then
         let doCompile testCase =
             let newDefs = if testCase.Define.IsSome then testCase.Define.Value::proj.Defines else proj.Defines
-            let proj = { proj with Defines = newDefs}
+            let proj = proj.NextIteration newDefs
             using (handle testCase.DefSuffix) (doFullCompilation proj (Some testCase))
         match prepareTest proj with
         | Ok(Some cases) -> cases |> List.iter (doCompile >> ignore) // first defines has meaning see handleTest
@@ -115,7 +115,7 @@ let main argv =
             | _ -> failwith "No proper command found"
         else if results.Contains(TestParser) then
             let proj = PascalProject.Create("test.pas", [], [])
-            FParsec.CharParsers.runParserOnString parseMainModule (PasState.Create (TestPass(proj)) null proj) "test"
+            FParsec.CharParsers.runParserOnString parseMainModule (PasState.Create (TestPass(proj)) null proj "test.pas") "test"
                 """
 uses Test;
 

@@ -551,37 +551,35 @@ module LangParser =
             let error = ParserError(stream.Position, stream.UserState, reply.Error)
             FParsec.CharParsers.Failure(error.ToString(stream), error, stream.UserState)
     
-    let doPasStream proj parser file stream =
+    let doPasStream proj parser fileName stream =
         let addParserError (us: PasState) parserError =
             us.messages.Errors.Add parserError
             Error us
-        let us = PasState.Create (InitialPass proj) (new PasStream(stream)) proj
+        let us = PasState.Create (InitialPass proj) (new PasStream(stream)) proj fileName
         use stream1 = new CharStream<PasState>(us.stream, Encoding.Unicode)
         stream1.UserState <- us
-        stream1.Name <- file
+        stream1.Name <- fileName
         match applyParser initialPassParser stream1 with
-        | Success _ when not us.messages.HasError -> // Do second pass, parsing success may means failure in AST
+        | Success _ when not us.HasError -> // Do second pass, parsing success may means failure in AST
             let us = { us with pass = MainPass(proj) }
             use stream2 = new CharStream<PasState>(us.stream, Encoding.Unicode)
             stream2.UserState <- us
-            stream2.Name <- file
+            stream2.Name <- fileName
             match applyParser parser stream2 with
-            | Success(ast, _, _) when not us.messages.HasError -> Ok(ast, us)
+            | Success(ast, _, _) when not us.HasError -> Ok(ast, us)
             | FParsec.CharParsers.Failure(s, _, _) -> addParserError us s
             | _ -> Error us
         | FParsec.CharParsers.Failure(s, _, _) -> addParserError us s
         | _ -> Error us
         
     let loadAndDoFile proj parser file =
-        System.IO.File.ReadAllText file
-        |> Encoding.Unicode.GetBytes
-        |> MemoryStream // rework for warning about IDisposable
-        |> doPasStream proj parser (Path.GetFileName file)
+        let bytes = File.ReadAllText file |> Encoding.Unicode.GetBytes
+        using (new MemoryStream(bytes)) (doPasStream proj parser (Path.GetFileName file))
 
 [<AutoOpen>]
 module LangBuilder =
 
-    open Fake.IO.FileSystemOperators
+    open System.IO
     
     let stmtListToIl sl (ctx: Ctx) (res: VariableDefinition) =
         let finalizeVariables =
@@ -633,6 +631,12 @@ module LangBuilder =
         let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
         MethodDefinition(name, methodAttributes, (mb: ModuleDefinition).TypeSystem.Void)
     
+    type UsesModule =
+        | SystemModule of DIdent
+        | UserModule of DIdent
+    
+    let systemUnitName = DIdent.FromString "System" |> SystemModule
+    
     type Ctx with
         static member CompileBlock (methodBuilder: MethodDefinition) (typeBuilder : TypeDefinition) (instr: List<MetaInstruction>) =
             let ilGenerator = methodBuilder.Body.GetILProcessor() |> emit
@@ -665,7 +669,35 @@ module LangBuilder =
             | _ -> // after implementation analise, check for errors again
                 let res = stmtListToIl stmt ctx result
                 if ctx.messages.HasError then Error ctx else Ok (res, ctx)
-        
+
+        static member BuildUnit state moduleBuilder unit =
+            let unitName, isSystem = match unit with
+                                     | SystemModule n -> n, true
+                                     | UserModule n -> n, false
+            match state.proj.FindUnit (sprintf "%O.pas" unitName) with
+            | Some f ->
+                match loadAndDoFile state.proj parseUnitModule f with
+                | Ok((_, us) as res) ->
+                    match Ctx.BuildUnitModule res moduleBuilder isSystem with
+                    | Some ctx ->
+                        state.proj.AddCompilerMessages f us.messages
+                        Some ctx
+                    | None ->
+                        state.proj.AddCompilerMessages f us.messages
+                        None
+                | Error us ->
+                    state.proj.AddCompilerMessages f us.messages
+                    None
+            | _ ->
+                state.messages.AddFatal (sprintf "Cannot find unit '%O'" unitName)
+                None
+            
+        static member BuildUses sysModules modules state moduleBuilder =
+                [yield! sysModules; yield! (modules |> List.map UserModule)]
+                |> List.map (Ctx.BuildUnit state moduleBuilder)
+                |> List.choose id
+                |> List.rev // priority meaning
+               
         static member BuildMainModule (pasModule: MainModuleRec, state) =
             let moduleName = pasModule.ProgramName
             let assemblyBuilder =
@@ -678,29 +710,19 @@ module LangBuilder =
             let typeBuilder =
                 TypeDefinition(moduleName, moduleName, moduleTypeAttr, moduleBuilder.TypeSystem.Object)
             moduleBuilder.Types.Add(typeBuilder)
+            
+            let units = Ctx.BuildUses [systemUnitName] pasModule.uses state moduleBuilder
+            
             let sr = ScopeRec.Create moduleName state typeBuilder moduleBuilder
-            
-            // TODO parse uses ?
-            
-            let units =
-                match state.proj.FindUnit "system.pas" with
-                | Some f ->
-                    match loadAndDoFile state.proj parseUnitModule f with
-                    | Ok res ->
-                        match Ctx.BuildUnitModule res moduleBuilder with
-                        | Some ctx -> [ctx]
-                        | None -> [] // TODO ? handle errorsin module    
-                    | Error us -> []
-                | _ -> state.messages.AddFatal "Cannot find module 'System'"; []
-            
             let (ctx, _) as ctxvd = Ctx.BuildDeclIl(pasModule.block.decl, MainScope(sr, units))
             ctx.res.Add(InstructionList([+Call(ctx.FindMethodReference "InitSystem")]))
             match Ctx.BuildStmtIl pasModule.block.stmt ctxvd with
-            | Error _ -> Error()
+            | Error _ -> None
             | Ok (res, _) ->
                 let mainBlock = Ctx.CompileBlock (sysMethodBuilder "Main" moduleBuilder) typeBuilder res
                 assemblyBuilder.EntryPoint <- mainBlock
-                Ok assemblyBuilder
+                if state.HasError then None
+                else Some assemblyBuilder
                 // TODO version of target framework
                 (*
                 let v = moduleBuilder.ImportReference(typeof<TargetFrameworkAttribute>.GetConstructor([|typeof<string>|]));
@@ -711,25 +733,29 @@ module LangBuilder =
                 assemblyBuilder.CustomAttributes.Add(c)
                 *)
         
-        static member BuildUnitModule (pasModule: UnitModuleRec, state) (moduleBuilder: ModuleDefinition) =
+        static member BuildUnitModule (pasModule: UnitModuleRec, state) (moduleBuilder: ModuleDefinition) isSystem =
             let moduleName = pasModule.UnitName
-            let typeBuilder =
-                TypeDefinition(moduleName, moduleName, moduleTypeAttr, moduleBuilder.TypeSystem.Object)
-            moduleBuilder.Types.Add(typeBuilder)
+            let expectedModuleName = Path.GetFileNameWithoutExtension(state.fileName)
+            let correctModuleName = String.Equals(expectedModuleName, moduleName, StringComparison.OrdinalIgnoreCase)
+            match correctModuleName with
+            | true ->
+                let typeBuilder =
+                    TypeDefinition(moduleName, moduleName, moduleTypeAttr, moduleBuilder.TypeSystem.Object)
+                moduleBuilder.Types.Add(typeBuilder)
 
-            let sr = ScopeRec.Create moduleName state typeBuilder moduleBuilder
-            // TODO uses handle for module
-            let ctxvdIntf = Ctx.BuildDeclIl(pasModule.intf.decl, MainScope(sr, []))
-            let ctxvdImpl = Ctx.BuildDeclIl(pasModule.impl.decl, LocalScope (fst ctxvdIntf))
-            match ctxvdImpl |> Ctx.BuildStmtIl pasModule.init with
-            | Ok (res, ctx) -> // TODO fini ?
-                Ctx.CompileBlock (sysMethodBuilder ("module$init") moduleBuilder) typeBuilder res |> ignore
-                Some ctx
-            | Error _ -> None
-            //()
-            // TODO parse uses ?
-//            state.proj.FindUnit "system.pas"
-//            |> Option.defaultValue ""
-//            |> loadAndDoFile state.proj parseUnitModule
-//            |> buildModule state.proj (fun ast -> Ctx.BuildModule (UnitModule ast))
-//            |> ignore
+                // todo circural ref
+                let units = Ctx.BuildUses [if not isSystem then systemUnitName] pasModule.intf.uses state moduleBuilder
+                
+                let sr = ScopeRec.Create moduleName state typeBuilder moduleBuilder
+                // TODO uses handle for module
+                let ctxvdIntf = Ctx.BuildDeclIl(pasModule.intf.decl, MainScope(sr, units))
+                let ctxvdImpl = Ctx.BuildDeclIl(pasModule.impl.decl, LocalScope (fst ctxvdIntf))
+                match ctxvdImpl |> Ctx.BuildStmtIl pasModule.init with
+                | Ok (res, ctx) -> // TODO fini ?
+                    Ctx.CompileBlock (sysMethodBuilder ("module$init") moduleBuilder) typeBuilder res |> ignore
+                    Some ctx
+                | Error _ -> None
+            | false ->
+                //state.messages.AddMsg pasModule.name.BoxPos
+                ``Improper unit name '%O' (expected name: '%s')`` moduleName (expectedModuleName.ToUpper()) |> state.NewMsg pasModule.name.BoxPos
+                None
