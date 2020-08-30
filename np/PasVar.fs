@@ -9,6 +9,7 @@ open System.Collections.Generic
 open FParsec
 open Fake.IO
 open Fake.IO.FileSystemOperators
+open Mono.Cecil
 
 [<Literal>]
 let DefaultBlockSize = 4096L;//196608L // 3*2^16 = 200k
@@ -114,7 +115,14 @@ type PasTestState = {
 type PascalModule = {
     Messages: CompilerMessages
     Obj: obj option
+    Init: MethodDefinition
+    Fini: MethodDefinition
 }
+
+module PascalModule =
+    let invalid m = { Messages = m; Obj = None; Init = null; Fini = null }
+    let main = invalid
+    let unit m (ctx, init, fini) = { Messages = m; Obj = Some(box ctx); Init = init; Fini = fini }
 
 type PascalModules = {
     Order: List<string>
@@ -127,9 +135,10 @@ type PascalModules = {
         | true -> self.Order.Add f
         | false -> raise (InternalError "2020083001")
 
-    member private self.DoMessages cm = seq { for f in self.Order do yield! cm self.Items.[f].Messages }
+    member private self.DoMessages cm = self.Ordered |> Seq.collect(fun m -> cm m.Messages)
     member self.Warnings = self.DoMessages (fun cm -> cm.Warnings)
     member self.Errors = self.DoMessages (fun cm -> cm.Errors)
+    member self.Ordered = seq { for f in self.Order do self.Items.[f] }
     
 type UnitSearchResult =
     | UnitCompiled of obj

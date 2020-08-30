@@ -679,14 +679,14 @@ module LangBuilder =
                 match loadAndDoFile state.proj parseUnitModule f with
                 | Ok((_, us) as res) ->
                     match Ctx.BuildUnitModule res moduleBuilder isSystem with
-                    | Some ctx ->
-                        state.proj.AddModule f { Messages = us.messages; Obj = Some(box ctx) }
+                    | Some(ctx, _, _ as res) ->
+                        state.proj.AddModule f (PascalModule.unit us.messages res)
                         Some ctx
                     | None ->
-                        state.proj.AddModule f { Messages = us.messages; Obj = None }
+                        state.proj.AddModule f (PascalModule.invalid us.messages)
                         None
                 | Error us ->
-                    state.proj.AddModule f { Messages = us.messages; Obj = None }
+                    state.proj.AddModule f (PascalModule.invalid us.messages)
                     None
             | UnitCompiled o -> Some(unbox o)
             | UnitNotFound ->
@@ -716,10 +716,28 @@ module LangBuilder =
             
             let sr = ScopeRec.Create moduleName state typeBuilder moduleBuilder
             let (ctx, _) as ctxvd = Ctx.BuildDeclIl(pasModule.block.decl, MainScope(sr, units))
-            ctx.res.Add(InstructionList([+Call(ctx.FindMethodReference "InitSystem")]))
+            // initialization, sysini + initializations of modules
+            ctx.res.Add(
+                           InstructionList([
+                               +Call(ctx.FindMethodReference "InitSystem")
+                               yield!
+                                   state.proj.Modules.Ordered
+                                   |> Seq.filter(fun m -> m.Init <> null)
+                                   |> Seq.map(fun m -> +Call m.Init)
+                           ])
+                       )
             match Ctx.BuildStmtIl pasModule.block.stmt ctxvd with
             | Error _ -> None
             | Ok (res, _) ->
+                // TODO finally should be done in different way
+//                res.Insert(res.Count - 1,
+//                           state.proj.Modules.Ordered
+//                           |> Seq.filter(fun m -> m.Init <> null)
+//                           |> List.ofSeq
+//                           |> List.rev
+//                           |> List.map(fun m -> +Call m.Init)
+//                           |> InstructionList
+//                       )
                 let mainBlock = Ctx.CompileBlock (sysMethodBuilder "Main" moduleBuilder) typeBuilder res
                 assemblyBuilder.EntryPoint <- mainBlock
                 if state.HasError then None
@@ -751,11 +769,18 @@ module LangBuilder =
                 // TODO uses handle for module
                 let ctxvdIntf = Ctx.BuildDeclIl(pasModule.intf.decl, MainScope(sr, units))
                 let ctxvdImpl = Ctx.BuildDeclIl(pasModule.impl.decl, LocalScope (fst ctxvdIntf))
-                match ctxvdImpl |> Ctx.BuildStmtIl pasModule.init with
-                | Ok (res, ctx) -> // TODO fini ?
-                    Ctx.CompileBlock (sysMethodBuilder ("module$init") moduleBuilder) typeBuilder res |> ignore
-                    Some ctx
-                | Error _ -> None
+                let init = match ctxvdImpl |> Ctx.BuildStmtIl pasModule.init with
+                           | Ok (res, _) -> Some <| Ctx.CompileBlock (sysMethodBuilder ("$module$init") moduleBuilder) typeBuilder res
+                           | Error _ -> None
+                // TODO ? some alternative more immutable way than Clear?
+                (fst ctxvdImpl).res.Clear()
+                let fini = match ctxvdImpl |> Ctx.BuildStmtIl pasModule.fini with
+                           | Ok (res, _) -> Some <| Ctx.CompileBlock (sysMethodBuilder ("$module$fini") moduleBuilder) typeBuilder res
+                           | Error _ -> None
+                match init, fini with
+                | Some init, Some fini -> Some(fst ctxvdImpl, init, fini)
+                | _ -> None
+                    
             | false ->
                 ``Improper unit name '%O' (expected name: '%s')`` moduleName (expectedModuleName.ToUpper()) |> state.NewMsg pasModule.name.BoxPos
                 None

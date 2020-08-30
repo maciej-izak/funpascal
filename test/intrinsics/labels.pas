@@ -1,4 +1,4 @@
-{%results=OK1:8,OK2:21,F1:-,F2:-}
+{%results=OK1:8,OK2:21,F1:-,F2:-,OK3:1}
 
 {$IFDEF OK1}
 label 1;
@@ -38,6 +38,12 @@ procedure foo;
 begin
   goto X;
 end;
+begin
+end.
+{$ENDIF}
+
+{$IFDEF OK3}
+uses labelsmodule;
 begin
 end.
 {$ENDIF}
