@@ -675,7 +675,7 @@ module LangBuilder =
                                      | SystemModule n -> n, true
                                      | UserModule n -> n, false
             match state.proj.FindUnit (sprintf "%O.pas" unitName) with
-            | Some f ->
+            | UnitFound f ->
                 match loadAndDoFile state.proj parseUnitModule f with
                 | Ok((_, us) as res) ->
                     match Ctx.BuildUnitModule res moduleBuilder isSystem with
@@ -688,7 +688,8 @@ module LangBuilder =
                 | Error us ->
                     state.proj.AddModule f { Messages = us.messages; Obj = None }
                     None
-            | _ ->
+            | UnitCompiled o -> Some(unbox o)
+            | UnitNotFound ->
                 state.messages.AddFatal (sprintf "Cannot find unit '%O'" unitName)
                 None
             
@@ -756,6 +757,5 @@ module LangBuilder =
                     Some ctx
                 | Error _ -> None
             | false ->
-                //state.messages.AddMsg pasModule.name.BoxPos
                 ``Improper unit name '%O' (expected name: '%s')`` moduleName (expectedModuleName.ToUpper()) |> state.NewMsg pasModule.name.BoxPos
                 None

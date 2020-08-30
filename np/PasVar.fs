@@ -122,11 +122,19 @@ type PascalModules = {
 } with
     static member Create() = { Order = List<_>(); Items = Dictionary<_,_>() }
     member self.Clear() = self.Order.Clear() ; self.Items.Clear()
-    member self.Add f m = self.Order.Add f; self.Items.Add(f, m)
+    member self.Add f m =
+        match self.Items.TryAdd(f, m) with
+        | true -> self.Order.Add f
+        | false -> raise (InternalError "2020083001")
 
     member private self.DoMessages cm = seq { for f in self.Order do yield! cm self.Items.[f].Messages }
     member self.Warnings = self.DoMessages (fun cm -> cm.Warnings)
     member self.Errors = self.DoMessages (fun cm -> cm.Errors)
+    
+type UnitSearchResult =
+    | UnitCompiled of obj
+    | UnitFound of string
+    | UnitNotFound
     
 type PascalProject = {
     File: string
@@ -165,8 +173,18 @@ type PascalProject = {
 
     // TODO some map cache / optimization?
     member self.FindInc name = self.IncludeFiles |> List.tryPick (Directory.tryFindFirstMatchingFile name) 
-    member self.FindUnit name = self.UnitFiles |> List.tryPick (Directory.tryFindFirstMatchingFile name)
-            
+    member self.FindUnit name =
+        let unitFile = self.UnitFiles |> List.tryPick (Directory.tryFindFirstMatchingFile name)
+        match unitFile with
+        | Some f ->
+            match self.Modules.Items.TryGetValue f with
+            | true, m ->
+                match m.Obj with
+                | Some o -> UnitCompiled o
+                | _ -> raise(InternalError "2020083002") // possible only for main pascal file, so raise IE
+            | _ -> UnitFound f
+        | _ -> UnitNotFound
+        
     member self.AddModule f m = self.Modules.Add f m
         
     member self.NextIteration newDefs =
