@@ -680,13 +680,13 @@ module LangBuilder =
                 | Ok((_, us) as res) ->
                     match Ctx.BuildUnitModule res moduleBuilder isSystem with
                     | Some ctx ->
-                        state.proj.AddCompilerMessages f us.messages
+                        state.proj.AddModule f { Messages = us.messages; Obj = Some(box ctx) }
                         Some ctx
                     | None ->
-                        state.proj.AddCompilerMessages f us.messages
+                        state.proj.AddModule f { Messages = us.messages; Obj = None }
                         None
                 | Error us ->
-                    state.proj.AddCompilerMessages f us.messages
+                    state.proj.AddModule f { Messages = us.messages; Obj = None }
                     None
             | _ ->
                 state.messages.AddFatal (sprintf "Cannot find unit '%O'" unitName)

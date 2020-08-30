@@ -16,13 +16,13 @@ let doPas proj =
         | Some asmDef ->
             let outName = proj.OutPath </> proj.Name + ".dll"
             asmDef.Write(outName)
-            proj.AddCompilerMessages proj.File us.messages
+            proj.AddModule proj.File { Messages = us.messages; Obj = None }
             Some outName
         | None ->
-            proj.AddCompilerMessages proj.File us.messages
+            proj.AddModule proj.File { Messages = us.messages; Obj = None }
             None
     | Error us ->
-        proj.AddCompilerMessages proj.File us.messages
+        proj.AddModule proj.File { Messages = us.messages; Obj = None }
         None
 
 let toString (x:'a) = 

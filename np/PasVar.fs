@@ -111,6 +111,23 @@ type PasTestState = {
     static member HandleComment _ = preturn()
     static member Create() = { isUnit = false; testEnv = TestEnvDict(StringComparer.OrdinalIgnoreCase) }
 
+type PascalModule = {
+    Messages: CompilerMessages
+    Obj: obj option
+}
+
+type PascalModules = {
+    Order: List<string>
+    Items: Dictionary<string, PascalModule>
+} with
+    static member Create() = { Order = List<_>(); Items = Dictionary<_,_>() }
+    member self.Clear() = self.Order.Clear() ; self.Items.Clear()
+    member self.Add f m = self.Order.Add f; self.Items.Add(f, m)
+
+    member private self.DoMessages cm = seq { for f in self.Order do yield! cm self.Items.[f].Messages }
+    member self.Warnings = self.DoMessages (fun cm -> cm.Warnings)
+    member self.Errors = self.DoMessages (fun cm -> cm.Errors)
+    
 type PascalProject = {
     File: string
     FileName: string
@@ -121,7 +138,7 @@ type PascalProject = {
     Defines: string list
     UnitFiles: string list
     IncludeFiles: string list
-    ModulesMessages: List<string> * Dictionary<string, CompilerMessages>
+    Modules: PascalModules
 }
  with
     static member Create(mainFile, unitFiles, includeFiles) =
@@ -143,28 +160,26 @@ type PascalProject = {
             Defines = []
             UnitFiles = ""::unitFiles |> List.rev |> mapDirectories // "" = search in module directory
             IncludeFiles = ""::includeFiles |> List.rev |> mapDirectories // "" = search in module directory
-            ModulesMessages = (List<_>(), Dictionary<_, _>())
+            Modules = PascalModules.Create()
         }
 
     // TODO some map cache / optimization?
     member self.FindInc name = self.IncludeFiles |> List.tryPick (Directory.tryFindFirstMatchingFile name) 
     member self.FindUnit name = self.UnitFiles |> List.tryPick (Directory.tryFindFirstMatchingFile name)
             
-    member self.AddCompilerMessages f m =
-        let l, d = self.ModulesMessages
-        l.Add f; d.Add(f, m)
+    member self.AddModule f m = self.Modules.Add f m
         
     member self.NextIteration newDefs =
-        let l, d = self.ModulesMessages
-        l.Clear(); d.Clear()
+        self.Modules.Clear()
         { self with Defines = newDefs }
         
-    member private self.DoMessages cm =
-        let l, d = self.ModulesMessages
-        seq { for f in l do yield! cm d.[f] }
-        
-    member self.Warnings = self.DoMessages (fun cm -> cm.Warnings)
-    member self.Errors = self.DoMessages (fun cm -> cm.Errors)
+    member self.Warnings = self.Modules.Warnings
+    member self.Errors = self.Modules.Errors
+    member self.HasError = Seq.exists (fun v -> v.Messages.HasError) self.Modules.Items.Values
+    member self.AddFatal msg =
+        match self.Modules.Items.TryGetValue self.File with
+        | true, m -> m.Messages.AddFatal msg
+        | _ -> raise(InternalError "2020083000") // fatal error should be added at the end of compilation process
 
 type ICompilerPass =
     inherit ICompilerPassGeneric
@@ -196,9 +211,7 @@ and PasState = {
 
     member self.NewMsg (o: obj) msg = self.NewMessage o msg
 
-    member self.HasError =
-        self.messages.Errors.Count > 0
-        || (Seq.exists (fun (v:CompilerMessages) -> v.HasError) (snd self.proj.ModulesMessages).Values)
+    member self.HasError = self.messages.Errors.Count > 0 || self.proj.HasError
 
 and IncludeHandle = string -> CharStream<PasState> -> Reply<unit>
 and MacroHandle = MacroId * Macro -> CharStream<PasState> -> Reply<unit>

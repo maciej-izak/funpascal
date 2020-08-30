@@ -545,7 +545,7 @@ procFuncDeclarationsRef :=
     )
     |>> ProcAndFuncRec.Create) |>> ProcAndFunc
 
-let uses = (``uses `` >>. sepEndBy1 simpleDesignator (pstring ",") .>> ``; ``) <|>% []
+let uses = (``uses `` >>. sepEndBy1 simpleDesignator ``, `` .>> ``; ``) <|>% []
 
 let mainModule =
     tuple3

@@ -64,7 +64,7 @@ let doFullCompilation proj (testCase: TestCase option) logh =
            writeRuntimeConfig proj
            { proj with Exe = Some outName}, false
        | None ->
-           (snd proj.ModulesMessages).[proj.File].AddFatal (sprintf "Cannot compile project '%s'" proj.FileName)
+           proj.AddFatal (sprintf "Cannot compile project '%s'" proj.FileName)
            Seq.iter (fprintfn logh "%s") proj.Warnings
            Seq.iter (fprintfn logh "%s") proj.Errors
            proj, true
