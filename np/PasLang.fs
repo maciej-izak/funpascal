@@ -647,7 +647,7 @@ module LangBuilder =
             match r.set, r.used, !r.branch with
             | false, true, UserLabel -> ``Label '%O' declared and referenced but never set`` id |> ctx.NewMsg id
             | false, false, UserLabel -> ``Warning: Label '%O' declared but never set`` id |> ctx.NewMsg id
-            | true, false, UserLabel -> ``Warning: Label '%O' declared and set but never referenced`` id |> ctx.NewMsg id
+            | true, false, _ -> ``Warning: Label '%O' declared and set but never referenced`` id |> ctx.NewMsg id
             | _ -> ()
         ctx.res
 

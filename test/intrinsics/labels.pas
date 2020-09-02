@@ -1,8 +1,8 @@
 {%results=OK1:8,OK2:21,F1:-,F2:-,OK3:1,F3:-,F4:-,F5:-}
 
 {$IFDEF OK1}
-label 1;
-begin
+label 1, 2, 3; // 2 - warning check ;)
+begin 3:
   goto 1;
   HaltAtLine;
   1: HaltAtLine;
