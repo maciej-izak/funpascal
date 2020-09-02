@@ -90,7 +90,17 @@ module Errors =
     let ``Improper unit name '%O' (expected name: '%s')`` o s =
         MsgError(Some 26, sprintf "Improper unit name '%O' (expected name: '%s')" o s)
 
+    let ``Label '%O' declared and referenced but never set`` o =
+        MsgError(Some 27, sprintf "Label '%O' declared and referenced but never set" o)
+    
+    let ``Label '%O' already declared`` o =
+        MsgError(Some 28, sprintf "Label '%O' already declared" o)
+
 [<AutoOpen>]
 module Warnings =
     let ``Warning: Cannot find enviroment variable '%s'`` s =
         MsgWarning(Some 1, SevereWarning, sprintf "Cannot find enviroment variable '%s'" s)
+    let ``Warning: Label '%O' declared but never set`` o =
+        MsgWarning(Some 2, SevereWarning, sprintf "Label '%O' declared but never set" o)
+    let ``Warning: Label '%O' declared and set but never referenced`` o =
+        MsgWarning(Some 3, SevereWarning, sprintf "Label '%O' declared and set but never referenced" o)

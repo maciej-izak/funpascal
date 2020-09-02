@@ -270,14 +270,37 @@ module LangStmt =
             ``Error: Cannot find label '%O'`` l |> ctx.NewMsg l
             None
             
-    let doLabelSpecStm l (ctx: Ctx) =
-        match doLabelStm l ctx with
-        | Some l -> [],[l]
+    let doLabelSpecStm lid (ctx: Ctx) =
+        match doLabelStm lid ctx with
+        | Some l ->
+            let doSpec() =
+                l.set <- true
+                l.block <- ctx.block
+                [],[l.branch]
+            match l.set, l.block with
+            | true, _ ->
+                ``Label '%O' already declared`` lid |> ctx.NewMsg lid
+                [],[]
+            | _, NormalBlock -> doSpec()
+            | _ when l.block = ctx.block -> doSpec()
+            | _ -> // handle initialization / finalization
+                ``Error: Cannot use label '%O' from different code block`` lid |> ctx.NewMsg lid
+                [],[]
         | _ -> [],[]
         
-    let doGotoStm l (ctx: Ctx) =
-        match doLabelStm l ctx with
-        | Some l -> [IlBranch(IlBr,l)],[] // will do LazyLabel
+    let doGotoStm lid (ctx: Ctx) =
+        match doLabelStm lid ctx with
+        | Some l ->
+            let doGoto() =
+                l.used <- true
+                l.block <- ctx.block
+                [IlBranch(IlBr,l.branch)],[] // will do LazyLabel
+            match l.block with
+            | NormalBlock -> doGoto()
+            | _ when l.block = ctx.block  -> doGoto()
+            | _ -> // handle initialization / finalization
+                ``Error: Cannot use label '%O' from different code block`` lid |> ctx.NewMsg lid
+                [],[]
         | _ -> [],[]
         
     let doEmptyStm = fun _ -> ([],[])
@@ -443,8 +466,11 @@ module LangDecl =
 
     let declLabels labels (ctx: Ctx) =
         let tryAddLabel l =
-            if not <| ctx.NewSymbols.TryAdd(CompilerName.FromDIdent l, LabelSym(ref UserLabel)) then
+            let lr = { branch = ref UserLabel; used = false; set = false; block = ctx.block }
+            if not <| ctx.NewSymbols.TryAdd(CompilerName.FromDIdent l, LabelSym lr) then
                 ``Duplicated identifier of '%O'`` l |> ctx.NewMsg l
+            else
+                ctx.labels.Head.Add(l, lr)
         List.iter tryAddLabel labels
 
     let doDeclProcAndFunc (name, mRes, mPara, decl) (ctx: Ctx) =
@@ -617,6 +643,12 @@ module LangBuilder =
         (instructions, finallyBlock, returnBlock)
         |> HandleFunction
         |> ctx.res.Add
+        for (id, r) in ctx.labels.Head do
+            match r.set, r.used, !r.branch with
+            | false, true, UserLabel -> ``Label '%O' declared and referenced but never set`` id |> ctx.NewMsg id
+            | false, false, UserLabel -> ``Warning: Label '%O' declared but never set`` id |> ctx.NewMsg id
+            | true, false, UserLabel -> ``Warning: Label '%O' declared and set but never referenced`` id |> ctx.NewMsg id
+            | _ -> ()
         ctx.res
 
     let moduleTypeAttr =
@@ -767,18 +799,16 @@ module LangBuilder =
                 
                 let sr = ScopeRec.Create moduleName state typeBuilder moduleBuilder
                 // TODO uses handle for module
-                let ctxvdIntf = Ctx.BuildDeclIl(pasModule.intf.decl, MainScope(sr, units))
-                let ctxvdImpl = Ctx.BuildDeclIl(pasModule.impl.decl, LocalScope (fst ctxvdIntf))
-                let init = match ctxvdImpl |> Ctx.BuildStmtIl pasModule.init with
+                let (ctx, _) = Ctx.BuildDeclIl(pasModule.intf.decl, MainScope(sr, units))
+                let (ctx, vd) = Ctx.BuildDeclIl(pasModule.impl.decl, LocalScope ctx)
+                let init = match (ctx.Next InitializationBlock, vd) |> Ctx.BuildStmtIl pasModule.init with
                            | Ok (res, _) -> Some <| Ctx.CompileBlock (sysMethodBuilder ("$module$init") moduleBuilder) typeBuilder res
                            | Error _ -> None
-                // TODO ? some alternative more immutable way than Clear?
-                (fst ctxvdImpl).res.Clear()
-                let fini = match ctxvdImpl |> Ctx.BuildStmtIl pasModule.fini with
+                let fini = match (ctx.Next FinalizationBlock, vd) |> Ctx.BuildStmtIl pasModule.fini with
                            | Ok (res, _) -> Some <| Ctx.CompileBlock (sysMethodBuilder ("$module$fini") moduleBuilder) typeBuilder res
                            | Error _ -> None
                 match init, fini with
-                | Some init, Some fini -> Some(fst ctxvdImpl, init, fini)
+                | Some init, Some fini -> Some(ctx, init, fini)
                 | _ -> None
                     
             | false ->

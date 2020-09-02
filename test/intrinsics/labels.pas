@@ -1,4 +1,4 @@
-{%results=OK1:8,OK2:21,F1:-,F2:-,OK3:1}
+{%results=OK1:8,OK2:21,F1:-,F2:-,OK3:1,F3:-,F4:-,F5:-}
 
 {$IFDEF OK1}
 label 1;
@@ -45,5 +45,24 @@ end.
 {$IFDEF OK3}
 uses labelsmodule;
 begin
+end.
+{$ENDIF}
+
+{$IFDEF F3}
+uses labelsmodule;
+begin
+end.
+{$ENDIF}
+
+{$IFDEF F4}
+uses labelsmodule;
+begin
+end.
+{$ENDIF}
+
+{$IFDEF F5}
+label x;
+begin
+  x: x:
 end.
 {$ENDIF}

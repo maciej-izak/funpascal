@@ -97,6 +97,18 @@ module Symbols =
             | LTPStruct(_, pt) -> pt
             | _ -> failwith "IE"
 
+    type GlobalBlock =
+        | NormalBlock
+        | InitializationBlock
+        | FinalizationBlock
+    
+    type LabelRec = {
+        mutable branch: BranchLabel ref
+        mutable used: bool
+        mutable set: bool
+        mutable block: GlobalBlock
+    }
+    
     type ReferencedDef = MethodInfo * (Symbol * Symbol) list ref
 
     and MethodSym =
@@ -115,7 +127,7 @@ module Symbols =
         | EnumValueSym of int * PasType
         | WithSym of (VariableKind * PasType)
         | ConstSym of ConstSym
-        | LabelSym of BranchLabel ref
+        | LabelSym of LabelRec
         | UnknownSym
 
     let (|NestedRoutineId|) = function

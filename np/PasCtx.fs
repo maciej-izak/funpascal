@@ -61,6 +61,8 @@ type Ctx = {
         units: Ctx list
         messages: CompilerMessages
         variables: List<VariableKind> list
+        labels: List<DIdent * LabelRec> list
+        block: GlobalBlock
         symbols: (SymOwner * Dictionary<CompilerName, Symbol>) list
         forward: Dictionary<CompilerName, ReferencedDef * Dictionary<CompilerName,Symbol> * VariableKind option>
         localVariables: int ref
@@ -87,13 +89,16 @@ type Ctx = {
         List.tryFind (fun (o, _) -> match o with | GlobalSpace _ | StandaloneMethod _ -> true | _ -> false) self.symbols
         |> Option.defaultWith (doInternalError "2020082202") |> fst
 
-    member self.Inner symbolsEntry =
+    member self.Next block =
         { self with
-            symbols = symbolsEntry::self.symbols
+            block = block
             localVariables = ref 0
             variables = List<_>()::self.variables
             res = List<MetaInstruction>()
             loop = Stack<_>()}
+
+    member self.Inner symbolsEntry =
+        { self.Next NormalBlock with symbols = symbolsEntry::self.symbols }
 
     member self.PickSym sym =
         self.symbols |> List.tryPick (fun (o, st) -> match st.TryGetValue sym with | true, v -> Some (o, v) | _ -> None)
@@ -402,7 +407,9 @@ module Ctx =
         {
             units = units
             messages = sr.State.messages
-            variables = [List<VariableKind>()]
+            variables = [List<_>()]
+            labels = [List<_>()]
+            block = NormalBlock
             symbols = [owner,symbols]
             forward = Dictionary<_, _>(lang)
             localVariables = ref 0
