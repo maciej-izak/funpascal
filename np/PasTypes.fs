@@ -4,7 +4,8 @@ module Pas.Types
 open System
 open System.Text
 open System.Collections.Generic
-open Mono.Cecil
+open dnlib.DotNet
+open dnlib.DotNet.Emit
 
 type ParamRefKind =
     | RefConst
@@ -67,7 +68,7 @@ type TypeKind =
     | TkUnknown of int
     | TkOrd of OrdKind: TOrdKind * OrdType: TOrdType
     | TkFloat of FloatType: TFloatType
-    | TkRecord of Dictionary<string, FieldDefinition * PasType> * int
+    | TkRecord of Dictionary<string, FieldDef * PasType> * int
     | TkPointer of PasType
     | TkArray of (TArrayKind * ArrayDim list * PasType)
     | TkSet of PasType
@@ -75,12 +76,13 @@ type TypeKind =
 and PasType = {
       name: CompilerName
       kind: TypeKind
-      raw : TypeReference
+      raw : ITypeDefOrRef
     }
 with
     static member NewPtr(pt, ?name) =
         let name = defaultArg name ""
-        {name=CompilerName.FromString name;raw=PointerType(pt.raw);kind=TkPointer(pt)}
+        let ptrType = pt.raw.ToTypeSig() |> PtrSig |> TypeSpecUser
+        {name=CompilerName.FromString name;raw=ptrType;kind=TkPointer(pt)}
 
     member this.SizeOf =
         let ordTypeSize = function
@@ -96,30 +98,31 @@ with
             | FtSingle -> 4
         | TkRecord (_, s) -> s
         | TkPointer _ -> ptrSize
-        | TkArray _ -> (this.raw :?> TypeDefinition).ClassSize
+        | TkArray _ -> int <| this.raw.ResolveTypeDefThrow().ClassSize
         | TkUnknown s -> s
         | TkSet _ -> 256
 
     member this.ResolveArraySelfType() =
         match this.kind with
         | TkArray(_,h::_,_) -> h.selfType := this
-        | _ -> failwith "IE"
+        | _ -> raise <| InternalError "2020102000"
         this
 
     member this.IndKind =
-        match this.raw.MetadataType with
-        | MetadataType.Pointer -> Ind_U
-        | MetadataType.SByte   -> Ind_I1
-        | MetadataType.Int16   -> Ind_I2
-        | MetadataType.Int32   -> Ind_I4
-        | MetadataType.Int64   -> Ind_I8
-        | MetadataType.Byte    -> Ind_U1
-        | MetadataType.Boolean -> Ind_U1
-        | MetadataType.Single  -> Ind_R4
-        | MetadataType.UInt16  -> Ind_U2
-        | MetadataType.UInt32  -> Ind_U4
-        | MetadataType.UInt64  -> Ind_U8
-        | _ -> failwith "IE"
+        match this.raw.ToTypeSig().ElementType with
+        | ElementType.Ptr     -> Ind_U
+        | ElementType.I1      -> Ind_I1
+        | ElementType.I2      -> Ind_I2
+        | ElementType.I4      -> Ind_I4
+        | ElementType.I8      -> Ind_I8
+        | ElementType.Boolean -> Ind_U1
+        | ElementType.R4      -> Ind_R4
+        | ElementType.R8      -> Ind_R8
+        | ElementType.U1      -> Ind_U1
+        | ElementType.U2      -> Ind_U2
+        | ElementType.U4      -> Ind_U4
+        | ElementType.U8      -> Ind_U8
+        | _ -> raise <| InternalError "2020102001"
 
 and [<CustomEquality; NoComparison>]
     ArrayDim = { low: int; high: int; size: int; elemSize: int; elemType: PasType; selfType: PasType ref }

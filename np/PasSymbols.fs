@@ -1,8 +1,7 @@
 ﻿namespace Pas
 
-open Mono.Cecil
-open Mono.Cecil.Cil
-open NP
+open dnlib.DotNet
+open dnlib.DotNet.Emit
 
 [<AutoOpen>]
 module ConstSymbols =
@@ -21,7 +20,7 @@ module ConstSymbols =
         | ConstFloat of single
         | ConstBool of byte
         | ConstTempValue of byte[] * PasType
-        | ConstValue of FieldDefinition * PasType
+        | ConstValue of FieldDef * PasType
 
 [<AutoOpen>]
 module IntrinsicSymbols =
@@ -63,24 +62,24 @@ module Symbols =
     type MethodInfo = {
         paramList: MethodParam array
         result: PasType option
-        raw: MethodReference
+        raw: IMethod
     }
 
     type VariableKind =
-         | LocalVariable of VariableDefinition
-         | GlobalVariable of FieldDefinition
-         | ParamVariable of ParamRefKind * ParameterDefinition
+         | LocalVariable of Local
+         | GlobalVariable of FieldDef
+         | ParamVariable of ParamRefKind * Parameter
     with
         member self.Type() =
             match self with
-            | LocalVariable v -> v.VariableType
+            | LocalVariable v -> v.Type
             | GlobalVariable v -> v.FieldType
-            | ParamVariable (_, v) -> v.ParameterType
+            | ParamVariable (_, v) -> v.Type
 
     type LastTypePoint =
         | LTPVar of VariableKind * PasType
         | LTPDeref of PasType * bool
-        | LTPStruct of FieldDefinition * PasType
+        | LTPStruct of FieldDef * PasType
         | LTPNone
     with
         member self.ToTypeRef =
@@ -146,7 +145,7 @@ module Symbols =
     type SymbolLoad =
         | DerefLoad
         | ElemLoad of (ExprEl * ArrayDim) list * PasType
-        | StructLoad of (FieldDefinition * PasType) list
+        | StructLoad of (FieldDef * PasType) list
         | VariableLoad of (VariableKind * PasType)
         | ValueLoad of ValueLoad
         | CallableLoad of MethodSym

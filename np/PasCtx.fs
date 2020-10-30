@@ -3,15 +3,15 @@
 open System
 open System.Collections.Generic
 open System.Runtime.CompilerServices
-open Mono.Cecil
-open Mono.Cecil.Cil
+open dnlib.DotNet
+open dnlib.DotNet.Emit
 open Pas.Intrinsics
 
 type ScopeRec = {
     Namespace: string
     State: PasState
-    Unit: TypeDefinition // all procedures and global variables are defined in special class
-    Module: ModuleDefinition // main module of application / library
+    Unit: TypeDef // all procedures and global variables are defined in special class
+    Module: ModuleDef // main module of application / library
 } with
     static member Create ns state defs m = {
             Namespace = ns
@@ -115,10 +115,13 @@ type Ctx = {
                     | None ->
                         let symbols = snd self.symbols.Head
                         let paramName = sprintf "@nested$%d" symbols.Count
-                        let pd = ParameterDefinition(paramName, ParameterAttributes.None, ByReferenceType(t.raw))
-                        let newSym = VariableSym(ParamVariable(RefVar, pd), t)
+                        let md = originMd.raw.ResolveMethodDef()
+                        let paramIdx = md.ParamDefs.Count
+                        let pd = ParamDefUser(UTF8String paramName, paramIdx + 1 |> uint16)
+                        md.ParamDefs.Add pd
+                        t.raw.ToTypeSig() |> ByRefSig |> md.MethodSig.Params.Add
+                        let newSym = VariableSym(ParamVariable(RefVar, md.Parameters.[paramIdx]), t)
                         symbols.Add(CompilerName.FromString paramName, newSym)
-                        originMd.raw.Parameters.Add pd
                         nestedParams := (sym, newSym)::!nestedParams
                         Some newSym
                     | Some(_, newSym) -> Some newSym
@@ -151,7 +154,7 @@ type Ctx = {
 //                         value
 //                     | _ ->
         let varType = defaultArg kind self.sysTypes.int32
-        let varDef = varType.raw |> VariableDefinition
+        let varDef = varType.raw.ToTypeSig() |> Local
         let varKind = varDef |> LocalVariable
         self.res.Add(DeclareLocal(varDef))
         self.variables.Head.Add(varKind)
@@ -211,12 +214,12 @@ module Ctx =
 
     type ModuleDetails = {
             TypesCount: int ref
-            MainModule: ModuleDefinition
+            MainModule: ModuleDef
             Namespace: string
-            UnitModule: TypeDefinition
-            ValueType: TypeReference
-            UnsafeValueTypeAttr: MethodReference
-            anonSizeTypes: Dictionary<int, TypeDefinition>
+            UnitModule: TypeDef
+            ValueType: TypeRef
+            UnsafeValueTypeAttr: CustomAttribute
+            anonSizeTypes: Dictionary<int, TypeDef>
         } with
         static member Create (sr: ScopeRec) =
             let m = sr.Module
@@ -225,8 +228,10 @@ module Ctx =
                 MainModule = m
                 Namespace = sr.Namespace
                 UnitModule = sr.Unit
-                ValueType = m.ImportReference(typeof<ValueType>)
-                UnsafeValueTypeAttr = m.ImportReference(typeof<UnsafeValueTypeAttribute>.GetConstructor(Type.EmptyTypes))
+                ValueType = m.CorLibTypes.GetTypeRef("System", "ValueType") |> m.Import
+                UnsafeValueTypeAttr =
+                    let td = m.CorLibTypes.GetTypeRef("System.Runtime.CompilerServices", "UnsafeValueTypeAttribute").ResolveTypeDef()
+                    td.FindDefaultConstructor() |> m.Import |> CustomAttribute
                 anonSizeTypes = Dictionary<_, _>()
             }
 
@@ -234,14 +239,13 @@ module Ctx =
             incr self.TypesCount
             "T" + string !self.TypesCount
 
-        member self.NewSizedType size =
+        member self.NewSizedType (size: int) =
                 let attributes = TypeAttributes.SequentialLayout ||| TypeAttributes.AnsiClass ||| TypeAttributes.Sealed ||| TypeAttributes.Public
-                let at = TypeDefinition(self.Namespace, self.UniqueTypeName(), attributes)
-
-                at.CustomAttributes.Add(CustomAttribute self.UnsafeValueTypeAttr)
-                at.ClassSize <- size
-                at.PackingSize <- 1s;
-                at.BaseType <- self.ValueType
+                let at = TypeDefUser(UTF8String self.Namespace, self.UniqueTypeName() |> UTF8String, self.ValueType)
+                at.Attributes <- attributes
+                at.CustomAttributes.Add(self.UnsafeValueTypeAttr)
+                at.ClassSize <- uint32 size
+                at.PackingSize <- 1us;
                 self.MainModule.Types.Add(at)
                 at
 
@@ -251,14 +255,14 @@ module Ctx =
             | _ ->
                 let at = self.NewSizedType size
                 self.anonSizeTypes.Add(size, at)
-                at
+                at :> TypeDef
 
         member self.AddBytesConst (bytes: byte[]) =
             let ast = self.SelectAnonSizeType bytes.Length
-            let fd = FieldDefinition(null, FieldAttributes.Public ||| FieldAttributes.Static ||| FieldAttributes.HasFieldRVA, ast)
+            let fd = FieldDefUser(null, FieldSig(ast.ToTypeSig()), FieldAttributes.Public ||| FieldAttributes.Static ||| FieldAttributes.HasFieldRVA)
             fd.InitialValue <- bytes
             self.UnitModule.Fields.Add fd
-            fd
+            fd :> FieldDef
 
     type SystemTypes = {
         int32: PasType
@@ -280,34 +284,34 @@ module Ctx =
     }
 
     type SystemProc = {
-        GetMem: MethodReference
-        FreeMem: MethodReference
-        WriteLine: MethodReference
-        Exit: MethodReference
-        ConvertU1ToChar: MethodReference
-        PtrToStringAnsi: MethodReference
-        Round: MethodReference
+        GetMem: IMethod
+        FreeMem: IMethod
+        WriteLine: IMethod
+        Exit: IMethod
+        ConvertU1ToChar: IMethod
+        PtrToStringAnsi: IMethod
+        Round: IMethod
     }
 
     let private createSystemTypes details (symbols: Dictionary<CompilerName, Symbol>) =
         let mb = details.MainModule
-        let vt = mb.ImportReference(typeof<ValueType>)
-        let ot = mb.ImportReference(typeof<obj>)
+        let valueType = mb.ImportAsTypeSig(typeof<ValueType>).ToTypeDefOrRef()
+        let ot = mb.ImportAsTypeSig(typeof<obj>)
         let addAnyType name raw kind =
             let t = {name=name;raw=raw;kind=kind}
             Utils.addMetaType symbols name t
-        let addOrdType name raw ordKind ordType = TkOrd(ordKind, ordType) |> addAnyType (CompilerName.FromString name) raw
-        let addFloatType name raw = TkFloat(FtSingle) |> addAnyType (CompilerName.FromString name) raw
+        let addOrdType name (raw: CorLibTypeSig) ordKind ordType = TkOrd(ordKind, ordType) |> addAnyType (CompilerName.FromString name) (raw.ToTypeDefOrRef())
+        let addFloatType name (raw: CorLibTypeSig) = TkFloat(FtSingle) |> addAnyType (CompilerName.FromString name) (raw.ToTypeDefOrRef())
         let addArrayType name (p: PasType) ad = addAnyType name p.raw ad
 
-        addOrdType "Byte" mb.TypeSystem.Byte OkInteger (OtUByte(int Byte.MinValue, int Byte.MaxValue)) |> ignore
-        addOrdType "ShortInt" mb.TypeSystem.SByte OkInteger (OtSByte(int SByte.MinValue, int SByte.MaxValue)) |> ignore
-        addOrdType "Word" mb.TypeSystem.UInt16 OkInteger (OtUWord(int UInt16.MinValue, int UInt16.MaxValue)) |> ignore
-        addOrdType "SmallInt" mb.TypeSystem.Int16 OkInteger (OtSWord(int Int16.MinValue, int Int16.MaxValue)) |> ignore
-        addOrdType "LongWord" mb.TypeSystem.UInt32 OkInteger (OtULong(int UInt32.MinValue, int UInt32.MaxValue)) |> ignore
-        addOrdType "UInt64" mb.TypeSystem.UInt64 OkInteger (OtUQWord(UInt64.MinValue, UInt64.MaxValue)) |> ignore
-        let charType = addOrdType "Char" mb.TypeSystem.Byte OkChar (OtUByte(int Byte.MinValue, int Byte.MaxValue))
-        let strType = {name=AnonName;raw=(details.NewSizedType 256) :> TypeReference;kind=TkUnknown 256}
+        addOrdType "Byte" mb.CorLibTypes.Byte OkInteger (OtUByte(int Byte.MinValue, int Byte.MaxValue)) |> ignore
+        addOrdType "ShortInt" mb.CorLibTypes.SByte OkInteger (OtSByte(int SByte.MinValue, int SByte.MaxValue)) |> ignore
+        addOrdType "Word" mb.CorLibTypes.UInt16 OkInteger (OtUWord(int UInt16.MinValue, int UInt16.MaxValue)) |> ignore
+        addOrdType "SmallInt" mb.CorLibTypes.Int16 OkInteger (OtSWord(int Int16.MinValue, int Int16.MaxValue)) |> ignore
+        addOrdType "LongWord" mb.CorLibTypes.UInt32 OkInteger (OtULong(int UInt32.MinValue, int UInt32.MaxValue)) |> ignore
+        addOrdType "UInt64" mb.CorLibTypes.UInt64 OkInteger (OtUQWord(UInt64.MinValue, UInt64.MaxValue)) |> ignore
+        let charType = addOrdType "Char" mb.CorLibTypes.Byte OkChar (OtUByte(int Byte.MinValue, int Byte.MaxValue))
+        let strType = {name=AnonName;raw=(details.NewSizedType 256) :> TypeDef;kind=TkUnknown 256}
         let strDim = {
                         low = 1
                         high = 255
@@ -319,39 +323,41 @@ module Ctx =
         // allow to use string as array
 
         // file = name + handle
-        let fileType = (details.NewSizedType (256 + ptrSize)) :> TypeReference
+        let fileType = (details.NewSizedType (256 + ptrSize)) :> TypeDef
         let tidf = CompilerName <| TIdFile()
         let fileType = Utils.addMetaType symbols tidf {name=tidf;kind=TkUnknown(256 + ptrSize);raw=fileType}
+        let voidTypeSig = mb.CorLibTypes.Void
+        let voidType = voidTypeSig.ToTypeDefOrRef()
         {
-            int32 = addOrdType "Integer" mb.TypeSystem.Int32 OkInteger (OtSLong(int Int32.MinValue, int Int32.MaxValue))
-            int64 = addOrdType "Int64" mb.TypeSystem.Int64 OkInteger (OtSQWord(Int64.MinValue, Int64.MaxValue))
-            single = addFloatType "Real" mb.TypeSystem.Single
+            int32 = addOrdType "Integer" mb.CorLibTypes.Int32 OkInteger (OtSLong(int Int32.MinValue, int Int32.MaxValue))
+            int64 = addOrdType "Int64" mb.CorLibTypes.Int64 OkInteger (OtSQWord(Int64.MinValue, Int64.MaxValue))
+            single = addFloatType "Real" mb.CorLibTypes.Single
             string = addArrayType (CompilerName <| TIdString()) strType (TkArray(AkSString 255uy, [strDim], charType))
             setStorage = {name=AnonName;raw=details.NewSizedType 256;kind=TkUnknown 0}
             char = charType
             file = fileType
-            value = {name=AnonName;raw=vt;kind=TkUnknown 0}
-            pointer = addAnyType (CompilerName.FromString "Pointer") (PointerType mb.TypeSystem.Void) (TkPointer({name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}))
-            unit = {name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}
-            unknown = {name=ErrorName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}
-            constParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown 0}
-            varParam = {name=AnonName;raw=PointerType(mb.TypeSystem.Void);kind=TkUnknown 0}
-            boolean = addOrdType "Boolean" mb.TypeSystem.Byte OkBool (OtUByte(0, 1))
-            net_obj = {name=AnonName;raw=ot;kind=TkUnknown 0}
-            net_void = {name=AnonName;raw=mb.TypeSystem.Void;kind=TkUnknown 0}
+            value = {name=AnonName;raw=valueType;kind=TkUnknown 0}
+            pointer = addAnyType (CompilerName.FromString "Pointer") (PointerType voidTypeSig) (TkPointer({name=AnonName;raw=voidType;kind=TkUnknown 0}))
+            unit = {name=AnonName;raw=voidType;kind=TkUnknown 0}
+            unknown = {name=ErrorName;raw=voidType;kind=TkUnknown 0}
+            constParam = {name=AnonName;raw=PointerType(voidTypeSig);kind=TkUnknown 0}
+            varParam = {name=AnonName;raw=PointerType(voidTypeSig);kind=TkUnknown 0}
+            boolean = addOrdType "Boolean" mb.CorLibTypes.Byte OkBool (OtUByte(0, 1))
+            net_obj = {name=AnonName;raw=ot.ToTypeDefOrRef();kind=TkUnknown 0}
+            net_void = {name=AnonName;raw=voidType;kind=TkUnknown 0}
         }
 
     let private createSystemProc details =
         let mb = details.MainModule
 //        let mathTrunc = typeof<System.MathF>.GetMethod("Truncate", [| typeof<single> |])  |> mb.ImportReference
         {
-            GetMem = typeof<System.Runtime.InteropServices.Marshal>.GetMethod("AllocCoTaskMem")  |> mb.ImportReference
-            FreeMem = typeof<System.Runtime.InteropServices.Marshal>.GetMethod("FreeCoTaskMem")  |> mb.ImportReference
-            WriteLine = typeof<System.Console>.GetMethod("WriteLine", [| typeof<string> ; typeof<obj array> |]) |> mb.ImportReference
-            Exit = typeof<System.Environment>.GetMethod("Exit", [| typeof<int> |]) |> mb.ImportReference
-            ConvertU1ToChar = typeof<System.Convert>.GetMethod("ToChar", [| typeof<byte> |]) |> mb.ImportReference
-            PtrToStringAnsi = typeof<System.Runtime.InteropServices.Marshal>.GetMethod("PtrToStringAnsi", [| typeof<nativeint> |]) |> mb.ImportReference
-            Round = typeof<System.MathF>.GetMethod("Round", [| typeof<single> |])  |> mb.ImportReference
+            GetMem = typeof<System.Runtime.InteropServices.Marshal>.GetMethod("AllocCoTaskMem") |> mb.Import
+            FreeMem = typeof<System.Runtime.InteropServices.Marshal>.GetMethod("FreeCoTaskMem") |> mb.Import
+            WriteLine = typeof<System.Console>.GetMethod("WriteLine", [| typeof<string> ; typeof<obj array> |]) |> mb.Import
+            Exit = typeof<System.Environment>.GetMethod("Exit", [| typeof<int> |]) |> mb.Import
+            ConvertU1ToChar = typeof<System.Convert>.GetMethod("ToChar", [| typeof<byte> |]) |> mb.Import
+            PtrToStringAnsi = typeof<System.Runtime.InteropServices.Marshal>.GetMethod("PtrToStringAnsi", [| typeof<nativeint> |]) |> mb.Import
+            Round = typeof<System.MathF>.GetMethod("Round", [| typeof<single> |])  |> mb.Import
         }
 
     let private addSystemRoutines ctx =
@@ -394,8 +400,8 @@ module Ctx =
                result = Some tsingle
                raw = raw
            }, ref[]) |> MethodSym
-        let mathLog = typeof<System.MathF>.GetMethod("Log", [| typeof<single> |])  |> ctx.details.MainModule.ImportReference
-        let mathExp = typeof<System.MathF>.GetMethod("Exp", [| typeof<single> |])  |> ctx.details.MainModule.ImportReference
+        let mathLog = typeof<System.MathF>.GetMethod("Log", [| typeof<single> |])  |> ctx.details.MainModule.Import
+        let mathExp = typeof<System.MathF>.GetMethod("Exp", [| typeof<single> |])  |> ctx.details.MainModule.Import
         symbols.Add(CompilerName.FromString "Exp", singleScalar mathExp)
         symbols.Add(CompilerName.FromString "Ln", singleScalar mathLog)
         ctx
@@ -452,9 +458,9 @@ module TypesDef =
             match ctx.FindType typeName with
             | Some t -> t
             | _ -> failwith "IE unknown type"
-        let mutable pt = PointerType(t.raw)
-        for i = 2 to count do pt <- PointerType(pt)
-        addType ctx name {name=name;kind=TkPointer(t);raw=pt:>TypeReference}
+        let mutable pt = PointerType(t.raw.ToTypeSig())
+        for i = 2 to count do pt <- PointerType(pt.ToTypeSig())
+        addType ctx name {name=name;kind=TkPointer(t);raw=pt}
 
     let getInternalType (ctx: Ctx) t =
         match ctx.TryFindTypeId t with
@@ -472,7 +478,7 @@ module TypesDef =
         let newSubType (dims, size) (typ: PasType, typSize) name =
             let size = size * typSize
             let at = ctx.details.NewSizedType size
-            FieldDefinition("item0", FieldAttributes.Public, typ.raw)
+            FieldDefUser(UTF8String "item0", FieldSig(typ.raw.ToTypeSig()), FieldAttributes.Public)
             |> at.Fields.Add
             let name = CompilerName.FromString name
             {name=name;raw=at;kind=TkArray(AkArray,dims,typ)}.ResolveArraySelfType()
@@ -825,7 +831,7 @@ module EvalExpr =
             [+(if byRef then Ldsflda fd else Ldsfld fd)], ft
 
     let chainReaderFactory (ctx: Ctx) asValue addr ltp =
-        let valOrPtr v p (t: TypeReference) = (if asValue || (t :? PointerType && addr = false) then v else p) |> List.singleton
+        let valOrPtr v p (t: ITypeDefOrRef) = (if asValue || (t.ToTypeSig().IsPointer && addr = false) then v else p) |> List.singleton
         match ltp with
         | LTPVar(v, vt) -> match v with
                            | LocalVariable v -> valOrPtr +(Ldloc v) +(Ldloca v) vt.raw
@@ -842,13 +848,13 @@ module EvalExpr =
                              | RefUntypedVar | RefUntypedConst ->
                                  if asValue then failwith "IE"
                                  [+Ldarg v]
-        | LTPStruct (fld, _) -> valOrPtr +(Ldfld fld) +(Ldflda fld) fld.FieldType
+        | LTPStruct (fld, _) -> valOrPtr +(Ldfld fld) +(Ldflda fld) (fld.FieldType.ToTypeDefOrRef())
         | LTPDeref (dt, force) ->
             match dt, addr, force, asValue with
             | _, true, _, _ -> []
             | NumericType, _, _, _ | ChrType, _, _, _ -> dt.IndKind |> Ldind |> (~+) |> List.singleton
             | _, _, true, _ | _, _, _, true ->
-                if dt.raw.MetadataType <> MetadataType.ValueType then failwith "IE"
+                if (dt.raw.ToTypeSig()).IsValueType = false then failwith "IE"
                 [+Ldobj dt.raw]
             | _ -> []
         | LTPNone -> []
@@ -864,7 +870,7 @@ module EvalExpr =
                                | RefUntypedConst | RefUntypedVar -> failwith "IE"
         | LTPStruct(fld, _) -> [+Stfld fld]
         | LTPDeref(dt, _) ->
-            if dt.raw.MetadataType = MetadataType.ValueType then
+            if (dt.raw.ToTypeSig()).IsValueType then
                 [+Stobj dt.raw]
             else
                 dt.IndKind |> Stind |> (~+) |> List.singleton
@@ -1555,7 +1561,7 @@ module Intrinsics =
                                [
                                    +Conv Conv_U1
                                    +Call ctx.sysProc.ConvertU1ToChar
-                                   +Box ctx.details.MainModule.TypeSystem.Char
+                                   +Box(ctx.details.MainModule.CorLibTypes.Char.ToTypeDefOrRef())
                                ]
                                |> putArrayElem i
                            | _ -> [+Box t.raw] |> putArrayElem i
@@ -1740,7 +1746,7 @@ module Intrinsics =
             doParameter (param { float; OR; int })
                 [
                     yield! param.Instructions
-                    if (f: MethodReference voption).IsSome then +Call f.Value
+                    if (f: IMethod voption).IsSome then +Call f.Value
                     +Conv Conv_I8
                 ]
         }

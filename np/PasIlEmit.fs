@@ -1,8 +1,8 @@
 ﻿[<AutoOpen>]
 module Pas.IlEmit
 
-open Mono.Cecil
-open Mono.Cecil.Cil
+open dnlib.DotNet
+open dnlib.DotNet.Emit
 open System.Linq
 
 let rec brtoinstr l =
@@ -95,7 +95,7 @@ and private atomInstr = function
     | Initobj t    -> Instruction.Create(OpCodes.Initobj, t)
     | Newarr e     -> Instruction.Create(OpCodes.Newarr, e)
     | Stelem ek    -> match ek with
-                      | Elem e   -> Instruction.Create(OpCodes.Stelem_Any, e)
+                      | Elem e   -> Instruction.Create(OpCodes.Stelem, e)
                       | Elem_I   -> Instruction.Create(OpCodes.Stelem_I)
                       | Elem_I1  -> Instruction.Create(OpCodes.Stelem_I1)
                       | Elem_I2  -> Instruction.Create(OpCodes.Stelem_I2)
@@ -157,16 +157,16 @@ let private instr = function
 let (~+) (i: AtomInstruction) = IlResolved(i, i |> atomInstr)
 let (~+.) (i: AtomInstruction) = IlResolvedEx(i, i |> atomInstr, ref [])
 
-let emit (ilg : Cil.ILProcessor) inst =
+let emit (body : CilBody) inst =
     match inst with
-    | DeclareLocal t -> t |> ilg.Body.Variables.Add
-    | InstructionList p -> p |> List.iter (instr >> ilg.Append)
+    | DeclareLocal t -> t |> body.Variables.Add |> ignore
+    | InstructionList p -> p |> List.iter (instr >> body.Instructions.Add)
     | HandleFunction (instructionsBlock, finallyBlock, endOfAll) ->
         let appendAndReplaceRetGen (brOpcode: OpCode) (goto: Instruction) (il: IlInstruction) =
             match il with
             | IlResolvedEx(_,i,_) when i.OpCode = OpCodes.Ret -> il.FixRefs <| Instruction.Create(brOpcode, goto)
             | _ -> il |> instr
-            |> (fun i -> ilg.Append i; i)
+            |> (fun i -> body.Instructions.Add i; i)
 
         let finallyBlock, appendAndReplaceRet = match finallyBlock with
                                                 | Some block -> block, appendAndReplaceRetGen OpCodes.Leave
@@ -181,17 +181,17 @@ let emit (ilg : Cil.ILProcessor) inst =
         let replaceRet = appendAndReplaceRet beginOfEnd
         let start = processList replaceRet instructionsBlock
         if List.isEmpty finallyBlock = false then
-            if ilg.Body.Instructions.Last().OpCode <> OpCodes.Leave then
-                ilg.Append(Instruction.Create(OpCodes.Leave, beginOfEnd))
+            if body.Instructions.Last().OpCode <> OpCodes.Leave then
+                body.Instructions.Add(Instruction.Create(OpCodes.Leave, beginOfEnd))
             let startFinally = processList replaceRet finallyBlock
             ExceptionHandler(ExceptionHandlerType.Finally,
                                            TryStart     = start,
                                            TryEnd       = startFinally,
                                            HandlerStart = startFinally,
                                            HandlerEnd   = beginOfEnd)
-            |> ilg.Body.ExceptionHandlers.Add
-        ilg.Append beginOfEnd
-        List.iter (instr >> ilg.Append) endOfAll.Tail
+            |> body.ExceptionHandlers.Add
+        body.Instructions.Add beginOfEnd
+        List.iter (instr >> body.Instructions.Add) endOfAll.Tail
 
 let Ldc_I4 i = LdcI4 i |> Ldc
 let Ldc_U1 (i: byte) = [
@@ -200,19 +200,20 @@ let Ldc_U1 (i: byte) = [
 ]
 let Ldc_R4 r = LdcR4 r |> Ldc
 
-let typeRefToConv (r: TypeReference) =
-    match r.MetadataType with
-    | MetadataType.Pointer -> +Conv Conv_U
-    | MetadataType.SByte   -> +Conv Conv_I1
-    | MetadataType.Int16   -> +Conv Conv_I2
-    | MetadataType.Int32   -> +Conv Conv_I4
-    | MetadataType.Int64   -> +Conv Conv_I8
-    | MetadataType.Byte    -> +Conv Conv_U1
-    | MetadataType.Boolean -> +Conv Conv_U1
-    | MetadataType.Single  -> +Conv Conv_R4
-    | MetadataType.UInt16  -> +Conv Conv_U2
-    | MetadataType.UInt32  -> +Conv Conv_U4
-    | MetadataType.UInt64  -> +Conv Conv_U8
+let typeRefToConv (r: ITypeDefOrRef) =
+    match r.ToTypeSig().ElementType with
+    | ElementType.Ptr -> +Conv Conv_U
+    | ElementType.I1 -> +Conv Conv_I1
+    | ElementType.I2 -> +Conv Conv_I2
+    | ElementType.I4 -> +Conv Conv_I4
+    | ElementType.I8 -> +Conv Conv_I8
+    | ElementType.Boolean -> +Conv Conv_U1
+    | ElementType.R4 -> +Conv Conv_R4
+    | ElementType.R8 -> +Conv Conv_R8
+    | ElementType.U1 -> +Conv Conv_U1
+    | ElementType.U2 -> +Conv Conv_U2
+    | ElementType.U4 -> +Conv Conv_U4
+    | ElementType.U8 -> +Conv Conv_U8
     | _ -> failwith "IE"
 
 // TODO for further optimizations

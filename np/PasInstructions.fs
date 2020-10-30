@@ -1,8 +1,8 @@
 ﻿[<AutoOpen>]
 module Pas.Instructions
 
-open Mono.Cecil
-open Mono.Cecil.Cil
+open dnlib.DotNet
+open dnlib.DotNet.Emit
 
 type IndirectKind =
     | Ind_I
@@ -34,7 +34,7 @@ type ConvKind =
     | Conv_R8
 
 type ElemKind =
-    | Elem of TypeReference
+    | Elem of ITypeDefOrRef
     | Elem_I
     | Elem_I1
     | Elem_I2
@@ -70,30 +70,30 @@ type LdcKind =
 
 type AtomInstruction =
     | Unknown
-    | Call of MethodReference
+    | Call of IMethod
     | Ldc of LdcKind
-    | Ldsfld of FieldDefinition
-    | Ldsflda of FieldDefinition
-    | Ldarg of ParameterDefinition
-    | Ldarga of ParameterDefinition
-    | Ldloc of VariableDefinition
-    | Ldloca of VariableDefinition
-    | Ldfld of FieldDefinition
-    | Ldflda of FieldDefinition
+    | Ldsfld of FieldDef
+    | Ldsflda of FieldDef
+    | Ldarg of Parameter
+    | Ldarga of Parameter
+    | Ldloc of Local
+    | Ldloca of Local
+    | Ldfld of FieldDef
+    | Ldflda of FieldDef
     | Ldind of IndirectKind
-    | Ldobj of TypeReference
+    | Ldobj of ITypeDefOrRef
     | Ldnull
-    | Stsfld of FieldDefinition
-    | Starg of ParameterDefinition
-    | Stloc of VariableDefinition
-    | Stfld of FieldDefinition
+    | Stsfld of FieldDef
+    | Starg of Parameter
+    | Stloc of Local
+    | Stfld of FieldDef
     | Stind of IndirectKind
     | Conv of ConvKind
     | Cpblk
-    | Cpobj of TypeReference
-    | Stobj of TypeReference
-    | Initobj of TypeReference
-    | Newarr of TypeReference
+    | Cpobj of ITypeDefOrRef
+    | Stobj of ITypeDefOrRef
+    | Initobj of ITypeDefOrRef
+    | Newarr of ITypeDefOrRef
     | Stelem of ElemKind
     | Unaligned of byte
     | AddInst
@@ -108,7 +108,7 @@ type AtomInstruction =
     | Rem
     | NotInst
     | NegInst
-    | Box of TypeReference
+    | Box of ITypeDefOrRef
     | Dup
     | Pop
     | Ret
@@ -159,6 +159,6 @@ let ilToAtom ilList =
     |> List.map (function | IlResolved(a,_) -> a | IlResolvedEx(a,_,_) -> a | _ -> failwith "IE")
 
 type MetaInstruction =
-    | DeclareLocal of VariableDefinition
+    | DeclareLocal of Local
     | InstructionList of IlInstruction list
     | HandleFunction of IlInstruction list * IlInstruction list option * IlInstruction list

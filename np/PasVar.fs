@@ -9,7 +9,7 @@ open System.Collections.Generic
 open FParsec
 open Fake.IO
 open Fake.IO.FileSystemOperators
-open Mono.Cecil
+open dnlib.DotNet
 
 [<Literal>]
 let DefaultBlockSize = 4096L;//196608L // 3*2^16 = 200k
@@ -115,8 +115,8 @@ type PasTestState = {
 type PascalModule = {
     Messages: CompilerMessages
     Obj: obj option
-    Init: MethodDefinition
-    Fini: MethodDefinition
+    Init: IMethod
+    Fini: IMethod
 }
 
 module PascalModule =
@@ -483,3 +483,5 @@ type PasState with
 
 let opp = OperatorPrecedenceParser<ExprEl,unit,PasState>()
 let popp = OperatorPrecedenceParser<ExprEl,unit,PasState>()
+
+let PointerType (s: TypeSig) = (s |> PtrSig).ToTypeDefOrRef()

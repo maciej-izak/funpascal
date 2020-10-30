@@ -27,10 +27,10 @@
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="dnlib" Version="3.3.2" />
     <PackageReference Include="Fake.Core.Process" Version="5.20.0" />
     <PackageReference Include="Fake.IO.FileSystem" Version="5.20.0" />
     <PackageReference Include="Fake.Runtime" Version="5.20.0" />
-    <PackageReference Include="Mono.Cecil" Version="0.11.1" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="FParsecCS, Version=1.0.4.0, Culture=neutral, PublicKeyToken=null">

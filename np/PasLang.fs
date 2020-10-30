@@ -3,9 +3,8 @@ namespace rec Pas
 open System
 open System.Collections.Generic
 
-open Mono.Cecil
-open Mono.Cecil.Cil
-open Mono.Cecil.Rocks
+open dnlib.DotNet
+open dnlib.DotNet.Emit
 
 type BuildScope =
     | MainScope of ScopeRec * Ctx list
@@ -55,7 +54,7 @@ module LangStmt =
                     let vt = match !ltp with // TODO allow structs only ? (ValueType as records/classes only)
                              | LTPVar(_,t) -> t
                              | LTPStruct(_,t) -> t
-                             | LTPDeref(dt,_) when dt.raw.MetadataType = MetadataType.ValueType -> dt
+                             | LTPDeref(dt,_) when dt.raw.IsValueType -> dt
                              | _ -> failwith "IE"
                     // TODO check type of vt for with ?
                     match vt.kind with | TkRecord _ -> () | _ -> failwithf "IE bad type for with %A" vt.kind
@@ -65,15 +64,15 @@ module LangStmt =
                             yield! cl
                             yield! ctx.ChainReaderFactory false true !ltp
                             +Stloc vv
-                        ], (vv, vt.raw :?> TypeDefinition, pvt))
+                        ], (vv, vt.raw, pvt))
                 | None -> None
 
             match loadVarW with
             | Some loadVarW ->
                 let newSymbols = Dictionary<_,_>()
                 let (v, td, ptd) = snd loadVarW
-                for f in td.Fields do
-                    newSymbols.Add(CompilerName.FromString f.Name, WithSym(LocalVariable v, ptd))
+                for f in td.ResolveTypeDef().Fields do
+                    newSymbols.Add(CompilerName.FromString (string f.Name), WithSym(LocalVariable v, ptd))
                 ils.Add(fst loadVarW)
                 (WithSpace, newSymbols)::symbols
             | None -> symbols
@@ -354,17 +353,19 @@ module LangDecl =
 
     let declTypeRecord (packed, fields) name ctx =
         let mutable size = 0;
-        let td = TypeDefinition(ctx.details.Namespace, ctx.details.UniqueTypeName(), TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout)
-        td.ClassSize <- 0
+        let td = TypeDefUser(UTF8String ctx.details.Namespace, UTF8String(ctx.details.UniqueTypeName()))
+        td.Attributes <- TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout
+        td.ClassSize <- 0u
         td.BaseType <- ctx.sysTypes.value.raw
-        td.PackingSize <- 1s // if packed then 1s else 0s
-        let fieldsMap = Dictionary<_,_>()
+        td.PackingSize <- 1us // if packed then 1s else 0s
+        let fieldsMap = Dictionary<string,_>()
         for (names, typeName) in fields do
-            for name in names do
+            for (name: string) in names do
                 let typ = ctx.GetInternalType typeName
-                let fd = FieldDefinition(name, FieldAttributes.Public, typ.raw)
+                let fd = FieldDefUser(UTF8String name, FieldSig(typ.raw.ToTypeSig()))
+                fd.Attributes <- FieldAttributes.Public
                 td.Fields.Add fd
-                fieldsMap.Add(name, (fd,typ))
+                fieldsMap.Add(name, (fd :> FieldDef,typ))
                 size <- size + typ.SizeOf
         ctx.details.MainModule.Types.Add(td)
         ctx.AddType name {name=name;kind=TkRecord(fieldsMap, size);raw=td}
@@ -378,7 +379,7 @@ module LangDecl =
         | TypeEnum decl -> declTypeEnum decl
         | TypeRecord decl -> declTypeRecord decl
         | TypeArray(ArrayDef decl) -> declTypeArray decl
-        | _ -> failwith "IE"
+        | _ -> raise(InternalError "2020090300")
 
     let tryDeclType td (name: DIdent) (ctx: Ctx) =
         let cname = CompilerName.FromDIdent name
@@ -394,11 +395,12 @@ module LangDecl =
             | true -> ctx.variables.Head.Add vk
             | false -> ``Duplicated identifier of '%O'`` vn |> ctx.NewMsg vn
         match ctx.SymOwner with
-        | StandaloneMethod _ -> VariableDefinition (t: PasType).raw |> LocalVariable |> tryAddSymbol
+        | StandaloneMethod _ -> Local ((t: PasType).raw.ToTypeSig()) |> LocalVariable |> tryAddSymbol
         | GlobalSpace -> 
-            let fd = FieldDefinition(vn.ToString(), FieldAttributes.Public ||| FieldAttributes.Static, t.raw)
+            let fd = FieldDefUser(UTF8String(vn.ToString()), FieldSig(t.raw.ToTypeSig()))
+            fd.Attributes <- FieldAttributes.Public ||| FieldAttributes.Static
             ctx.details.UnitModule.Fields.Add fd
-            fd |> GlobalVariable |> tryAddSymbol
+            (fd:>FieldDef) |> GlobalVariable |> tryAddSymbol
         | _ -> raise(InternalError "2020082103")
 
     let declVariables variables (ctx: Ctx) =
@@ -486,32 +488,37 @@ module LangDecl =
                 let mRes, rVar = match mRes with
                                  | Some r ->
                                        let res = ctx.FindTypeId r
-                                       let resultVar = VariableDefinition res.raw |> LocalVariable
+                                       let resultVar = res.raw.ToTypeSig() |> Local |> LocalVariable
                                        newMethodSymbols.Add(CompilerName.FromString "Result", (resultVar, res) |> VariableSym)
                                        res, Some resultVar
                                  | _ -> ctx.sysTypes.net_void, None
 
-                let ps = defaultArg mPara []
+                let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
+                let methodImplAttributes = MethodImplAttributes.IL ||| MethodImplAttributes.Managed
+                let msig = MethodSig.CreateStatic(mRes.raw.ToTypeSig())
+                let md = MethodDefUser(UTF8String(name.ToString()), msig, methodImplAttributes, methodAttributes)
+                let idx = ref 1
+                let mp = defaultArg mPara []
                          |> List.collect
                             (fun (k, (ps, t)) ->
                              let t = match t with Some t -> Some(ctx.FindTypeId t) | _ -> None
-                             [for p in ps do
+                             [for (p: string) in ps do
                                  let (typ, byref, t, isref) =
                                      match k, t with
                                      | Some Const, Some t -> t.raw, RefConst, t, false
-                                     | Some Var, Some t -> ByReferenceType(t.raw) :> TypeReference, RefVar, t, true
+                                     | Some Var, Some t -> (ByRefSig(t.raw.ToTypeSig())).ToTypeDefOrRef(), RefVar, t, true
                                      | Some Const, None -> ctx.sysTypes.constParam.raw, RefUntypedConst, ctx.sysTypes.constParam, true
                                      | Some Var, None -> ctx.sysTypes.varParam.raw, RefUntypedVar, ctx.sysTypes.varParam, true
                                      | None, Some t -> t.raw, RefNone, t, false
                                      | _ -> raise(InternalError "2020082101")
-                                 let pd = ParameterDefinition(p, ParameterAttributes.None, typ)
-                                 newMethodSymbols.Add(CompilerName.FromString p, VariableSym(ParamVariable(byref, pd), t))
-                                 yield (pd, {typ=t;ref=isref})]
+                                 typ.ToTypeSig() |> msig.Params.Add
+                                 md.ParamDefs.Add(ParamDefUser(UTF8String p, uint16 !idx))
+                                 // TODO some optimizations, no need for each iteration
+                                 md.Parameters.UpdateParameterTypes()
+                                 newMethodSymbols.Add(CompilerName.FromString p, VariableSym(ParamVariable(byref, md.Parameters.[!idx-1]), t))
+                                 incr idx
+                                 yield {typ=t;ref=isref}]
                             )
-                let ps, mp = ps |> List.unzip
-                let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
-                let md = MethodDefinition(name.ToString(), methodAttributes, mRes.raw)
-                List.iter md.Parameters.Add ps
                 let methodInfo = {
                     paramList = Array.ofList mp
                     result = if rVar.IsSome then Some mRes else None
@@ -521,7 +528,7 @@ module LangDecl =
                 if not <| ctx.NewSymbols.TryAdd(methodName, ms |> Referenced |> MethodSym) then
                     ``Duplicated identifier of '%O'`` name |> ctx.NewMsg name
                 ms, newMethodSymbols, rVar
-        let methodBuilder = (fst methodSym).raw :?> MethodDefinition
+        let methodBuilder = (fst methodSym).raw.ResolveMethodDefThrow()
         match decl with
         | BodyDeclr (decls, stmts) ->
             // TODO better handle forward ?
@@ -530,17 +537,16 @@ module LangDecl =
             | Ok(res, _) -> Ctx.CompileBlock methodBuilder ctx.details.UnitModule res |> ignore
             | Error _ -> ()
         | ExternalDeclr (lib, procName) ->
-            let libRef = ModuleReference(lib)
-            ctx.details.MainModule.ModuleReferences.Add(libRef)
-            let externalAttributes = MethodAttributes.HideBySig ||| MethodAttributes.PInvokeImpl
+            let libRef = ModuleRefUser(ctx.details.MainModule, UTF8String lib)
+            let externalAttributes = MethodAttributes.HideBySig ||| MethodAttributes.PinvokeImpl
             methodBuilder.Attributes <- methodBuilder.Attributes ||| externalAttributes
             methodBuilder.IsPreserveSig <- true // as is
 
             // https://stackoverflow.com/questions/7255936/how-to-create-exported-functions-in-mono-cecil
-            methodBuilder.PInvokeInfo <-
+            methodBuilder.ImplMap <-
                          let flags = PInvokeAttributes.CharSetAnsi
                                  ||| PInvokeAttributes.SupportsLastError ||| PInvokeAttributes.CallConvWinapi
-                         PInvokeInfo(flags, procName, libRef)
+                         ImplMapUser(libRef, UTF8String procName, flags)
             ctx.details.UnitModule.Methods.Add(methodBuilder)
         | ForwardDeclr ->
             ctx.forward.Add(methodName, (methodSym, newMethodSymbols, rVar))
@@ -607,14 +613,14 @@ module LangBuilder =
 
     open System.IO
     
-    let stmtListToIl sl (ctx: Ctx) (res: VariableDefinition) =
+    let stmtListToIl sl (ctx: Ctx) (res: Local) =
         let finalizeVariables =
             ctx.variables.Head
             |> Seq.collect
                (function
                 | LocalVariable v ->
                      ctx.res.Add(DeclareLocal(v))
-                     match v.VariableType with
+                     match v.Type with
                      //| t when t = ctx.sysTypes.string -> []//stmtListToIlList ctx (IfStm())
                      | _ -> []
                 | GlobalVariable v ->
@@ -659,9 +665,10 @@ module LangBuilder =
         ||| TypeAttributes.AnsiClass
         ||| TypeAttributes.BeforeFieldInit
     
-    let sysMethodBuilder name mb =
+    let sysMethodBuilder (name: string) (mb: ModuleDef) =
         let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
-        MethodDefinition(name, methodAttributes, (mb: ModuleDefinition).TypeSystem.Void)
+        let methodImplAttributes = MethodImplAttributes.IL ||| MethodImplAttributes.Managed
+        MethodDefUser(UTF8String name, MethodSig.CreateStatic(mb.CorLibTypes.Void), methodImplAttributes, methodAttributes)
     
     type UsesModule =
         | SystemModule of DIdent
@@ -670,13 +677,15 @@ module LangBuilder =
     let systemUnitName = DIdent.FromString "System" |> SystemModule
     
     type Ctx with
-        static member CompileBlock (methodBuilder: MethodDefinition) (typeBuilder : TypeDefinition) (instr: List<MetaInstruction>) =
-            let ilGenerator = methodBuilder.Body.GetILProcessor() |> emit
+        static member CompileBlock (methodBuilder: MethodDef) (typeBuilder : TypeDef) (instr: List<MetaInstruction>) =
+            let body = CilBody()
+            methodBuilder.Body <- body
+            let ilGenerator = body |> emit
             typeBuilder.Methods.Add(methodBuilder)
             Seq.iter ilGenerator instr
-            methodBuilder.Body.InitLocals <- true
+            body.InitLocals <- true
             // https://github.com/jbevain/cecil/issues/365
-            methodBuilder.Body.OptimizeMacros()
+            body.OptimizeMacros()
             methodBuilder
 
         static member BuildDeclIl(decl, buildScope, ?resVar) =
@@ -733,18 +742,25 @@ module LangBuilder =
                
         static member BuildMainModule (pasModule: MainModuleRec, state) =
             let moduleName = pasModule.ProgramName
-            let assemblyBuilder =
-                let assemblyName = AssemblyNameDefinition(moduleName, Version(0,0,0,0))
-                AssemblyDefinition.CreateAssembly(assemblyName, moduleName, ModuleKind.Console)
-            let moduleBuilder = assemblyBuilder.MainModule
+            
+            let asmResolver = AssemblyResolver();
+            let modCtx = ModuleContext(asmResolver);
+            // All resolved assemblies will also get this same modCtx
+            asmResolver.DefaultModuleContext <- modCtx
+            let moduleBuilder = new ModuleDefUser(UTF8String moduleName)
+            moduleBuilder.Context <- modCtx
+            moduleBuilder.Kind <- ModuleKind.Console
             // for 32 bit assembly
             // moduleBuilder.Attributes <- ModuleAttributes.Required32Bit ||| moduleBuilder.Attributes
-
+            
+            (AssemblyDefUser(UTF8String moduleName, Version(0,0,0,0))).Modules.Add(moduleBuilder);
+            
             let typeBuilder =
-                TypeDefinition(moduleName, moduleName, moduleTypeAttr, moduleBuilder.TypeSystem.Object)
+                TypeDefUser(UTF8String moduleName, UTF8String moduleName, moduleBuilder.CorLibTypes.Object.ToTypeDefOrRef())
+            typeBuilder.Attributes <- moduleTypeAttr
             moduleBuilder.Types.Add(typeBuilder)
             
-            let units = Ctx.BuildUses [systemUnitName] pasModule.uses state moduleBuilder
+            let units = Ctx.BuildUses [systemUnitName] pasModule.uses state (moduleBuilder :> ModuleDef)
             
             let sr = ScopeRec.Create moduleName state typeBuilder moduleBuilder
             let (ctx, _) as ctxvd = Ctx.BuildDeclIl(pasModule.block.decl, MainScope(sr, units))
@@ -771,9 +787,9 @@ module LangBuilder =
 //                           |> InstructionList
 //                       )
                 let mainBlock = Ctx.CompileBlock (sysMethodBuilder "Main" moduleBuilder) typeBuilder res
-                assemblyBuilder.EntryPoint <- mainBlock
+                moduleBuilder.EntryPoint <- mainBlock
                 if state.HasError then None
-                else Some assemblyBuilder
+                else Some moduleBuilder
                 // TODO version of target framework
                 (*
                 let v = moduleBuilder.ImportReference(typeof<TargetFrameworkAttribute>.GetConstructor([|typeof<string>|]));
@@ -784,14 +800,15 @@ module LangBuilder =
                 assemblyBuilder.CustomAttributes.Add(c)
                 *)
         
-        static member BuildUnitModule (pasModule: UnitModuleRec, state) (moduleBuilder: ModuleDefinition) isSystem =
+        static member BuildUnitModule (pasModule: UnitModuleRec, state) (moduleBuilder: ModuleDef) isSystem =
             let moduleName = pasModule.UnitName
             let expectedModuleName = Path.GetFileNameWithoutExtension(state.fileName)
             let correctModuleName = String.Equals(expectedModuleName, moduleName, StringComparison.OrdinalIgnoreCase)
             match correctModuleName with
             | true ->
                 let typeBuilder =
-                    TypeDefinition(moduleName, moduleName, moduleTypeAttr, moduleBuilder.TypeSystem.Object)
+                    TypeDefUser(UTF8String moduleName, UTF8String moduleName, moduleBuilder.CorLibTypes.Object.TypeDefOrRef)
+                typeBuilder.Attributes <- moduleTypeAttr
                 moduleBuilder.Types.Add(typeBuilder)
 
                 // todo circural ref
