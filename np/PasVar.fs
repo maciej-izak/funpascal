@@ -483,5 +483,3 @@ type PasState with
 
 let opp = OperatorPrecedenceParser<ExprEl,unit,PasState>()
 let popp = OperatorPrecedenceParser<ExprEl,unit,PasState>()
-
-let PointerType (s: TypeSig) = (s |> PtrSig).ToTypeDefOrRef()

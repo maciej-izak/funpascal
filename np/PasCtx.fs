@@ -119,7 +119,7 @@ type Ctx = {
                         let paramIdx = md.ParamDefs.Count
                         let pd = ParamDefUser(UTF8String paramName, paramIdx + 1 |> uint16)
                         md.ParamDefs.Add pd
-                        t.raw.ToTypeSig() |> ByRefSig |> md.MethodSig.Params.Add
+                        t.Sig |> ByRefSig |> md.MethodSig.Params.Add
                         let newSym = VariableSym(ParamVariable(RefVar, md.Parameters.[paramIdx]), t)
                         symbols.Add(CompilerName.FromString paramName, newSym)
                         nestedParams := (sym, newSym)::!nestedParams
@@ -154,7 +154,7 @@ type Ctx = {
 //                         value
 //                     | _ ->
         let varType = defaultArg kind self.sysTypes.int32
-        let varDef = varType.raw.ToTypeSig() |> Local
+        let varDef = varType.Sig |> Local
         let varKind = varDef |> LocalVariable
         self.res.Add(DeclareLocal(varDef))
         self.variables.Head.Add(varKind)
@@ -219,7 +219,7 @@ module Ctx =
             UnitModule: TypeDef
             ValueType: TypeRef
             UnsafeValueTypeAttr: CustomAttribute
-            anonSizeTypes: Dictionary<int, TypeDef>
+            anonSizeTypes: Dictionary<int, PasRawType>
         } with
         static member Create (sr: ScopeRec) =
             let m = sr.Module
@@ -245,9 +245,9 @@ module Ctx =
                 at.Attributes <- attributes
                 at.CustomAttributes.Add(self.UnsafeValueTypeAttr)
                 at.ClassSize <- uint32 size
-                at.PackingSize <- 1us;
+                at.PackingSize <- 1us
                 self.MainModule.Types.Add(at)
-                at
+                PasRawType at
 
         member self.SelectAnonSizeType size =
             match self.anonSizeTypes.TryGetValue size with
@@ -255,11 +255,11 @@ module Ctx =
             | _ ->
                 let at = self.NewSizedType size
                 self.anonSizeTypes.Add(size, at)
-                at :> TypeDef
+                at
 
         member self.AddBytesConst (bytes: byte[]) =
             let ast = self.SelectAnonSizeType bytes.Length
-            let fd = FieldDefUser(null, FieldSig(ast.ToTypeSig()), FieldAttributes.Public ||| FieldAttributes.Static ||| FieldAttributes.HasFieldRVA)
+            let fd = FieldDefUser(null, FieldSig ast.Sig, FieldAttributes.Public ||| FieldAttributes.Static ||| FieldAttributes.HasFieldRVA)
             fd.InitialValue <- bytes
             self.UnitModule.Fields.Add fd
             fd :> FieldDef
@@ -295,14 +295,14 @@ module Ctx =
 
     let private createSystemTypes details (symbols: Dictionary<CompilerName, Symbol>) =
         let mb = details.MainModule
-        let valueType = mb.ImportAsTypeSig(typeof<ValueType>).ToTypeDefOrRef()
-        let ot = mb.ImportAsTypeSig(typeof<obj>)
-        let addAnyType name raw kind =
-            let t = {name=name;raw=raw;kind=kind}
+        let valueType = PasRawType(mb.ImportAsTypeSig typeof<ValueType>)
+        let ot = PasRawType(mb.ImportAsTypeSig typeof<obj>)
+        let addAnyType (name: CompilerName) (raw: TypeSig) kind =
+            let t = PasType.Create(name, raw, kind)
             Utils.addMetaType symbols name t
-        let addOrdType name (raw: CorLibTypeSig) ordKind ordType = TkOrd(ordKind, ordType) |> addAnyType (CompilerName.FromString name) (raw.ToTypeDefOrRef())
-        let addFloatType name (raw: CorLibTypeSig) = TkFloat(FtSingle) |> addAnyType (CompilerName.FromString name) (raw.ToTypeDefOrRef())
-        let addArrayType name (p: PasType) ad = addAnyType name p.raw ad
+        let addOrdType name raw ordKind ordType = TkOrd(ordKind, ordType) |> addAnyType (CompilerName.FromString name) raw
+        let addFloatType name raw = TkFloat(FtSingle) |> addAnyType (CompilerName.FromString name) raw
+        let addArrayType name (p: PasType) ad = addAnyType name p.Sig ad
 
         addOrdType "Byte" mb.CorLibTypes.Byte OkInteger (OtUByte(int Byte.MinValue, int Byte.MaxValue)) |> ignore
         addOrdType "ShortInt" mb.CorLibTypes.SByte OkInteger (OtSByte(int SByte.MinValue, int SByte.MaxValue)) |> ignore
@@ -311,7 +311,7 @@ module Ctx =
         addOrdType "LongWord" mb.CorLibTypes.UInt32 OkInteger (OtULong(int UInt32.MinValue, int UInt32.MaxValue)) |> ignore
         addOrdType "UInt64" mb.CorLibTypes.UInt64 OkInteger (OtUQWord(UInt64.MinValue, UInt64.MaxValue)) |> ignore
         let charType = addOrdType "Char" mb.CorLibTypes.Byte OkChar (OtUByte(int Byte.MinValue, int Byte.MaxValue))
-        let strType = {name=AnonName;raw=(details.NewSizedType 256) :> TypeDef;kind=TkUnknown 256}
+        let strType = {name=AnonName;raw=(details.NewSizedType 256);kind=TkUnknown 256}
         let strDim = {
                         low = 1
                         high = 255
@@ -323,11 +323,12 @@ module Ctx =
         // allow to use string as array
 
         // file = name + handle
-        let fileType = (details.NewSizedType (256 + ptrSize)) :> TypeDef
+        let fileType = details.NewSizedType (256 + ptrSize)
         let tidf = CompilerName <| TIdFile()
         let fileType = Utils.addMetaType symbols tidf {name=tidf;kind=TkUnknown(256 + ptrSize);raw=fileType}
-        let voidTypeSig = mb.CorLibTypes.Void
-        let voidType = voidTypeSig.ToTypeDefOrRef()
+        let voidSig = mb.CorLibTypes.Void
+        let voidType = PasRawType voidSig
+        let newVoidPtr() = PtrSig voidSig
         {
             int32 = addOrdType "Integer" mb.CorLibTypes.Int32 OkInteger (OtSLong(int Int32.MinValue, int Int32.MaxValue))
             int64 = addOrdType "Int64" mb.CorLibTypes.Int64 OkInteger (OtSQWord(Int64.MinValue, Int64.MaxValue))
@@ -337,13 +338,13 @@ module Ctx =
             char = charType
             file = fileType
             value = {name=AnonName;raw=valueType;kind=TkUnknown 0}
-            pointer = addAnyType (CompilerName.FromString "Pointer") (PointerType voidTypeSig) (TkPointer({name=AnonName;raw=voidType;kind=TkUnknown 0}))
+            pointer = addAnyType (CompilerName.FromString "Pointer") (newVoidPtr()) (TkPointer({name=AnonName;raw=voidType;kind=TkUnknown 0}))
             unit = {name=AnonName;raw=voidType;kind=TkUnknown 0}
             unknown = {name=ErrorName;raw=voidType;kind=TkUnknown 0}
-            constParam = {name=AnonName;raw=PointerType(voidTypeSig);kind=TkUnknown 0}
-            varParam = {name=AnonName;raw=PointerType(voidTypeSig);kind=TkUnknown 0}
+            constParam = {name=AnonName;raw=newVoidPtr() |> PasRawType;kind=TkUnknown 0}
+            varParam = {name=AnonName;raw=newVoidPtr() |> PasRawType;kind=TkUnknown 0}
             boolean = addOrdType "Boolean" mb.CorLibTypes.Byte OkBool (OtUByte(0, 1))
-            net_obj = {name=AnonName;raw=ot.ToTypeDefOrRef();kind=TkUnknown 0}
+            net_obj = {name=AnonName;raw=ot;kind=TkUnknown 0}
             net_void = {name=AnonName;raw=voidType;kind=TkUnknown 0}
         }
 
@@ -458,9 +459,10 @@ module TypesDef =
             match ctx.FindType typeName with
             | Some t -> t
             | _ -> failwith "IE unknown type"
-        let mutable pt = PointerType(t.raw.ToTypeSig())
-        for i = 2 to count do pt <- PointerType(pt.ToTypeSig())
-        addType ctx name {name=name;kind=TkPointer(t);raw=pt}
+        let mutable pt = PtrSig t.Sig
+        for i = 2 to count do pt <- PtrSig pt
+        if pt = null then raise <| InternalError "2020103101" 
+        PasType.Create(name, pt, TkPointer(t)) |> addType ctx name
 
     let getInternalType (ctx: Ctx) t =
         match ctx.TryFindTypeId t with
@@ -478,8 +480,8 @@ module TypesDef =
         let newSubType (dims, size) (typ: PasType, typSize) name =
             let size = size * typSize
             let at = ctx.details.NewSizedType size
-            FieldDefUser(UTF8String "item0", FieldSig(typ.raw.ToTypeSig()), FieldAttributes.Public)
-            |> at.Fields.Add
+            FieldDefUser(UTF8String "item0", FieldSig typ.Sig, FieldAttributes.Public)
+            |> at.Def.Fields.Add
             let name = CompilerName.FromString name
             {name=name;raw=at;kind=TkArray(AkArray,dims,typ)}.ResolveArraySelfType()
 
@@ -670,7 +672,7 @@ module EvalExpr =
                 | _, ChrType, ChrType -> [yield! aVal; yield! convertChrToStr bVal strt],strt,strt
                 | _ when sameTypeKind(aTyp, bTyp) -> [yield! aVal; yield! bVal],aTyp,bTyp
                 | InInst, _, _ -> [yield! aVal; yield! bVal],aTyp,bTyp
-                | _ -> [yield! aVal; yield! bVal; typeRefToConv aTyp.raw],aTyp,bTyp
+                | _ -> [yield! aVal; yield! bVal; aTyp.RefToConv],aTyp,bTyp
 
             let add2OpIlTyped aExpr bExpr i et =
                 let a, at = exprToMetaExpr aExpr et false
@@ -683,14 +685,14 @@ module EvalExpr =
                     yield! opIls
                     // need to cast to proper type (for simple types)
                     match et with
-                    | Some NumericType -> yield typeRefToConv et.Value.raw
+                    | Some NumericType -> yield et.Value.RefToConv
                     | _ -> ()
                 ], typ)
             let add2OpIl a b i = add2OpIlTyped a b i et
             let add2OpIlBool a b i = add2OpIlTyped a b i (Some ctx.sysTypes.boolean)
             let inline add1OpIl a i =
                 let a, at = exprToMetaExpr a et false
-                [ yield! a; yield +i; yield typeRefToConv at.raw], at
+                [ yield! a; yield +i; yield at.RefToConv], at
             match el with
             | Value v -> valueToValueKind ctx v et refRes
             | Add(a, b) -> add2OpIl a b AddInst
@@ -734,7 +736,7 @@ module EvalExpr =
          yield! a
          if expectedType.IsSome then
             let typ = expectedType.Value
-            match typ.kind with | TkOrd _ | TkFloat _ -> yield typeRefToConv typ.raw | _ -> ()
+            match typ.kind with | TkOrd _ | TkFloat _ -> yield typ.RefToConv | _ -> ()
         ], at
 
     let exprToIl = exprToIlGen false
@@ -767,7 +769,7 @@ module EvalExpr =
             // TODO some real conversion ? Conv_I4 + explicit operators?
             ([
                 yield! callInstr
-                typeRefToConv t.raw
+                t.RefToConv
             ], Some t)
         | SymSearch.RealFunction rf ->
             match rf with
@@ -831,31 +833,31 @@ module EvalExpr =
             [+(if byRef then Ldsflda fd else Ldsfld fd)], ft
 
     let chainReaderFactory (ctx: Ctx) asValue addr ltp =
-        let valOrPtr v p (t: ITypeDefOrRef) = (if asValue || (t.ToTypeSig().IsPointer && addr = false) then v else p) |> List.singleton
+        let valOrPtr v p (t: TypeSig) = (if asValue || (t.IsPointer && addr = false) then v else p) |> List.singleton
         match ltp with
         | LTPVar(v, vt) -> match v with
-                           | LocalVariable v -> valOrPtr +(Ldloc v) +(Ldloca v) vt.raw
-                           | GlobalVariable v -> valOrPtr +(Ldsfld v) +(Ldsflda v) vt.raw
+                           | LocalVariable v -> valOrPtr +(Ldloc v) +(Ldloca v) vt.Sig
+                           | GlobalVariable v -> valOrPtr +(Ldsfld v) +(Ldsflda v) vt.Sig
                            | ParamVariable(r, v) -> // handle by ref params
                              match r with
-                             | RefNone | RefConst -> valOrPtr +(Ldarg v) +(Ldarga v) vt.raw
+                             | RefNone | RefConst -> valOrPtr +(Ldarg v) +(Ldarga v) vt.Sig
                              | RefVar ->
                                  [
                                     +Ldarg v
                                     if asValue then
-                                        +Ldobj vt.raw
+                                        +Ldobj vt.DefOrRef
                                  ]
                              | RefUntypedVar | RefUntypedConst ->
                                  if asValue then failwith "IE"
                                  [+Ldarg v]
-        | LTPStruct (fld, _) -> valOrPtr +(Ldfld fld) +(Ldflda fld) (fld.FieldType.ToTypeDefOrRef())
+        | LTPStruct (fld, _) -> valOrPtr +(Ldfld fld) +(Ldflda fld) fld.FieldSig.Type
         | LTPDeref (dt, force) ->
             match dt, addr, force, asValue with
             | _, true, _, _ -> []
             | NumericType, _, _, _ | ChrType, _, _, _ -> dt.IndKind |> Ldind |> (~+) |> List.singleton
             | _, _, true, _ | _, _, _, true ->
-                if (dt.raw.ToTypeSig()).IsValueType = false then failwith "IE"
-                [+Ldobj dt.raw]
+                if dt.Sig.IsValueType = false then failwith "IE"
+                [+Ldobj dt.DefOrRef]
             | _ -> []
         | LTPNone -> []
 
@@ -870,8 +872,8 @@ module EvalExpr =
                                | RefUntypedConst | RefUntypedVar -> failwith "IE"
         | LTPStruct(fld, _) -> [+Stfld fld]
         | LTPDeref(dt, _) ->
-            if (dt.raw.ToTypeSig()).IsValueType then
-                [+Stobj dt.raw]
+            if dt.Sig.IsValueType then
+                [+Stobj dt.DefOrRef]
             else
                 dt.IndKind |> Stind |> (~+) |> List.singleton
         | LTPNone -> []
@@ -1545,7 +1547,7 @@ module Intrinsics =
         ([
             +Ldstr str
             +Ldc_I4 !high
-            +Newarr ctx.sysTypes.net_obj.raw
+            +Newarr ctx.sysTypes.net_obj.DefOrRef
             yield! cparams
                    |> List.mapi (
                        fun idx (i, t) ->
@@ -1561,10 +1563,10 @@ module Intrinsics =
                                [
                                    +Conv Conv_U1
                                    +Call ctx.sysProc.ConvertU1ToChar
-                                   +Box(ctx.details.MainModule.CorLibTypes.Char.ToTypeDefOrRef())
+                                   +Box ctx.sysTypes.char.DefOrRef
                                ]
                                |> putArrayElem i
-                           | _ -> [+Box t.raw] |> putArrayElem i
+                           | _ -> [+Box t.DefOrRef] |> putArrayElem i
                        )
                    |> List.concat
             +Call ctx.sysProc.WriteLine
@@ -1678,14 +1680,14 @@ module Intrinsics =
                     +Ldc_I4 pt.SizeOf
                     +Call ci.ctx.sysProc.GetMem
                     +Dup
-                    +Initobj pt.raw
+                    +Initobj pt.DefOrRef
                     +Stind Ind_U
                 | PasType, ({kind=TkPointer pt} as t) ->
                     pb.ReturnType <- Some t
                     +Ldc_I4 pt.SizeOf
                     +Call ci.ctx.sysProc.GetMem
                     +Dup
-                    +Initobj pt.raw
+                    +Initobj pt.DefOrRef
                 | _ -> raise (InternalError "2020080200")
             ]}
     

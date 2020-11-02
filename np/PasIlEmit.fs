@@ -200,22 +200,6 @@ let Ldc_U1 (i: byte) = [
 ]
 let Ldc_R4 r = LdcR4 r |> Ldc
 
-let typeRefToConv (r: ITypeDefOrRef) =
-    match r.ToTypeSig().ElementType with
-    | ElementType.Ptr -> +Conv Conv_U
-    | ElementType.I1 -> +Conv Conv_I1
-    | ElementType.I2 -> +Conv Conv_I2
-    | ElementType.I4 -> +Conv Conv_I4
-    | ElementType.I8 -> +Conv Conv_I8
-    | ElementType.Boolean -> +Conv Conv_U1
-    | ElementType.R4 -> +Conv Conv_R4
-    | ElementType.R8 -> +Conv Conv_R8
-    | ElementType.U1 -> +Conv Conv_U1
-    | ElementType.U2 -> +Conv Conv_U2
-    | ElementType.U4 -> +Conv Conv_U4
-    | ElementType.U8 -> +Conv Conv_U8
-    | _ -> failwith "IE"
-
 // TODO for further optimizations
 let (|IlNotEqual|_|) (items: IlInstruction list) =
     if items.Length < 3 then

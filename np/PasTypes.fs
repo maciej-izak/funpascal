@@ -73,16 +73,36 @@ type TypeKind =
     | TkArray of (TArrayKind * ArrayDim list * PasType)
     | TkSet of PasType
 
+and PasRawType(raw: ITypeDefOrRef) =
+    let sg = lazy(raw.ToTypeSig())
+    let resolveRaw() =
+        match raw.ResolveTypeDef() with
+        | null -> raise <| InternalError "2020110200"
+        | res -> res
+    let def = lazy(resolveRaw())
+    member _.Raw = raw
+    member _.Sig = sg.Force()
+    member _.Def = def.Force()
+    new (raw: TypeSig) = PasRawType(raw.ToTypeDefOrRef())
+
 and PasType = {
       name: CompilerName
       kind: TypeKind
-      raw : ITypeDefOrRef
+      raw : PasRawType
     }
 with
-    static member NewPtr(pt, ?name) =
+    member self.DefOrRef = self.raw.Raw
+    member self.Sig = self.raw.Sig
+    member self.Def = self.raw.Def
+    
+    static member Create(name, defOrRef: ITypeDefOrRef, kind) = {name=CompilerName.FromString name;raw=PasRawType defOrRef;kind=kind}
+    static member Create(name, ts: TypeSig, kind) = {name=name;raw=PasRawType ts;kind=kind}
+    static member Create(name, ts: ITypeDefOrRef, kind) = {name=name;raw=PasRawType ts;kind=kind}
+    
+    static member NewPtr(pt: PasType, ?name) =
         let name = defaultArg name ""
-        let ptrType = pt.raw.ToTypeSig() |> PtrSig |> TypeSpecUser
-        {name=CompilerName.FromString name;raw=ptrType;kind=TkPointer(pt)}
+        let ptrType = pt.Sig |> PtrSig |> TypeSpecUser
+        PasType.Create(name, ptrType, TkPointer(pt))
 
     member this.SizeOf =
         let ordTypeSize = function
@@ -98,7 +118,7 @@ with
             | FtSingle -> 4
         | TkRecord (_, s) -> s
         | TkPointer _ -> ptrSize
-        | TkArray _ -> int <| this.raw.ResolveTypeDefThrow().ClassSize
+        | TkArray _ -> int <| this.Def.ClassSize
         | TkUnknown s -> s
         | TkSet _ -> 256
 
@@ -109,7 +129,7 @@ with
         this
 
     member this.IndKind =
-        match this.raw.ToTypeSig().ElementType with
+        match this.Sig.ElementType with
         | ElementType.Ptr     -> Ind_U
         | ElementType.I1      -> Ind_I1
         | ElementType.I2      -> Ind_I2
@@ -123,6 +143,22 @@ with
         | ElementType.U4      -> Ind_U4
         | ElementType.U8      -> Ind_U8
         | _ -> raise <| InternalError "2020102001"
+        
+    member this.RefToConv =
+        match this.Sig.ElementType with
+        | ElementType.Ptr -> +Conv Conv_U
+        | ElementType.I1 -> +Conv Conv_I1
+        | ElementType.I2 -> +Conv Conv_I2
+        | ElementType.I4 -> +Conv Conv_I4
+        | ElementType.I8 -> +Conv Conv_I8
+        | ElementType.Boolean -> +Conv Conv_U1
+        | ElementType.R4 -> +Conv Conv_R4
+        | ElementType.R8 -> +Conv Conv_R8
+        | ElementType.U1 -> +Conv Conv_U1
+        | ElementType.U2 -> +Conv Conv_U2
+        | ElementType.U4 -> +Conv Conv_U4
+        | ElementType.U8 -> +Conv Conv_U8
+        | _ -> raise <| InternalError "2020110201"
 
 and [<CustomEquality; NoComparison>]
     ArrayDim = { low: int; high: int; size: int; elemSize: int; elemType: PasType; selfType: PasType ref }

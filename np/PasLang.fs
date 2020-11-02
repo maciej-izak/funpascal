@@ -54,7 +54,7 @@ module LangStmt =
                     let vt = match !ltp with // TODO allow structs only ? (ValueType as records/classes only)
                              | LTPVar(_,t) -> t
                              | LTPStruct(_,t) -> t
-                             | LTPDeref(dt,_) when dt.raw.IsValueType -> dt
+                             | LTPDeref(dt,_) when dt.Sig.IsValueType -> dt
                              | _ -> failwith "IE"
                     // TODO check type of vt for with ?
                     match vt.kind with | TkRecord _ -> () | _ -> failwithf "IE bad type for with %A" vt.kind
@@ -71,7 +71,7 @@ module LangStmt =
             | Some loadVarW ->
                 let newSymbols = Dictionary<_,_>()
                 let (v, td, ptd) = snd loadVarW
-                for f in td.ResolveTypeDef().Fields do
+                for f in td.Def.Fields do
                     newSymbols.Add(CompilerName.FromString (string f.Name), WithSym(LocalVariable v, ptd))
                 ils.Add(fst loadVarW)
                 (WithSpace, newSymbols)::symbols
@@ -351,24 +351,24 @@ module LangDecl =
         enumValues |> List.iteri (fun i v -> ctx.NewSymbols.Add (CompilerName.FromString v, EnumValueSym(i, enumType)))
         enumType
 
-    let declTypeRecord (packed, fields) name ctx =
+    let declTypeRecord (packed, fields) (name: CompilerName) ctx =
         let mutable size = 0;
         let td = TypeDefUser(UTF8String ctx.details.Namespace, UTF8String(ctx.details.UniqueTypeName()))
         td.Attributes <- TypeAttributes.Sealed ||| TypeAttributes.BeforeFieldInit ||| TypeAttributes.SequentialLayout
         td.ClassSize <- 0u
-        td.BaseType <- ctx.sysTypes.value.raw
+        td.BaseType <- ctx.sysTypes.value.DefOrRef
         td.PackingSize <- 1us // if packed then 1s else 0s
         let fieldsMap = Dictionary<string,_>()
         for (names, typeName) in fields do
             for (name: string) in names do
                 let typ = ctx.GetInternalType typeName
-                let fd = FieldDefUser(UTF8String name, FieldSig(typ.raw.ToTypeSig()))
+                let fd = FieldDefUser(UTF8String name, FieldSig typ.Sig)
                 fd.Attributes <- FieldAttributes.Public
                 td.Fields.Add fd
                 fieldsMap.Add(name, (fd :> FieldDef,typ))
                 size <- size + typ.SizeOf
         ctx.details.MainModule.Types.Add(td)
-        ctx.AddType name {name=name;kind=TkRecord(fieldsMap, size);raw=td}
+        PasType.Create(name,td,TkRecord(fieldsMap, size)) |> ctx.AddType name
 
     let declTypeArray (packed, dimensions, tname) name (ctx: Ctx) = ctx.AddTypeArray dimensions tname name
 
@@ -389,15 +389,15 @@ module LangDecl =
     
     let declTypes types ctx = List.iter (fun (n, t) -> tryDeclType t n ctx) types
 
-    let declVar (ctx: Ctx) (vn, t) =
+    let declVar (ctx: Ctx) (vn, t: PasType) =
         let tryAddSymbol vk =
             match ctx.NewSymbols.TryAdd(CompilerName.FromDIdent vn, VariableSym(vk, t)) with
             | true -> ctx.variables.Head.Add vk
             | false -> ``Duplicated identifier of '%O'`` vn |> ctx.NewMsg vn
         match ctx.SymOwner with
-        | StandaloneMethod _ -> Local ((t: PasType).raw.ToTypeSig()) |> LocalVariable |> tryAddSymbol
+        | StandaloneMethod _ -> Local t.Sig |> LocalVariable |> tryAddSymbol
         | GlobalSpace -> 
-            let fd = FieldDefUser(UTF8String(vn.ToString()), FieldSig(t.raw.ToTypeSig()))
+            let fd = FieldDefUser(UTF8String(vn.ToString()), FieldSig t.Sig)
             fd.Attributes <- FieldAttributes.Public ||| FieldAttributes.Static
             ctx.details.UnitModule.Fields.Add fd
             (fd:>FieldDef) |> GlobalVariable |> tryAddSymbol
@@ -488,14 +488,14 @@ module LangDecl =
                 let mRes, rVar = match mRes with
                                  | Some r ->
                                        let res = ctx.FindTypeId r
-                                       let resultVar = res.raw.ToTypeSig() |> Local |> LocalVariable
+                                       let resultVar = res.Sig |> Local |> LocalVariable
                                        newMethodSymbols.Add(CompilerName.FromString "Result", (resultVar, res) |> VariableSym)
                                        res, Some resultVar
                                  | _ -> ctx.sysTypes.net_void, None
 
                 let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
                 let methodImplAttributes = MethodImplAttributes.IL ||| MethodImplAttributes.Managed
-                let msig = MethodSig.CreateStatic(mRes.raw.ToTypeSig())
+                let msig = MethodSig.CreateStatic mRes.Sig
                 let md = MethodDefUser(UTF8String(name.ToString()), msig, methodImplAttributes, methodAttributes)
                 let idx = ref 1
                 let mp = defaultArg mPara []
@@ -505,13 +505,13 @@ module LangDecl =
                              [for (p: string) in ps do
                                  let (typ, byref, t, isref) =
                                      match k, t with
-                                     | Some Const, Some t -> t.raw, RefConst, t, false
-                                     | Some Var, Some t -> (ByRefSig(t.raw.ToTypeSig())).ToTypeDefOrRef(), RefVar, t, true
-                                     | Some Const, None -> ctx.sysTypes.constParam.raw, RefUntypedConst, ctx.sysTypes.constParam, true
-                                     | Some Var, None -> ctx.sysTypes.varParam.raw, RefUntypedVar, ctx.sysTypes.varParam, true
-                                     | None, Some t -> t.raw, RefNone, t, false
+                                     | Some Const, Some t -> t.Sig, RefConst, t, false
+                                     | Some Var, Some t -> ByRefSig t.Sig :> TypeSig, RefVar, t, true
+                                     | Some Const, None -> ctx.sysTypes.constParam.Sig, RefUntypedConst, ctx.sysTypes.constParam, true
+                                     | Some Var, None -> ctx.sysTypes.varParam.Sig, RefUntypedVar, ctx.sysTypes.varParam, true
+                                     | None, Some t -> t.Sig, RefNone, t, false
                                      | _ -> raise(InternalError "2020082101")
-                                 typ.ToTypeSig() |> msig.Params.Add
+                                 typ |> msig.Params.Add
                                  md.ParamDefs.Add(ParamDefUser(UTF8String p, uint16 !idx))
                                  // TODO some optimizations, no need for each iteration
                                  md.Parameters.UpdateParameterTypes()
