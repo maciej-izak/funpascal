@@ -13,6 +13,11 @@ type ParamRefKind =
     | RefUntypedVar
     | RefUntypedConst
     | RefNone
+with
+    member self.IsRef =
+        match self with
+        | RefNone | RefConst -> false
+        | _ -> true
 
 type CompilerName =
     | CompilerName of TypeIdentifier
@@ -72,6 +77,7 @@ type TypeKind =
     | TkPointer of PasType
     | TkArray of (TArrayKind * ArrayDim list * PasType)
     | TkSet of PasType
+    | TkProcVar
 
 and PasRawType(raw: ITypeDefOrRef) =
     let sg = lazy(raw.ToTypeSig())

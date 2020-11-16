@@ -64,7 +64,7 @@ type Ctx = {
         labels: List<DIdent * LabelRec> list
         block: GlobalBlock
         symbols: (SymOwner * Dictionary<CompilerName, Symbol>) list
-        forward: Dictionary<CompilerName, ReferencedDef * Dictionary<CompilerName,Symbol> * VariableKind option>
+        forward: Dictionary<CompilerName, ReferencedDef * Dictionary<CompilerName,Symbol>>
         localVariables: int ref
         lang: Ctx.LangCtx
         res: List<MetaInstruction>
@@ -119,7 +119,7 @@ type Ctx = {
                         let paramIdx = md.ParamDefs.Count
                         let pd = ParamDefUser(UTF8String paramName, paramIdx + 1 |> uint16)
                         md.ParamDefs.Add pd
-                        t.Sig |> ByRefSig |> md.MethodSig.Params.Add
+                        t.Sig |> PtrSig |> md.MethodSig.Params.Add
                         let newSym = VariableSym(ParamVariable(RefVar, md.Parameters.[paramIdx]), t)
                         symbols.Add(CompilerName.FromString paramName, newSym)
                         nestedParams := (sym, newSym)::!nestedParams
@@ -173,6 +173,7 @@ type Ctx = {
     member self.AddTypePointer = TypesDef.addTypePointer self
     member self.GetInternalType = TypesDef.getInternalType self
     member self.AddTypeArray = TypesDef.addTypeArray self
+    member self.AddProcType = TypesDef.addProcType self
 
     // SymSearch module
     member self.FindSymbol did =
@@ -397,8 +398,8 @@ module Ctx =
         // function Arctan(x: Real): Real;
         let singleScalar raw =
            Referenced({
-               paramList = [|{typ=tsingle;ref=false}|]
-               result = Some tsingle
+               paramList = [|{typ=tsingle;ref=RefNone}|]
+               result = Some {typ=tsingle; var=None} // imported methods dont need local var -> internal purposes only
                raw = raw
            }, ref[]) |> MethodSym
         let mathLog = typeof<System.MathF>.GetMethod("Log", [| typeof<single> |])  |> ctx.details.MainModule.Import
@@ -525,6 +526,50 @@ module TypesDef =
         addType ctx name typ
         //(doArrayDef dimensions tname (ref []) name).Name <- name
 
+    let createMethodInfo (ctx: Ctx) (name: CompilerName) (mRes: TypeIdentifier option) (mPara: ParamList) =
+        let mr =
+            match mRes with
+            | Some r -> // create result variable
+              let res = ctx.FindTypeId r
+              { typ = res; var = res.Sig |> Local |> LocalVariable |> Some }
+            | _ -> { typ = ctx.sysTypes.net_void; var = None }
+                         
+        let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
+        let methodImplAttributes = MethodImplAttributes.IL ||| MethodImplAttributes.Managed
+        let msig = MethodSig.CreateStatic mr.typ.Sig
+        let md = MethodDefUser(UTF8String(name.ToString()), msig, methodImplAttributes, methodAttributes)
+        let mp =
+          let mutable idx = 1
+          defaultArg mPara []
+          |> List.collect
+              (fun (k, (ps, t)) ->
+               let t = match t with Some t -> Some(ctx.FindTypeId t) | _ -> None
+               [for (p: string) in ps do
+                   let typSig, refKind, typ =
+                       match k, t with
+                       | Some Const, Some t -> t.Sig, RefConst, t
+                       | Some Var, Some t -> PtrSig t.Sig :> TypeSig, RefVar, t
+                       | Some Const, None -> ctx.sysTypes.constParam.Sig, RefUntypedConst, ctx.sysTypes.constParam
+                       | Some Var, None -> ctx.sysTypes.varParam.Sig, RefUntypedVar, ctx.sysTypes.varParam
+                       | None, Some t -> t.Sig, RefNone, t
+                       | _ -> raise(InternalError "2020082101")
+                   msig.Params.Add typSig
+                   md.ParamDefs.Add(ParamDefUser(UTF8String p, uint16 idx))
+                   idx <- idx + 1
+                   yield {typ=typ;ref=refKind}]
+              )
+          |> Array.ofList
+        md.Parameters.UpdateParameterTypes()
+        {
+            paramList = mp
+            result = if mr.var.IsSome then Some mr else None
+            raw = md
+        }
+    
+    let addProcType ctx ((_, mRes, mPara): ProcHeader) name =
+        let methodInfo = TypesDef.createMethodInfo ctx name mRes mPara
+        PasType.Create(name, FnPtrSig methodInfo.raw.MethodSig, TkProcVar) |> addType ctx name
+        
 module SymSearch =
 
     let findSymbol (DIdent ident) (ctx: Ctx) =
@@ -742,16 +787,16 @@ module EvalExpr =
     let exprToIl = exprToIlGen false
 
     let callParamToIl ctx cp (idxmr: Option<int * MethodInfo>) =
-        let param, byRef =
+        let param, refKind =
             match idxmr with
             | Some(idx,{paramList=pl}) when idx < pl.Length -> // for foo() where () has meaning because idx is valid but pl.Length = 0
                 let p = pl.[idx]
                 Some p.typ, p.ref
-            | _ -> None, false
+            | _ -> None, RefNone
         match cp with
-        | ParamExpr expr -> exprToIl ctx (if byRef then Addr expr else expr) param
+        | ParamExpr expr -> exprToIl ctx (if refKind.IsRef then Addr expr else expr) param
         | ParamIdent id ->
-            let useRef = byRef || (param.IsSome && (param.Value = ctx.sysTypes.constParam || param.Value = ctx.sysTypes.varParam))
+            let useRef = refKind.IsRef || (param.IsSome && (param.Value = ctx.sysTypes.constParam || param.Value = ctx.sysTypes.varParam))
             if useRef then findSymbolAndGetPtr ctx id
             else findSymbolAndLoad ctx id
         |> fun(il, t) ->
@@ -773,7 +818,7 @@ module EvalExpr =
             ], Some t)
         | SymSearch.RealFunction rf ->
             match rf with
-            | Referenced(mr,np), Some f ->
+            | Referenced(mr,np) as rm, Some f ->
                 ([
                     yield! cp
                     |> List.mapi (fun i p -> fst <| callParamToIl ctx p (Some(i, mr)))
@@ -786,9 +831,9 @@ module EvalExpr =
                     // TODO error/IE ? for popResult && mr.result.IsNone
                     if popResult && mr.result.IsSome then
                         yield +Pop
-                 ], mr.result)
+                 ], rm.ReturnType)
             | Intrinsic i, _ -> handleIntrinsic i {ctx=ctx;ident=ident;cp=cp;popResult=popResult}
-            | _ -> failwith "IE"
+            | _ -> raise (InternalError "2020111600")
         | SymSearch.UnknownFunction -> ([], Some ctx.sysTypes.unknown)
 
     let valueToValueKind ctx v (expectedType: PasType option) byRef =

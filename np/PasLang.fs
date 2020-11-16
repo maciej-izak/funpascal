@@ -371,6 +371,8 @@ module LangDecl =
         PasType.Create(name,td,TkRecord(fieldsMap, size)) |> ctx.AddType name
 
     let declTypeArray (packed, dimensions, tname) name (ctx: Ctx) = ctx.AddTypeArray dimensions tname name
+    
+    let declProcType header name (ctx: Ctx) = ctx.AddProcType header name
 
     let declType = function
         | TypeAlias decl -> declTypeAlias decl
@@ -379,6 +381,7 @@ module LangDecl =
         | TypeEnum decl -> declTypeEnum decl
         | TypeRecord decl -> declTypeRecord decl
         | TypeArray(ArrayDef decl) -> declTypeArray decl
+        | ProcType header -> declProcType header
         | _ -> raise(InternalError "2020090300")
 
     let tryDeclType td (name: DIdent) (ctx: Ctx) =
@@ -477,63 +480,40 @@ module LangDecl =
 
     let doDeclProcAndFunc (name, mRes, mPara, decl) (ctx: Ctx) =
         let methodName = CompilerName.FromDIdent name
-        let methodSym, newMethodSymbols, rVar =
+        let methodSym, newMethodSymbols =
             match ctx.forward.TryGetValue methodName with
             | true, md ->
                 // TODO check signature - must be identical
                 ctx.forward.Remove methodName |> ignore
                 md
             | _ ->
+                let methodInfo = TypesDef.createMethodInfo ctx methodName mRes mPara
+                // TODO optimization ? -> ResolveMethodDefThrow is executed twice
+                let methodParams = methodInfo.raw.ResolveMethodDefThrow().Parameters
                 let newMethodSymbols = Dictionary<_,_>(ctx.lang)
-                let mRes, rVar = match mRes with
-                                 | Some r ->
-                                       let res = ctx.FindTypeId r
-                                       let resultVar = res.Sig |> Local |> LocalVariable
-                                       newMethodSymbols.Add(CompilerName.FromString "Result", (resultVar, res) |> VariableSym)
-                                       res, Some resultVar
-                                 | _ -> ctx.sysTypes.net_void, None
-
-                let methodAttributes = MethodAttributes.Public ||| MethodAttributes.Static
-                let methodImplAttributes = MethodImplAttributes.IL ||| MethodImplAttributes.Managed
-                let msig = MethodSig.CreateStatic mRes.Sig
-                let md = MethodDefUser(UTF8String(name.ToString()), msig, methodImplAttributes, methodAttributes)
-                let idx = ref 1
-                let mp = defaultArg mPara []
-                         |> List.collect
-                            (fun (k, (ps, t)) ->
-                             let t = match t with Some t -> Some(ctx.FindTypeId t) | _ -> None
-                             [for (p: string) in ps do
-                                 let (typ, byref, t, isref) =
-                                     match k, t with
-                                     | Some Const, Some t -> t.Sig, RefConst, t, false
-                                     | Some Var, Some t -> ByRefSig t.Sig :> TypeSig, RefVar, t, true
-                                     | Some Const, None -> ctx.sysTypes.constParam.Sig, RefUntypedConst, ctx.sysTypes.constParam, true
-                                     | Some Var, None -> ctx.sysTypes.varParam.Sig, RefUntypedVar, ctx.sysTypes.varParam, true
-                                     | None, Some t -> t.Sig, RefNone, t, false
-                                     | _ -> raise(InternalError "2020082101")
-                                 typ |> msig.Params.Add
-                                 md.ParamDefs.Add(ParamDefUser(UTF8String p, uint16 !idx))
-                                 // TODO some optimizations, no need for each iteration
-                                 md.Parameters.UpdateParameterTypes()
-                                 newMethodSymbols.Add(CompilerName.FromString p, VariableSym(ParamVariable(byref, md.Parameters.[!idx-1]), t))
-                                 incr idx
-                                 yield {typ=t;ref=isref}]
-                            )
-                let methodInfo = {
-                    paramList = Array.ofList mp
-                    result = if rVar.IsSome then Some mRes else None
-                    raw = md
-                }
+                match methodInfo.result with
+                | Some { typ = typ; var = Some var } -> // var always expected (except import scenario, here is no case)
+                    newMethodSymbols.Add(CompilerName.FromString "Result", (var, typ) |> VariableSym)
+                | None -> ()
+                | _ -> raise(InternalError "2020111601")
+                methodInfo.paramList |> Array.iteri
+                    (fun idx item ->
+                        let param = methodParams.[idx]
+                        let name = CompilerName.FromString param.Name
+                        let vs = VariableSym(ParamVariable(item.ref, param), item.typ)
+                        newMethodSymbols.Add(name, vs)
+                    )
                 let ms = methodInfo, ref []
                 if not <| ctx.NewSymbols.TryAdd(methodName, ms |> Referenced |> MethodSym) then
                     ``Duplicated identifier of '%O'`` name |> ctx.NewMsg name
-                ms, newMethodSymbols, rVar
-        let methodBuilder = (fst methodSym).raw.ResolveMethodDefThrow()
+                ms, newMethodSymbols
+        let methodInfo = fst methodSym
+        let methodBuilder = methodInfo.raw.ResolveMethodDefThrow()
         match decl with
         | BodyDeclr (decls, stmts) ->
             // TODO better handle forward ?
             let scope = LocalScope(ctx.Inner (StandaloneMethod methodSym, newMethodSymbols))
-            match Ctx.BuildDeclIl(decls,scope,("result",rVar)) |> Ctx.BuildStmtIl stmts with
+            match Ctx.BuildDeclIl(decls,scope,("result",methodInfo.result)) |> Ctx.BuildStmtIl stmts with
             | Ok(res, _) -> Ctx.CompileBlock methodBuilder ctx.details.UnitModule res |> ignore
             | Error _ -> ()
         | ExternalDeclr (lib, procName) ->
@@ -549,7 +529,7 @@ module LangDecl =
                          ImplMapUser(libRef, UTF8String procName, flags)
             ctx.details.UnitModule.Methods.Add(methodBuilder)
         | ForwardDeclr ->
-            ctx.forward.Add(methodName, (methodSym, newMethodSymbols, rVar))
+            ctx.forward.Add(methodName, (methodSym, newMethodSymbols))
 
     let declProcAndFunc ({head = (name, mRes, mPara); decl = d} as proc) (ctx: Ctx) =
         match name with
@@ -688,17 +668,18 @@ module LangBuilder =
             body.OptimizeMacros()
             methodBuilder
 
-        static member BuildDeclIl(decl, buildScope, ?resVar) =
+        static member BuildDeclIl(decl, buildScope, ?methodResult) =
             let ctx = match buildScope with
                       | MainScope(sr, units) -> Ctx.Create GlobalSpace sr units
                       | LocalScope ctx -> ctx
-            let result = match resVar with
-                         | Some (name, Some(v)) ->
+            let result = match methodResult with
+                         | Some (name, Some{var=Some v}) ->
                             ctx.variables.Head.Add v
                             match v with
                             | LocalVariable v -> v
                             | _ -> null
                          | Some (_, None) -> null // no result (void)
+                         | Some (_, Some{var=None}) -> raise(InternalError "2020111602") // impossible scenario, means try of implementing imported function (!)
                          | _ -> null // main program
             decl |> List.iter (doDecl ctx)
             ctx, result

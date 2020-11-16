@@ -19,6 +19,7 @@
 // active patterns tutorial
 // https://github.com/sgoguen/journal/blob/master/2019/12/fsharp-advent/05-active-patterns.md
 // Analiza CE : https://stackoverflow.com/questions/23122639/how-do-i-write-a-computation-expression-builder-that-accumulates-a-value-and-als
+// FnPtr : https://stackoverflow.com/questions/27195502/what-is-the-fnptr-type-and-how-to-create-it
 
 // Custom comparers : HashIdentity.Reference
 
