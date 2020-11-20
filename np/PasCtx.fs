@@ -45,6 +45,8 @@ module Utils =
            | FloatType, IntType -> true
            | IntType, IntType -> true
            | PointerType, PointerType -> true // Todo better pointer types check
+           | ProcVarType, ProcVarType -> true // Todo better function pointers types check
+           | ProcVarType, PointerType -> true // Todo better function pointers types check
            | _ -> false
 
     let inline toMap kvps =
@@ -568,7 +570,7 @@ module TypesDef =
     
     let addProcType ctx ((_, mRes, mPara): ProcHeader) name =
         let methodInfo = TypesDef.createMethodInfo ctx name mRes mPara
-        PasType.Create(name, FnPtrSig methodInfo.raw.MethodSig, TkProcVar) |> addType ctx name
+        PasType.Create(name, FnPtrSig methodInfo.raw.MethodSig, TkProcVar methodInfo) |> addType ctx name
         
 module SymSearch =
 
@@ -637,7 +639,7 @@ module SymSearch =
         | _ -> None
 
     type FoundFunction =
-        | RealFunction of (MethodSym * IlInstruction option)
+        | RealFunction of (MethodSym * IlInstruction list)
         | UnknownFunction
         | TypeCast of PasType
 
@@ -647,9 +649,12 @@ module SymSearch =
         match callChain with
         | Some([CallableLoad cl], _) ->
            match cl with
-           | Referenced ({raw=mr}, _) -> RealFunction(cl, +Call(mr) |> Some)
-           | Intrinsic _ -> RealFunction(cl, None)
+           | Referenced ({raw=mr}, _) -> RealFunction(cl, [+Call(mr)])
+           | Intrinsic _ -> RealFunction(cl, [])
         | Some([TypeCastLoad t], _) -> TypeCast t
+        | Some(([VariableLoad v], Some{kind=TkProcVar mi}) as cc) ->
+            let cl = Referenced(mi,ref[])
+            RealFunction(cl, [yield! fst <| EvalExpr.loadSymList ctx true false cc; +Calli(mi.raw)])
         | _ ->
             // TODO replace first error "Cannot find symbol" with
             // ctx.NewError ident (sprintf "Unknown function '%O'" ident)
@@ -808,17 +813,38 @@ module EvalExpr =
 
     let doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
         match ctx.FindFunction ident with
+        | SymSearch.TypeCast({kind=TkProcVar pv} as t) ->
+            match cp with
+            | [ParamIdent(cpi)] ->
+                // cast to parameterless func/proc and call at once
+                // TODO handle self parameter in the future
+                // TODO advanced calls like TFoo(x)(1,2); 
+                if popResult && pv.paramList.Length = 0 then
+                    ([
+                        yield! fst <| EvalExpr.findSymbolAndLoad ctx cpi
+                        +Calli pv.raw
+                        if pv.result.IsSome then +Pop
+                    ], Some t)
+                else
+                    raise (InternalError "2020112000")
+            | _ ->
+                ``Error: %s expected`` "Only one parameter" |> ctx.NewMsg ident
+                ([], Some ctx.sysTypes.unknown)
         | SymSearch.TypeCast t ->
-            let cp = match cp with | [cp] -> cp | _ -> failwith "IE only one param allowed"
-            let callInstr, typ = callParamToIl ctx cp None
-            // TODO some real conversion ? Conv_I4 + explicit operators?
-            ([
-                yield! callInstr
-                t.RefToConv
-            ], Some t)
+            match cp with
+            | [cp] ->
+                let callInstr, typ = callParamToIl ctx cp None
+                // TODO some real conversion ? Conv_I4 + explicit operators?
+                ([
+                    yield! callInstr
+                    t.RefToConv
+                ], Some t)
+            | _ ->
+                ``Error: %s expected`` "Only one parameter" |> ctx.NewMsg ident
+                ([], Some ctx.sysTypes.unknown)
         | SymSearch.RealFunction rf ->
             match rf with
-            | Referenced(mr,np) as rm, Some f ->
+            | Referenced(mr,np) as rm, f ->
                 ([
                     yield! cp
                     |> List.mapi (fun i p -> fst <| callParamToIl ctx p (Some(i, mr)))
@@ -827,14 +853,16 @@ module EvalExpr =
                     yield! !np
                     |> List.map (fun (VariableSymLoad vlt) -> loadSymList ctx false true vlt |> fst)
                     |> List.concat
-                    yield f
+                    yield! f
                     // TODO error/IE ? for popResult && mr.result.IsNone
                     if popResult && mr.result.IsSome then
                         yield +Pop
                  ], rm.ReturnType)
             | Intrinsic i, _ -> handleIntrinsic i {ctx=ctx;ident=ident;cp=cp;popResult=popResult}
             | _ -> raise (InternalError "2020111600")
-        | SymSearch.UnknownFunction -> ([], Some ctx.sysTypes.unknown)
+        | SymSearch.UnknownFunction ->
+            ``Error: %s expected`` "callable ident" |> ctx.NewMsg ident
+            ([], Some ctx.sysTypes.unknown)
 
     let valueToValueKind ctx v (expectedType: PasType option) byRef =
         match v, byRef with
@@ -937,12 +965,15 @@ module EvalExpr =
         ,match t with | Some t -> t | _ -> failwith "IE"
 
     let findSymbolInternal value addr (ctx: Ctx) ident =
-        let (_, t) as sid = ctx.FindSymbol ident |> chainToSLList
-        if t.IsNone then // handle x := foo; where foo is procedure
-            ``Error: %s expected`` "value" |> ctx.NewMsg ident 
+        let sid = ctx.FindSymbol ident |> chainToSLList
+        match sid with
+        | _, Some _ -> sid |> loadSymList ctx value addr
+        | [CallableLoad sl], None ->
+            // handle x := foo; where foo is procedured
+            [+Ldftn sl.MethodInfo.raw], sl.MethodInfo.PasType
+        | _, None ->
+            ``Error: %s expected`` "value" |> ctx.NewMsg ident
             [], ctx.sysTypes.unknown
-        else    
-            sid |> loadSymList ctx value addr
 
     let findSymbolAndLoad = findSymbolInternal true false
 

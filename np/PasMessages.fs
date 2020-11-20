@@ -58,7 +58,7 @@ module Errors =
         MsgError(Some 15, sprintf "%O intrinsic cannot be used outside loop" o)
 
     let ``Error: Incompatible types ('%O' and '%O') for '%O'`` o1 o2 o3 =
-        MsgError(Some 16, sprintf "Incompatible types ('%O' and '%O') for \"%O\"" o1 o2 o3)
+        MsgError(Some 16, sprintf "Incompatible types ('%O' and '%O') for '%O'" o1 o2 o3)
 
     let ``Error: %s expected`` s =
         MsgError(Some 17, sprintf "%s expected" s)

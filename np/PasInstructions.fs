@@ -71,6 +71,7 @@ type LdcKind =
 type AtomInstruction =
     | Unknown
     | Call of IMethod
+    | Calli of IMethod
     | Ldc of LdcKind
     | Ldsfld of FieldDef
     | Ldsflda of FieldDef
@@ -80,6 +81,7 @@ type AtomInstruction =
     | Ldloca of Local
     | Ldfld of FieldDef
     | Ldflda of FieldDef
+    | Ldftn of IMethod
     | Ldind of IndirectKind
     | Ldobj of ITypeDefOrRef
     | Ldnull

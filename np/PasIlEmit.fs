@@ -29,6 +29,7 @@ and private atomInstr = function
     | NotInst      -> Instruction.Create(OpCodes.Not)
     | NegInst      -> Instruction.Create(OpCodes.Neg)
     | Call mi      -> Instruction.Create(OpCodes.Call, mi)
+    | Calli mi     -> Instruction.Create(OpCodes.Calli, mi.MethodSig)
     | Ldc k        -> match k with
                       | LdcI4 v -> Instruction.Create(OpCodes.Ldc_I4, v)
                       | LdcI8 v -> Instruction.Create(OpCodes.Ldc_I8, v)
@@ -42,6 +43,7 @@ and private atomInstr = function
     | Ldloca i     -> Instruction.Create(OpCodes.Ldloca, i)
     | Ldfld f      -> Instruction.Create(OpCodes.Ldfld, f)
     | Ldflda f     -> Instruction.Create(OpCodes.Ldflda, f)
+    | Ldftn f     -> Instruction.Create(OpCodes.Ldftn, f)
     | Ldind it     -> match it with
                       | Ind_I -> Instruction.Create(OpCodes.Ldind_I)
                       | Ind_I1 -> Instruction.Create(OpCodes.Ldind_I1)

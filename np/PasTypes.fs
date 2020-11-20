@@ -77,7 +77,7 @@ type TypeKind =
     | TkPointer of PasType
     | TkArray of (TArrayKind * ArrayDim list * PasType)
     | TkSet of PasType
-    | TkProcVar
+    | TkProcVar of MethodInfo
 
 and PasRawType(raw: ITypeDefOrRef) =
     let sg = lazy(raw.ToTypeSig())
@@ -174,7 +174,36 @@ with
         | :? ArrayDim as a -> self.low = a.low && self.high = a.high && self.size = a.size && self.elemType = a.elemType
         | _ -> false
     override self.GetHashCode() = HashCode.Combine(hash self.low, hash self.high, hash self.size, hash self.elemType)
+    
+and VariableKind =
+     | LocalVariable of Local
+     | GlobalVariable of FieldDef
+     | ParamVariable of ParamRefKind * Parameter
+with
+    member self.Type() =
+        match self with
+        | LocalVariable v -> v.Type
+        | GlobalVariable v -> v.FieldType
+        | ParamVariable (_, v) -> v.Type
 
+and MethodParam = {
+    typ: PasType
+    ref: ParamRefKind
+}
+
+and MethodResult = {
+    typ: PasType
+    var: VariableKind option // None for imported methods
+}
+    
+and MethodInfo = {
+    paramList: MethodParam array
+    result: MethodResult option
+    raw: IMethod
+} with
+    member self.PasType = 
+        PasType.Create(AnonName, FnPtrSig self.raw.MethodSig, TkProcVar self)
+        
 let (|StrType|ChrType|OtherType|) = function
     | {kind=TkArray(AkSString _,_,_)} -> StrType
     | {kind=TkOrd(OkChar,_)} -> ChrType
@@ -211,6 +240,10 @@ let (|NumericType|_|) = function
 
 let (|PointerType|_|) = function
     | {kind=TkPointer _} -> Some PointerType
+    | _ -> None
+
+let (|ProcVarType|_|) = function
+    | {kind=TkProcVar _} -> Some ProcVarType
     | _ -> None
 
 let (|FloatType|_|) = function

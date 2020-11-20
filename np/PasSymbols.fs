@@ -53,34 +53,7 @@ module Symbols =
 
     open System
     open System.Collections.Generic
-
-    type VariableKind =
-         | LocalVariable of Local
-         | GlobalVariable of FieldDef
-         | ParamVariable of ParamRefKind * Parameter
-    with
-        member self.Type() =
-            match self with
-            | LocalVariable v -> v.Type
-            | GlobalVariable v -> v.FieldType
-            | ParamVariable (_, v) -> v.Type
-
-    type MethodParam = {
-        typ: PasType
-        ref: ParamRefKind
-    }
-
-    type MethodResult = {
-        typ: PasType
-        var: VariableKind option // None for imported methods
-    }
     
-    type MethodInfo = {
-        paramList: MethodParam array
-        result: MethodResult option
-        raw: IMethod
-    }
-
     type LastTypePoint =
         | LTPVar of VariableKind * PasType
         | LTPDeref of PasType * bool
@@ -123,6 +96,11 @@ module Symbols =
             match self with
             | Referenced({result = Some result},_) -> Some result.typ
             | _ -> None
+        
+        member self.MethodInfo =
+            match self with
+            | Referenced(mi,_) -> mi
+            | _ -> raise(InternalError "2020111800")
 
     and Symbol =
         | VariableSym of (VariableKind * PasType)
