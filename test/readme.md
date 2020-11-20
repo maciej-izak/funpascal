@@ -83,13 +83,13 @@ Success expected with exit code 6 for two first cases and 7 for the last:
 {%results=OK1,OK2,OK3:7}
 begin
   {$IFDEF OK1}
-  Exit(6);
+  Halt(6);
   {$ENDIF}
   {$IFDEF OK2}
-  Exit(6);
+  Halt(6);
   {$ENDIF}
   {$IFDEF OK3}
-  Exit(7);
+  Halt(7);
   {$ENDIF}
 end.
 ```
