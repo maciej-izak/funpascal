@@ -38,7 +38,7 @@ with
         
     static member Singleton i = DIdent[i]
 
-and CallExpr = CallExpr of DIdent * CallParam list
+and CallExpr = CallExpr of DIdent * CallParam list list
 with
     override self.ToString() =
         match self with
@@ -138,20 +138,16 @@ with
 
 and Designator =
     | Ident of string
-    | Deref
+    | Deref of unit
     | Array of ExprEl list
 with
     override self.ToString() =
         match self with
         | Ident i -> i
-        | Deref -> "^"
+        | Deref _ -> "^"
         | Array a -> List.fold (fun s i -> sprintf "%s[%O]" s i) "" a
 
-    member self.BoxPos =
-        match self with
-        | Ident _ -> box self
-        | Deref -> failwith "IE"
-        | Array _ -> failwith "IE"
+    member self.BoxPos = box self
 
 and
     CallParam =

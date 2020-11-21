@@ -336,8 +336,8 @@ module LangDecl =
 
     let declTypePtr (count, typeId) name (ctx: Ctx) =
         // TODO like for declTypeSet?
-        let typ = ctx.FindTypeId typeId
-        ctx.AddTypePointer count typ.name name
+        let typ = CompilerName.FromTypeId typeId
+        ctx.AddTypePointer count typ name
 
     let declTypeSet (packed, typeId) name (ctx: Ctx) =
         // other approach : let typ = ctx.FindTypeId typeId

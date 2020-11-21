@@ -578,8 +578,8 @@ module SymSearch =
         let mainSym = ident.Head |> function | Ident n -> ctx.FindSym(CompilerName.FromString n)
 
         let rec findSym ref acc = function
-        | (Designator.Array a)::t -> acc, Designator.Array(a)::t // TODO ?
-        | (Designator.Deref)::t -> acc, Designator.Deref::t // TODO ?
+        | (Designator.Array _) as a::t -> acc, a::t // TODO ?
+        | (Designator.Deref _) as d::t -> acc, d::t // TODO ?
         | Ident(h)::t ->
             // TODO ? here is solved auto records dereference (x.y instead of x^.y) and dereference for array elements
             let ref = match ref.kind with | TkPointer r -> r | _ -> ref
@@ -592,28 +592,34 @@ module SymSearch =
             | [] -> (List.rev acc, vt)
             | h::t as ht->
                 match h with
-                | Deref ->
+                | Deref _ ->
                     // TODO check dereferencable
-                    let tref = match vt.kind with | TkPointer t -> t | _ -> failwithf "IE cannot do deref of %A" vt.kind
-                    resolveTail (DerefLoad::acc) tref t
+                    match vt.kind with
+                    | TkPointer tref -> resolveTail (DerefLoad::acc) tref t
+                    | _ ->
+                        ``Cannot do deref of %s`` (vt.kind.ToCompilerStr()) |> ctx.NewMsg h
+                        [], ctx.sysTypes.unknown
                 | Ident _ ->
                     let sl, restOfTail = findSym vt [] ht
                     let typ = snd sl.Head
                     resolveTail (StructLoad(List.rev sl)::acc) typ restOfTail
                 | Designator.Array exprs ->
-                    let tref = match vt.kind with | TkArray a -> a | _ -> failwithf "IE array expected %A" vt.kind
-                    let _, dims, elemTyp = tref
-                    // TODO rework this slow comparison
-                    if exprs.Length > dims.Length then failwith "IE"
-                    // TODO assign sub array parts?
-                    let elems, tail = List.splitAt exprs.Length dims
-                    let elemLoad = elems
-                                   |> List.zip exprs
-                                   |> fun dims -> ElemLoad (dims, elemTyp)
-                    // TODO validation of dims ?
-                    let subElemTyp = match List.tryHead tail with | Some h -> !h.selfType | _ -> elemTyp
-                    let newAcc = elemLoad::acc
-                    resolveTail newAcc subElemTyp t
+                    match vt.kind with
+                    | TkArray (_, dims, elemTyp) -> 
+                        // TODO rework this slow comparison
+                        if exprs.Length > dims.Length then failwith "IE"
+                        // TODO assign sub array parts?
+                        let elems, tail = List.splitAt exprs.Length dims
+                        let elemLoad = elems
+                                       |> List.zip exprs
+                                       |> fun dims -> ElemLoad (dims, elemTyp)
+                        // TODO validation of dims ?
+                        let subElemTyp = match List.tryHead tail with | Some h -> !h.selfType | _ -> elemTyp
+                        let newAcc = elemLoad::acc
+                        resolveTail newAcc subElemTyp t
+                    | _ ->
+                        ``Error: Expected %s type but '%O' found`` "array" (vt.kind.ToCompilerStr()) |> ctx.NewMsg h
+                        [], ctx.sysTypes.unknown
 
         let varLoadChain vt dlist vd =
             let (tail, finalType) = resolveTail [] vt dlist
@@ -634,7 +640,7 @@ module SymSearch =
             | ConstBool b ->
                 let i = int b
                 Some([ValueLoad(ValueInt i)], Some ctx.sysTypes.boolean)
-            | _ -> failwith "IE"
+            | _ -> raise <| InternalError "2020112101"
         | TypeSym t -> Some([TypeCastLoad t], Some t)
         | _ -> None
 
@@ -812,27 +818,57 @@ module EvalExpr =
             (il, t)
 
     let doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
+        
+//        let veryfyCallParams mi cp =
+//            let length = (cp: CallParam list).Length
+//            if mi.paramList.Length > length then
+//                ``Error: More parameters expected`` |> ctx.NewMsg ident
+//                ([], Some ctx.sysTypes.unknown)
+//            elif mi.paramList.Length < length then // TODO handle empty tuple param with unitop  
+//                ``Error: Unexpected parameter`` |> ctx.NewMsg ident
+//                ([], Some ctx.sysTypes.unknown)            
+        
         match ctx.FindFunction ident with
         | SymSearch.TypeCast({kind=TkProcVar pv} as t) ->
             match cp with
-            | [ParamIdent(cpi)] ->
-                // cast to parameterless func/proc and call at once
+            | [ParamIdent(cpi)]::tailCalls when tailCalls.IsEmpty ->
                 // TODO handle self parameter in the future
-                // TODO advanced calls like TFoo(x)(1,2); 
-                if popResult && pv.paramList.Length = 0 then
+                // cast to parameterless func/proc and call at once, but only for head (cpi)
+                if pv.paramList.Length = 0 then
                     ([
                         yield! fst <| EvalExpr.findSymbolAndLoad ctx cpi
                         +Calli pv.raw
                         if pv.result.IsSome then +Pop
-                    ], Some t)
+                    ], pv.ResultType)
+                else // cant call proc with params expected
+                    // TODO default params
+                    ``Error: More parameters expected`` |> ctx.NewMsg ident
+                    ([], Some ctx.sysTypes.unknown)
+            | [ParamIdent(cpi)]::tailCalls ->
+                // advanced calls like TFoo(x)(1,2); or TFoo(x)(); or TFoo(x)()();
+                let h = tailCalls.Head
+                if pv.paramList.Length > h.Length then
+                    ``Error: More parameters expected`` |> ctx.NewMsg ident
+                    ([], Some ctx.sysTypes.unknown)
+                elif pv.paramList.Length < h.Length then // TODO handle empty tuple param   
+                    ``Error: Unexpected parameter`` |> ctx.NewMsg ident
+                    ([], Some ctx.sysTypes.unknown)
                 else
-                    raise (InternalError "2020112000")
+                    [
+                        yield! h
+                        |> List.mapi (fun i p -> fst <| callParamToIl ctx p (Some(i, pv)))
+                        |> List.concat
+                        yield! fst <| EvalExpr.findSymbolAndLoad ctx cpi
+                        +Calli pv.raw
+                        if pv.result.IsSome then +Pop
+                    ], pv.ResultType
+                // TODO more levels of call ?
             | _ ->
                 ``Error: %s expected`` "Only one parameter" |> ctx.NewMsg ident
                 ([], Some ctx.sysTypes.unknown)
         | SymSearch.TypeCast t ->
             match cp with
-            | [cp] ->
+            | [cp]::[] ->
                 let callInstr, typ = callParamToIl ctx cp None
                 // TODO some real conversion ? Conv_I4 + explicit operators?
                 ([
@@ -840,9 +876,13 @@ module EvalExpr =
                     t.RefToConv
                 ], Some t)
             | _ ->
-                ``Error: %s expected`` "Only one parameter" |> ctx.NewMsg ident
+                if cp.Tail.Length > 0 then
+                    ``Error: Improper expression`` |> ctx.NewMsg ident
+                else    
+                    ``Error: %s expected`` "For typecast only one parameter is" |> ctx.NewMsg ident
                 ([], Some ctx.sysTypes.unknown)
         | SymSearch.RealFunction rf ->
+            let cp = if cp.IsEmpty then [] else cp.Head
             match rf with
             | Referenced(mr,np) as rm, f ->
                 ([
@@ -1507,6 +1547,7 @@ module Intrinsics =
         let file, cp =
             match cp with
             | ParamIdent id::tail ->
+                // TODO : do not generate twice the same error like in tarrtest.pas for F1 ( Writeln(p^[2]^); // bad deref)
                 let sl, typ = findSymbolAndGetPtr ctx id
                 if typ.raw = ctx.sysTypes.file.raw then Some sl, tail
                 else None, cp
@@ -1534,7 +1575,7 @@ module Intrinsics =
                 | TkArray(AkSString _,_,_) -> "WRITESTRINGF"
                 | _ -> ``Error: Unknown type kind of expression for Write/WriteLn: %O`` cp |> ctx.NewMsg cp
                        ""
-                |> ctx.FindMethodReferenceOpt |>
+                |> (fun f -> if String.IsNullOrEmpty f then None else ctx.FindMethodReferenceOpt f) |>
                 function
                 | Some subWrite ->
                     [
@@ -1793,7 +1834,7 @@ module Intrinsics =
                 ]
         }
 
-    // TODO warnings for const expressions > 255 or < 0
+    // TODO: warnings for const expressions > 255 or < 0
     let private doChr ci =
         ParamsBuilder(ci, Some ci.ctx.sysTypes.char) {
             inExpr

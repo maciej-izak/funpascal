@@ -78,6 +78,18 @@ type TypeKind =
     | TkArray of (TArrayKind * ArrayDim list * PasType)
     | TkSet of PasType
     | TkProcVar of MethodInfo
+with
+    member self.ToCompilerStr() =
+        match self with
+        | TkUnknown _ -> "<unknown>"
+        | TkOrd _ -> "ordinal"
+        | TkFloat _ -> "float"
+        | TkRecord _ -> "record"
+        | TkPointer _ -> "pointer"
+        | TkArray _ -> "array"
+        | TkSet _ -> "set"
+        | TkProcVar _ -> "procedure variable"
+        | _ -> raise <| InternalError "2020112100"
 
 and PasRawType(raw: ITypeDefOrRef) =
     let sg = lazy(raw.ToTypeSig())
@@ -203,6 +215,10 @@ and MethodInfo = {
 } with
     member self.PasType = 
         PasType.Create(AnonName, FnPtrSig self.raw.MethodSig, TkProcVar self)
+    member self.ResultType = 
+        match self.result with
+        | Some rt -> Some rt.typ
+        | _ -> None    
         
 let (|StrType|ChrType|OtherType|) = function
     | {kind=TkArray(AkSString _,_,_)} -> StrType

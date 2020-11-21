@@ -198,8 +198,8 @@ let designator =
     let identifier_p = +(identifier |>> Ident)
     pipe2   identifier_p
             (manyTill
-                (choice[
-                        ``^ `` >>% Deref;
+                +(choice[
+                        ``^ `` |>> fun _ -> Deref();
                         (``[ `` >>. (sepEndBy1 expr ``, ``) .>> ``] ``)
                         |>> Designator.Array;
                         ``. `` >>. identifier_p
@@ -344,7 +344,7 @@ let callExpr =
                    | pe -> ParamExpr pe
     let actualParamsList =
         between ``( `` ``) `` (sepEndBy actualParam ``, ``)
-    designator .>>.? actualParamsList
+    designator .>>.? many1 actualParamsList
     |>> CallExpr
 
 let exprCall = callExpr |>> VCallResult

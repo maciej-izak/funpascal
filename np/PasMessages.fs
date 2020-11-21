@@ -25,7 +25,7 @@ module Errors =
         MsgError(Some 4, sprintf "Unfinished '{$%O}' block detected" o)
 
     let ``Error: Cannot find type identifier '%O'`` o =
-        MsgError(Some 5, sprintf "Cannot find type identifier \"%O\"" o)
+        MsgError(Some 5, sprintf "Cannot find type identifier '%O'" o)
 
     let ``Error: Cannot find symbol '%O'`` o =
         MsgError(Some 6, sprintf "Cannot find symbol '%O'" o)
@@ -95,7 +95,10 @@ module Errors =
     
     let ``Label '%O' already declared`` o =
         MsgError(Some 28, sprintf "Label '%O' already declared" o)
-
+        
+    let ``Cannot do deref of %s`` o =
+        MsgError(Some 29, sprintf "Cannot do deref of %s" o)
+        
 [<AutoOpen>]
 module Warnings =
     let ``Warning: Cannot find enviroment variable '%s'`` s =

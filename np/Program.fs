@@ -115,17 +115,18 @@ let main argv =
             | _ -> failwith "No proper command found"
         else if results.Contains(TestParser) then
             let proj = PascalProject.Create("test.pas", [], [])
-            FParsec.CharParsers.runParserOnString parseMainModule (PasState.Create (TestPass(proj)) null proj "test.pas") "test"
-                """
-uses Test;
-
-type
-  TFoo = record
-  end;
-
-begin
-end.
-"""
+            FParsec.CharParsers.runParserOnString statement (PasState.Create (TestPass(proj)) null proj "test.pas") "test"
+                "TFoo(pp)()(10)('fooo',9.0);"
+//                """
+//uses Test;
+//
+//type
+//  TFoo = record
+//  end;
+//
+//begin
+//end.
+//"""
 //              """
 //unit x;
 //
