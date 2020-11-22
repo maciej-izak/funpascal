@@ -826,12 +826,11 @@ module EvalExpr =
 //                ([], Some ctx.sysTypes.unknown)
 //            elif mi.paramList.Length < length then // TODO handle empty tuple param with unitop  
 //                ``Error: Unexpected parameter`` |> ctx.NewMsg ident
-//                ([], Some ctx.sysTypes.unknown)            
+//                ([], Some ctx.sysTypes.unknown)
         
         match ctx.FindFunction ident with
         | SymSearch.TypeCast({kind=TkProcVar pv} as t) ->
-            match cp with
-            | [ParamIdent(cpi)]::tailCalls when tailCalls.IsEmpty ->
+            let parameterLessCall cpi =
                 // TODO handle self parameter in the future
                 // cast to parameterless func/proc and call at once, but only for head (cpi)
                 if pv.paramList.Length = 0 then
@@ -844,15 +843,21 @@ module EvalExpr =
                     // TODO default params
                     ``Error: More parameters expected`` |> ctx.NewMsg ident
                     ([], Some ctx.sysTypes.unknown)
+
+            match cp with
+            | [ParamIdent(cpi)]::[] -> parameterLessCall cpi // handle `TProc(foo);` 
             | [ParamIdent(cpi)]::tailCalls ->
                 // advanced calls like TFoo(x)(1,2); or TFoo(x)(); or TFoo(x)()();
                 let h = tailCalls.Head
                 if pv.paramList.Length > h.Length then
                     ``Error: More parameters expected`` |> ctx.NewMsg ident
                     ([], Some ctx.sysTypes.unknown)
-                elif pv.paramList.Length < h.Length then // TODO handle empty tuple param   
-                    ``Error: Unexpected parameter`` |> ctx.NewMsg ident
-                    ([], Some ctx.sysTypes.unknown)
+                elif pv.paramList.Length < h.Length then
+                    match h with
+                    | [ParamExpr UnitOp] -> parameterLessCall cpi // handle TProc(foo)();
+                    | _ ->
+                        ``Error: Unexpected parameter`` |> ctx.NewMsg ident
+                        ([], Some ctx.sysTypes.unknown)
                 else
                     [
                         yield! h

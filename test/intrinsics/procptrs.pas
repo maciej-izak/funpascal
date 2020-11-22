@@ -1,5 +1,5 @@
 {%result=1}
-{%results=OK1,OK2,OK3,OK4,F1:-,F2:-}
+{%results=OK1,OK2,OK3,OK4,OK5,F1:-,F2:-}
 
 type
   TProc = procedure;
@@ -32,6 +32,10 @@ begin
   {$IFDEF OK4}
   pp := @Test;
   TProc(pp);
+  {$ENDIF}
+  {$IFDEF OK5}
+  pp := @Test;
+  TProc(pp)();
   {$ENDIF}
   {$IFDEF F1}
   p := Test();
