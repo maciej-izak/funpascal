@@ -2,7 +2,6 @@
 
 open System
 open System.Collections.Generic
-open System.Runtime.CompilerServices
 open dnlib.DotNet
 open dnlib.DotNet.Emit
 open Pas.Intrinsics
@@ -111,22 +110,39 @@ type Ctx = {
             match self.symbols with
             | (StandaloneMethod(originMd,nestedParams),_)::_ ->
                 if originMd.raw <> md.raw then
-                    let symId = (|NestedRoutineId|) (sym, sym) // second param has no meaning
+                    let (NestedRoutineId symId) = sym, () // second param has no meaning
+                    let tryAddParam nr =
+                        match nr.Params.TryGetValue(symId) with
+                        | true, nrv -> Some nrv.Inner
+                        | _ ->
+                            //let attributes = TypeAttributes.AnsiClass ||| TypeAttributes.Sealed ||| TypeAttributes.Public ||| TypeAttributes.AutoLayout
+                            //let at = TypeDefUser(UTF8String self.details.Namespace, string(self.details.UniqueTypeName()) |> UTF8String, self.details.ValueType)
+                            //at.Attributes <- attributes
+                            //self.details.MainModule.Types.Add(at)
+                            //PasRawType at
+                            //at.Fields.Add()
+                        
+                            let symbols = snd self.symbols.Head
+                            let paramName = sprintf "@nested$%d" symbols.Count
+                            let md = originMd.raw.ResolveMethodDef()
+                            let paramIdx = md.ParamDefs.Count
+                            let pd = ParamDefUser(UTF8String paramName, paramIdx + 1 |> uint16)
+                            md.ParamDefs.Add pd
+                            t.Sig |> PtrSig |> md.MethodSig.Params.Add
+                            md.Parameters.UpdateParameterTypes()
+                            let newSym = VariableSym(ParamVariable(RefVar, md.Parameters.[paramIdx]), t)
+                            symbols.Add(CompilerName.FromString paramName, newSym)
+                            NestedRoutineVar(sym, newSym) |> nr.Add symId
+                            Some newSym
+                    
                     let np = !nestedParams
-                    match List.tryFind (fun (NestedRoutineId id) -> symId.Equals(id)) np with
-                    | None ->
-                        let symbols = snd self.symbols.Head
-                        let paramName = sprintf "@nested$%d" symbols.Count
-                        let md = originMd.raw.ResolveMethodDef()
-                        let paramIdx = md.ParamDefs.Count
-                        let pd = ParamDefUser(UTF8String paramName, paramIdx + 1 |> uint16)
-                        md.ParamDefs.Add pd
-                        t.Sig |> PtrSig |> md.MethodSig.Params.Add
-                        let newSym = VariableSym(ParamVariable(RefVar, md.Parameters.[paramIdx]), t)
-                        symbols.Add(CompilerName.FromString paramName, newSym)
-                        nestedParams := (sym, newSym)::!nestedParams
-                        Some newSym
-                    | Some(_, newSym) -> Some newSym
+                             |> Option.defaultWith (fun() -> let d = Dictionary<_,_>() in nestedParams := Some d; d)
+                    match np.TryGetValue originMd.raw with
+                    | true, nr -> tryAddParam nr
+                    | _ ->
+                        let nr = NestedRoutine.Create() 
+                        np.Add(originMd.raw, nr)
+                        tryAddParam nr
                 else
                     Some sym
             | _ -> Some sym
@@ -403,7 +419,7 @@ module Ctx =
                paramList = [|{typ=tsingle;ref=RefNone}|]
                result = Some {typ=tsingle; var=None} // imported methods dont need local var -> internal purposes only
                raw = raw
-           }, ref[]) |> MethodSym
+           }, ref None) |> MethodSym
         let mathLog = typeof<System.MathF>.GetMethod("Log", [| typeof<single> |])  |> ctx.details.MainModule.Import
         let mathExp = typeof<System.MathF>.GetMethod("Exp", [| typeof<single> |])  |> ctx.details.MainModule.Import
         symbols.Add(CompilerName.FromString "Exp", singleScalar mathExp)
@@ -659,7 +675,7 @@ module SymSearch =
            | Intrinsic _ -> RealFunction(cl, [])
         | Some([TypeCastLoad t], _) -> TypeCast t
         | Some(([VariableLoad v], Some{kind=TkProcVar mi}) as cc) ->
-            let cl = Referenced(mi,ref[])
+            let cl = Referenced(mi,ref None)
             RealFunction(cl, [yield! fst <| EvalExpr.loadSymList ctx true false cc; +Calli(mi.raw)])
         | _ ->
             // TODO replace first error "Cannot find symbol" with
@@ -891,17 +907,33 @@ module EvalExpr =
             match rf with
             | Referenced(mr,np) as rm, f ->
                 ([
-                    yield! cp
-                    |> List.mapi (fun i p -> fst <| callParamToIl ctx p (Some(i, mr)))
-                    |> List.concat
-                    // TODO recursive call nested! For now before nested routine is added call can be generated
-                    yield! !np
-                    |> List.map (fun (VariableSymLoad vlt) -> loadSymList ctx false true vlt |> fst)
-                    |> List.concat
-                    yield! f
-                    // TODO error/IE ? for popResult && mr.result.IsNone
-                    if popResult && mr.result.IsSome then
-                        yield +Pop
+                    // do IlDelayed?
+                    IlInstruction.CreateNestedCall(
+                        fun() ->
+                            [
+                                yield! cp
+                                |> List.mapi (fun i p -> fst <| callParamToIl ctx p (Some(i, mr)))
+                                |> List.concat
+                                // Handle nested routines
+                                yield!
+                                    match !np with
+                                    | Some np ->
+                                        // rec call for nested method, load params instead of local params etc.
+                                        let nestedRec = match ctx.SymOwner with
+                                                        | StandaloneMethod (mi,_) -> mr = mi
+                                                        | _ -> false
+                                        np.Values
+                                        |> Seq.collect (fun v -> v.Params.Values)
+                                        |> List.ofSeq
+                                        |> List.map (fun (VariableSymLoad nestedRec vlt) -> loadSymList ctx false true vlt |> fst)
+                                        |> List.concat
+                                    | _ -> []
+                                yield! f
+                                // TODO error/IE ? for popResult && mr.result.IsNone
+                                if popResult && mr.result.IsSome then
+                                    yield +Pop
+                            ]
+                        )
                  ], rm.ReturnType)
             | Intrinsic i, _ -> handleIntrinsic i {ctx=ctx;ident=ident;cp=cp;popResult=popResult}
             | _ -> raise (InternalError "2020111600")
@@ -1720,7 +1752,7 @@ module Intrinsics =
             )}
 
     // TODO handle Exit(result);
-    let private doExit ci = ParamsBuilder(ci, None) { noParams [+.Ret] }
+    let private doExit ci = ParamsBuilder(ci, None) { noParams [IlInstruction.CreateExit()] }
 
     type DeltaKind =
         | NegativeDelta

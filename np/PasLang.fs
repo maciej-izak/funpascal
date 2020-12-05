@@ -15,8 +15,7 @@ module LangStmt =
 
     let resolveLabels inst labels =
         match List.tryHead inst with
-        | Some((IlResolvedEx(_,_,rex)) as h) ->
-            rex := labels |> List.fold (fun s l -> let ll = LazyLabel(h, nullRef()) in (l := ll; ll::s)) !rex
+        | Some(IlDelayed ild) -> ild.ResolveLabels labels
         | Some h -> for l in labels do l := LazyLabel(h, nullRef())
         | _ -> ()
 
@@ -503,7 +502,7 @@ module LangDecl =
                         let vs = VariableSym(ParamVariable(item.ref, param), item.typ)
                         newMethodSymbols.Add(name, vs)
                     )
-                let ms = methodInfo, ref []
+                let ms = methodInfo, ref None
                 if not <| ctx.NewSymbols.TryAdd(methodName, ms |> Referenced |> MethodSym) then
                     ``Duplicated identifier of '%O'`` name |> ctx.NewMsg name
                 ms, newMethodSymbols

@@ -86,7 +86,26 @@ module Symbols =
         mutable block: GlobalBlock
     }
     
-    type ReferencedDef = MethodInfo * (Symbol * Symbol) list ref
+    type NestedRoutineVar(outer, inner) = 
+        //outerSym: Symbol
+        //innerSym: Symbol
+        // def: FieldDefUser
+        member val Outer: Symbol = outer
+        member val Inner: Symbol = inner
+        
+    and NestedRoutine = {
+        // Type: TypeDefUser
+        // Variables: Dictionary<obj, NestedRoutineVar>
+        Params: Dictionary<obj, NestedRoutineVar>
+        ParamsList: List<NestedRoutineVar> 
+        // mutable Occurrences: {| call: IlInstruction list ref; paramsCount: int |}
+    } with
+        member self.Add id nrv = self.Params.Add(id, nrv); self.ParamsList.Add nrv
+        static member Create() = { Params = Dictionary<_,_>(); ParamsList = List<_>() }
+    
+    and NestedRoutines = Dictionary<IMethod, NestedRoutine>
+    
+    and ReferencedDef = MethodInfo * NestedRoutines option ref
 
     and MethodSym =
         | Referenced of ReferencedDef
@@ -115,7 +134,7 @@ module Symbols =
     let (|NestedRoutineId|) = function
         | VariableSym(LocalVariable vd, _), _ -> vd :> obj
         | VariableSym(ParamVariable (_, pd), _), _ -> pd :> obj
-        | _ -> failwith "IE"
+        | _ -> raise(InternalError "2020112200")
 
     let (|NestedRoutineSym|_|) = function
         | VariableSym(LocalVariable _, t) | VariableSym(ParamVariable _, t) as vs -> Some(NestedRoutineSym(vs, t))
@@ -134,8 +153,9 @@ module Symbols =
         | CallableLoad of MethodSym
         | TypeCastLoad of PasType
 
-    let (|VariableSymLoad|) = function
-        | VariableSym((_,t) as vs), _ -> [VariableLoad vs], Some t
+    let (|VariableSymLoad|) nestedRec (nr: NestedRoutineVar) =
+        match (if nestedRec then nr.Inner else nr.Outer) with
+        | VariableSym((_,t) as vs) -> [VariableLoad vs], Some t
         | _ -> failwith "IE"
 
     type ChainLoad = SymbolLoad list * PasType option

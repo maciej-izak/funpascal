@@ -20,7 +20,9 @@
 // https://github.com/sgoguen/journal/blob/master/2019/12/fsharp-advent/05-active-patterns.md
 // Analiza CE : https://stackoverflow.com/questions/23122639/how-do-i-write-a-computation-expression-builder-that-accumulates-a-value-and-als
 // CE tutorial https://github.com/maxild/computation-expressions-workshop
-// FnPtr : https://stackoverflow.com/questions/27195502/what-is-the-fnptr-type-and-how-to-create-it
+// FnPtr : 
+   // https://stackoverflow.com/questions/27195502/what-is-the-fnptr-type-and-how-to-create-it
+   // (unsafe cast) https://github.com/dotnet/runtime/issues/44968#issuecomment-731428036
 
 // Custom comparers : HashIdentity.Reference
 

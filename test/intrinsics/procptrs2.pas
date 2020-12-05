@@ -1,4 +1,4 @@
-{%results=OK1:2}//,F1:-}
+{%results=OK1:2,F1:-}
 
 type
   TProc = procedure(x: byte);
