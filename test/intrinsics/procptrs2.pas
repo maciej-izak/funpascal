@@ -1,4 +1,4 @@
-{%results=OK1:2,F1:-}
+{%results=OK1:2}
 
 type
   TProc = procedure(x: byte);
@@ -19,9 +19,6 @@ begin
   {$IFDEF OK1}
   pp := @Test;
   TProc(pp)(2);
-  {$ENDIF}
-  {$IFDEF F1}
-  Test(1,2);
   {$ENDIF}
   Halt(b);
 end.

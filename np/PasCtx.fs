@@ -835,14 +835,19 @@ module EvalExpr =
 
     let doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
         
-//        let veryfyCallParams mi cp =
-//            let length = (cp: CallParam list).Length
-//            if mi.paramList.Length > length then
-//                ``Error: More parameters expected`` |> ctx.NewMsg ident
-//                ([], Some ctx.sysTypes.unknown)
-//            elif mi.paramList.Length < length then // TODO handle empty tuple param with unitop  
-//                ``Error: Unexpected parameter`` |> ctx.NewMsg ident
-//                ([], Some ctx.sysTypes.unknown)
+        let veryfyCallParams mi cp def =
+            let length = (cp: CallParam list).Length
+            if mi.paramList.Length > length then
+                ``Error: More parameters expected`` |> ctx.NewMsg ident
+                ([], Some ctx.sysTypes.unknown)
+            elif mi.paramList.Length < length then
+                match cp with // handle empty tuple param with unitop
+                | [ParamExpr UnitOp] when mi.paramList.Length + 1 = length -> def
+                | [ParamExpr UnitOp] -> raise (InternalError "2020120700")
+                | _ ->
+                    ``Error: Unexpected parameter`` |> ctx.NewMsg cp.[mi.paramList.Length]
+                    ([], Some ctx.sysTypes.unknown)
+            else def
         
         match ctx.FindFunction ident with
         | SymSearch.TypeCast({kind=TkProcVar pv} as t) ->
@@ -935,6 +940,7 @@ module EvalExpr =
                             ]
                         )
                  ], rm.ReturnType)
+                |> veryfyCallParams mr cp
             | Intrinsic i, _ -> handleIntrinsic i {ctx=ctx;ident=ident;cp=cp;popResult=popResult}
             | _ -> raise (InternalError "2020111600")
         | SymSearch.UnknownFunction ->
