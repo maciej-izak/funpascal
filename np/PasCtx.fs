@@ -908,7 +908,7 @@ module EvalExpr =
             | Referenced(mr,np) as rm, f ->
                 ([
                     // do IlDelayed?
-                    IlInstruction.CreateNestedCall(
+                    IlInstruction.CreateDelayedCode(
                         fun() ->
                             [
                                 yield! cp
@@ -1752,7 +1752,7 @@ module Intrinsics =
             )}
 
     // TODO handle Exit(result);
-    let private doExit ci = ParamsBuilder(ci, None) { noParams [IlInstruction.CreateExit()] }
+    let private doExit ci = ParamsBuilder(ci, None) { noParams [IlInstruction.CreateDelayedExit()] }
 
     type DeltaKind =
         | NegativeDelta

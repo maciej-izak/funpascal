@@ -174,11 +174,11 @@ module Instructions =
             | _ -> finalCode <- self.InternalGenerateCode() |> List.collect instr |> Some; finalCode.Value |> self.FixRefs
         abstract member InternalGenerateCode : unit -> IlInstruction list
 
-    and DelayedNestedCallIl(gen: unit -> IlInstruction list) =
+    and DelayedCode(gen: unit -> IlInstruction list) =
         inherit DelayedIl()
         override self.InternalGenerateCode() = gen()
 
-    and DelayedExitIl() =
+    and DelayedExit() =
         inherit DelayedIl()
         member val ExitInstr: IlInstruction option = None with get, set
         override self.InternalGenerateCode() =
@@ -188,12 +188,12 @@ module Instructions =
         
         
     and IlDelayed =
-        | IlDelayedNestedCall of DelayedNestedCallIl
-        | IlDelayedExit of DelayedExitIl
+        | IlDelayedCode of DelayedCode
+        | IlDelayedExit of DelayedExit
     with
         member self.ResolveLabels (labels: BranchLabel ref list) =
             match self with
-            | IlDelayedNestedCall dnc -> dnc.ResolveLabels labels
+            | IlDelayedCode dnc -> dnc.ResolveLabels labels
             | IlDelayedExit de -> de.ResolveLabels labels
 
     and IlInstruction =
@@ -201,12 +201,12 @@ module Instructions =
         | IlResolved of (AtomInstruction * Instruction)
         | IlDelayed of IlDelayed
     with
-        static member CreateNestedCall(f) =
-            let dc = DelayedNestedCallIl(f)
-            dc |> IlDelayedNestedCall |> fun il -> IlDelayed(il) |> dc.InitializeOwner
+        static member CreateDelayedCode(f) =
+            let dc = DelayedCode(f)
+            dc |> IlDelayedCode |> fun il -> IlDelayed(il) |> dc.InitializeOwner
 
-        static member CreateExit() =
-            let dc = DelayedExitIl()
+        static member CreateDelayedExit() =
+            let dc = DelayedExit()
             dc |> IlDelayedExit |> fun il -> IlDelayed(il) |> dc.InitializeOwner
 
     let ilToAtom ilList = ilList |> List.map (function | IlResolved(a,_) -> a | _ -> raise (InternalError "2020112900"))
@@ -386,7 +386,7 @@ module IlEmit =
                 | IlDelayedExit deil ->
                     deil.ExitInstr <- IlResolved(Unknown, Instruction.Create(brOpcode, goto)) |> Some
                     deil :> DelayedIl
-                | IlDelayedNestedCall dnc -> dnc :> DelayedIl
+                | IlDelayedCode dnc -> dnc :> DelayedIl
             ).GenerateCode fi
         
         match inst with
