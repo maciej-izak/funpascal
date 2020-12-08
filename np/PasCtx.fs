@@ -2,6 +2,7 @@
 
 open System
 open System.Collections.Generic
+open Pas.EvalExpr
 open dnlib.DotNet
 open dnlib.DotNet.Emit
 open Pas.Intrinsics
@@ -216,8 +217,12 @@ type Ctx = {
     member self.ExprToIl = EvalExpr.exprToIl self
     member self.ChainLoadToIl = EvalExpr.chainLoadToIl self
     member self.ChainWriterFactory = EvalExpr.chainWriterFactory self
-    member self.ChainReaderFactory = EvalExpr.chainReaderFactory self
+    member self.ChainReaderFactory rk = chainReaderFactory { ctx = self; reader = rk }
     member self.DoCall = EvalExpr.doCall self
+    member self.CollectChain symbols =
+       let ltp = ref LTPNone
+       List.collect (self.ChainLoadToIl ltp (self.ChainReaderFactory ReadChain)) symbols
+       , ltp
 
 module Ctx =
 
@@ -676,7 +681,7 @@ module SymSearch =
         | Some([TypeCastLoad t], _) -> TypeCast t
         | Some(([VariableLoad v], Some{kind=TkProcVar mi}) as cc) ->
             let cl = Referenced(mi,ref None)
-            RealFunction(cl, [yield! fst <| EvalExpr.loadSymList ctx true false cc; +Calli(mi.raw)])
+            RealFunction(cl, [yield! fst <| loadSymList ctx ReadValue cc; +Calli(mi.raw)])
         | _ ->
             // TODO replace first error "Cannot find symbol" with
             // ctx.NewError ident (sprintf "Unknown function '%O'" ident)
@@ -797,10 +802,10 @@ module EvalExpr =
                 ([
                     match a with
                     | Value((VIdent _) as v) -> yield! (valueToValueKind ctx v et true |> fst)
-                    | _ -> failwith "IE"
+                    | _ -> raise (InternalError "2020120800")
                 ], ctx.sysTypes.pointer)
             | UnitOp -> ([], ctx.sysTypes.unit) // call `WriteLn();`
-            | _ -> failwith "IE"
+            | _ -> raise (InternalError "2020120801")
             |> ValueKind
 
         let a, at = exprToMetaExpr exprEl expectedType refRes
@@ -923,14 +928,14 @@ module EvalExpr =
                                 yield!
                                     match !np with
                                     | Some np ->
-                                        // rec call for nested method, load params instead of local params etc.
+                                        // rec call for nested method, load params instead of local etc.
                                         let nestedRec = match ctx.SymOwner with
                                                         | StandaloneMethod (mi,_) -> mr = mi
                                                         | _ -> false
                                         np.Values
                                         |> Seq.collect (fun v -> v.Params.Values)
                                         |> List.ofSeq
-                                        |> List.map (fun (VariableSymLoad nestedRec vlt) -> loadSymList ctx false true vlt |> fst)
+                                        |> List.map (fun (VariableSymLoad nestedRec vlt) -> loadSymList ctx ReadAddr vlt |> fst)
                                         |> List.concat
                                     | _ -> []
                                 yield! f
@@ -988,8 +993,27 @@ module EvalExpr =
             let fd = ctx.details.AddBytesConst bytes
             [+(if byRef then Ldsflda fd else Ldsfld fd)], ft
 
-    let chainReaderFactory (ctx: Ctx) asValue addr ltp =
-        let valOrPtr v p (t: TypeSig) = (if asValue || (t.IsPointer && addr = false) then v else p) |> List.singleton
+    type ChainReaderKind =
+        | ReadValue
+        | ReadAddr
+        | ReadChain
+    with
+        member self.AsValue = match self with | ReadValue -> true | _ -> false
+        member self.AsAddr = match self with | ReadAddr -> true | _ -> false
+            
+    type ChainReaderCtx = {
+        ctx: Ctx
+        reader: ChainReaderKind
+    }    
+    
+    let chainReaderFactory (ctx: ChainReaderCtx) ltp =
+        let valOrPtr v p (t: TypeSig) =
+            match ctx.reader with
+            | ReadValue -> v
+            | ReadAddr -> p
+            | ReadChain when t.IsPointer -> v // logical reading of a.b.c
+            | ReadChain -> p // a.b.c -> always force to ptr :)
+            |> List.singleton
         match ltp with
         | LTPVar(v, vt) -> match v with
                            | LocalVariable v -> valOrPtr +(Ldloc v) +(Ldloca v) vt.Sig
@@ -1000,19 +1024,21 @@ module EvalExpr =
                              | RefVar ->
                                  [
                                     +Ldarg v
-                                    if asValue then
+                                    if ctx.reader.AsValue then
                                         +Ldobj vt.DefOrRef
                                  ]
                              | RefUntypedVar | RefUntypedConst ->
-                                 if asValue then failwith "IE"
+                                 // TODO check IE
+                                 if ctx.reader.AsValue then raise (InternalError "2020120803")
                                  [+Ldarg v]
         | LTPStruct (fld, _) -> valOrPtr +(Ldfld fld) +(Ldflda fld) fld.FieldSig.Type
         | LTPDeref (dt, force) ->
-            match dt, addr, force, asValue with
-            | _, true, _, _ -> []
-            | NumericType, _, _, _ | ChrType, _, _, _ -> dt.IndKind |> Ldind |> (~+) |> List.singleton
-            | _, _, true, _ | _, _, _, true ->
-                if dt.Sig.IsValueType = false then failwith "IE"
+            match dt, ctx.reader, force with
+            | _, ReadAddr, _ -> []
+            | NumericType, _, _ | ChrType, _, _ -> dt.IndKind |> Ldind |> (~+) |> List.singleton
+            | _, ReadValue, _ | _, _, true ->
+                // TODO check IE
+                if dt.Sig.IsValueType = false then raise (InternalError "2020120804")
                 [+Ldobj dt.DefOrRef]
             | _ -> []
         | LTPNone -> []
@@ -1040,17 +1066,17 @@ module EvalExpr =
         | LTPStruct(_, t) -> derefType t
         | _ -> failwith "cannot deref"
 
-    let loadSymList (ctx: Ctx) value addr (sl, t) =
+    let loadSymList (ctx: Ctx) rk (sl, t) =
         let lastPoint = ref LTPNone
         sl
-        |> List.collect (chainLoadToIl ctx lastPoint (chainReaderFactory ctx false false))
-        |> fun l -> l @ (chainReaderFactory ctx value addr !lastPoint)
+        |> List.collect (chainLoadToIl ctx lastPoint (chainReaderFactory { ctx = ctx; reader = ReadChain }))
+        |> fun l -> l @ (chainReaderFactory { ctx = ctx; reader = rk } !lastPoint)
         ,match t with | Some t -> t | _ -> failwith "IE"
 
-    let findSymbolInternal value addr (ctx: Ctx) ident =
+    let findSymbolInternal rk (ctx: Ctx) ident =
         let sid = ctx.FindSymbol ident |> chainToSLList
         match sid with
-        | _, Some _ -> sid |> loadSymList ctx value addr
+        | _, Some _ -> sid |> loadSymList ctx rk
         | [CallableLoad sl], None ->
             // handle x := foo; where foo is procedured
             [+Ldftn sl.MethodInfo.raw], sl.MethodInfo.PasType
@@ -1058,9 +1084,9 @@ module EvalExpr =
             ``Error: %s expected`` "value" |> ctx.NewMsg ident
             [], ctx.sysTypes.unknown
 
-    let findSymbolAndLoad = findSymbolInternal true false
+    let findSymbolAndLoad = findSymbolInternal ReadValue
 
-    let findSymbolAndGetPtr = findSymbolInternal false true
+    let findSymbolAndGetPtr = findSymbolInternal ReadAddr
 
     let chainLoadToIl ctx lastType factory symload =
         let res = factory !lastType
@@ -1097,7 +1123,8 @@ module EvalExpr =
                 | ValueFloat f -> +Ldc_R4 f
             ]
         | CallableLoad (Referenced(mr,_)) ->
-            if mr.result.IsNone then failwith "IE"
+            // TODO check IE
+            if mr.result.IsNone then raise (InternalError "2020120802")
             [+Call mr.raw]
         // probably below IE can be reduced
         | _ -> raise (InternalError "2020062201")
@@ -1227,7 +1254,7 @@ module Intrinsics =
         | Some s ->
             match s with
             | VariableSym _ ->
-                (findSymbolInternal (not byRef) byRef ctx id) |> Some
+                (if byRef then findSymbolAndGetPtr else findSymbolAndLoad) ctx id |> Some
             | _ -> None
         | _ -> None
 

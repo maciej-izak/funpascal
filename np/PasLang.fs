@@ -22,14 +22,13 @@ module LangStmt =
     let doAssignStm (ident, expr) (ctx: Ctx) =
         // add param for findSymbol to set purpose (like this `assign`)
         match ctx.FindSymbol ident with
-        | Some(symbols,_) -> // TODO type chceck
-            let ltp = ref LTPNone
-            let loadDest =
-                let load = List.collect (ctx.ChainLoadToIl ltp (ctx.ChainReaderFactory false false)) symbols
+        | Some(symbols,identType) -> // TODO type chceck
+            let loadDest, ltp =
+                let load, ltp = ctx.CollectChain symbols
                 match symbols with // needed to proper store values to ref parameters in methods
                 | VariableLoad(ParamVariable(RefVar, i),_)::[] -> +Ldarg i::load
                 | _ -> load
-            let ltp = !ltp
+                , !ltp
             let expr, exprType = ctx.ExprToIl expr (Some ltp.ToTypeRef)
             if not(Utils.typeCheck ctx ltp.PasType exprType) then
                 ``Error: Incompatible types ('%O' and '%O') for '%O'`` ltp.PasType.name exprType.name ident
@@ -48,8 +47,7 @@ module LangStmt =
             let loadVarW =
                 match ctx.FindSymbol i with
                 | Some (symbols, _) ->
-                    let ltp = ref LTPNone
-                    let cl = List.collect (ctx.ChainLoadToIl ltp (ctx.ChainReaderFactory false false)) symbols
+                    let cl, ltp = ctx.CollectChain symbols
                     let vt = match !ltp with // TODO allow structs only ? (ValueType as records/classes only)
                              | LTPVar(_,t) -> t
                              | LTPStruct(_,t) -> t
@@ -61,7 +59,7 @@ module LangStmt =
                     let (_, vv) = ctx.EnsureVariable pvt
                     Some([
                             yield! cl
-                            yield! ctx.ChainReaderFactory false true !ltp
+                            yield! ctx.ChainReaderFactory EvalExpr.ReadAddr !ltp
                             +Stloc vv
                         ], (vv, vt.raw, pvt))
                 | None -> None
