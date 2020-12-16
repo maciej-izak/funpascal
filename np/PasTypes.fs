@@ -113,6 +113,8 @@ with
     member self.Sig = self.raw.Sig
     member self.Def = self.raw.Def
     
+    member self.ToCompilerStr() = self.kind.ToCompilerStr()
+    
     static member Create(name, defOrRef: ITypeDefOrRef, kind) = {name=CompilerName.FromString name;raw=PasRawType defOrRef;kind=kind}
     static member Create(name, ts: TypeSig, kind) = {name=name;raw=PasRawType ts;kind=kind}
     static member Create(name, ts: ITypeDefOrRef, kind) = {name=name;raw=PasRawType ts;kind=kind}
@@ -207,8 +209,8 @@ and MethodResult = {
     typ: PasType
     var: VariableKind option // None for imported methods
 }
-    
-and MethodInfo = {
+
+and [<CustomEquality;NoComparison>] MethodInfo = {
     paramList: MethodParam array
     result: MethodResult option
     raw: IMethod
@@ -218,7 +220,19 @@ and MethodInfo = {
     member self.ResultType = 
         match self.result with
         | Some rt -> Some rt.typ
-        | _ -> None    
+        | _ -> None
+        
+    override self.Equals(b) =
+        match b with
+        | :? MethodInfo as mi ->
+            let typesEquals a b = a.kind = b.kind
+            let paramsEquals a b = a.ref = b.ref && (typesEquals a.typ b.typ)
+            
+            mi.paramList.Length = self.paramList.Length
+            && mi.result.IsSome = self.result.IsSome
+            && (if mi.result.IsSome then typesEquals mi.result.Value.typ self.result.Value.typ else true)
+            && Seq.forall2 paramsEquals mi.paramList self.paramList
+        | _ -> false
         
 let (|StrType|ChrType|OtherType|) = function
     | {kind=TkArray(AkSString _,_,_)} -> StrType

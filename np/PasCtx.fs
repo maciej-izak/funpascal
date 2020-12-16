@@ -705,15 +705,17 @@ module EvalExpr =
     let handleOperator (ctx: Ctx) et byRef (op, (ils, at, bt)) =
         let convCmpOp = function | Cgt -> Clt | Clt -> Cgt | o -> o
         match at, bt, op with
-        | ErrorType, _, _ | _, ErrorType, _ -> []
-        | _, _, InInst -> [yield! ils; +Call(ctx.FindMethodReference "INSET")]
-        | (StrType as t), StrType, AddInst -> ils @ useHelperOp ctx "ConcatStr" t byRef
-        | StrType, StrType, BoolOp -> [+Ldc_I4 0; yield! ils; +Call(ctx.FindMethodReference "CompareStr"); +convCmpOp op]
-        | (SetType at), ((SetType bt) as t), AddInst when at = bt -> ils @ useHelperOp ctx "SetUnion" t byRef
-        | (SetType at), ((SetType bt) as t), MinusInst when at = bt -> ils @ useHelperOp ctx "SetDifference" t byRef
-        | NumericType, NumericType, op -> [yield! ils; +op]
-        | _ -> failwith "IE"
-        ,match et with | Some t -> t | _ -> at
+        | ErrorType, _, _ | _, ErrorType, _ -> [] |> Some
+        | _, _, InInst -> [yield! ils; +Call(ctx.FindMethodReference "INSET")] |> Some
+        | (StrType as t), StrType, AddInst -> ils @ useHelperOp ctx "ConcatStr" t byRef |> Some
+        | StrType, StrType, BoolOp -> [+Ldc_I4 0; yield! ils; +Call(ctx.FindMethodReference "CompareStr"); +convCmpOp op] |> Some
+        | (SetType at), ((SetType bt) as t), AddInst when at = bt -> ils @ useHelperOp ctx "SetUnion" t byRef |> Some
+        | (SetType at), ((SetType bt) as t), MinusInst when at = bt -> ils @ useHelperOp ctx "SetDifference" t byRef |> Some
+        | NumericType, NumericType, op -> [yield! ils; +op] |> Some
+        | _ -> None
+        |> function
+           | Some ils -> Some(ils, match et with | Some t -> t | _ -> at)
+           | _ -> None
 
     let rec exprToIlGen refRes (ctx: Ctx) exprEl expectedType =
         let rec exprToMetaExpr (el: ExprEl) et refRes =
@@ -758,6 +760,12 @@ module EvalExpr =
                     constConvertTo i (aExpr, a, at) (bExpr, b, bt)
                     ||> typeConvertTo
                     |> handleOperator ctx et refRes
+                    |> function
+                       | Some r -> r
+                       | _ ->
+                            ``Error: Incompatible types ('%O' and '%O') for '%O'`` (at.ToCompilerStr()) (bt.ToCompilerStr()) el 
+                            |> ctx.NewMsg el
+                            [], ctx.sysTypes.unknown
                 ([
                     yield! opIls
                     // need to cast to proper type (for simple types)
@@ -802,7 +810,7 @@ module EvalExpr =
                 ([
                     match a with
                     | Value((VIdent _) as v) -> yield! (valueToValueKind ctx v et true |> fst)
-                    | _ -> raise (InternalError "2020120800")
+                    | v -> ``Error: Cannot get pointer to '%O'`` v  |> ctx.NewMsg v
                 ], ctx.sysTypes.pointer)
             | UnitOp -> ([], ctx.sysTypes.unit) // call `WriteLn();`
             | _ -> raise (InternalError "2020120801")
@@ -838,6 +846,12 @@ module EvalExpr =
                     |> ctx.NewMsg cp
             (il, t)
 
+    type CallStep =
+        | ErrorStep
+        | VoidStep
+        | StdStep of PasType option
+        | CallableStep of IlInstruction list * PasType option * IlInstruction list
+    
     let doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
         
         let veryfyCallParams mi cp def =
@@ -855,15 +869,14 @@ module EvalExpr =
             else def
         
         match ctx.FindFunction ident with
-        | SymSearch.TypeCast({kind=TkProcVar pv} as t) ->
-            let parameterLessCall cpi =
+        | SymSearch.TypeCast({kind=TkProcVar pv} as pvt) ->
+            let parameterLessCall pv ct =
                 // TODO handle self parameter in the future
                 // cast to parameterless func/proc and call at once, but only for head (cpi)
                 if pv.paramList.Length = 0 then
                     ([
-                        yield! fst <| EvalExpr.findSymbolAndLoad ctx cpi
+                        yield! ct
                         +Calli pv.raw
-                        if pv.result.IsSome then +Pop
                     ], pv.ResultType)
                 else // cant call proc with params expected
                     // TODO default params
@@ -871,28 +884,63 @@ module EvalExpr =
                     ([], Some ctx.sysTypes.unknown)
 
             match cp with
-            | [ParamIdent(cpi)]::[] -> parameterLessCall cpi // handle `TProc(foo);` 
             | [ParamIdent(cpi)]::tailCalls ->
-                // advanced calls like TFoo(x)(1,2); or TFoo(x)(); or TFoo(x)()();
-                let h = tailCalls.Head
-                if pv.paramList.Length > h.Length then
-                    ``Error: More parameters expected`` |> ctx.NewMsg ident
-                    ([], Some ctx.sysTypes.unknown)
-                elif pv.paramList.Length < h.Length then
-                    match h with
-                    | [ParamExpr UnitOp] -> parameterLessCall cpi // handle TProc(foo)();
-                    | _ ->
-                        ``Error: Unexpected parameter`` |> ctx.NewMsg ident
-                        ([], Some ctx.sysTypes.unknown)
-                else
-                    [
-                        yield! h
-                        |> List.mapi (fun i p -> fst <| callParamToIl ctx p (Some(i, pv)))
-                        |> List.concat
-                        yield! fst <| EvalExpr.findSymbolAndLoad ctx cpi
-                        +Calli pv.raw
-                        if pv.result.IsSome then +Pop
-                    ], pv.ResultType
+                let callTarget = fst (findSymbolAndLoad ctx cpi)
+                match tailCalls with
+                | [] -> // handle `TProc(foo);`
+                    callTarget
+                    |> parameterLessCall pv
+                    |> fun (ils,r as res) -> if popResult && r.IsSome then ils@[+Pop],r else res
+                | _ ->
+                    // advanced calls like TFoo(x)(1,2); or TFoo(x)(); or TFoo(x)()();
+                    let callTarget = fst (findSymbolAndLoad ctx cpi)
+                    let callHead (h: CallParam list) = function
+                        | CallableStep(bc, Some{kind=TkProcVar pv}, ct) ->
+                            if pv.paramList.Length > h.Length then
+                                ``Error: More parameters expected`` |> ctx.NewMsg ident
+                                ([], Some ctx.sysTypes.unknown)
+                            elif pv.paramList.Length < h.Length then
+                                match h with
+                                | [ParamExpr UnitOp] -> // handle TProc(foo)();
+                                    if bc.IsEmpty then ct else [] // optimization: don't generate Stloc x; Ldloc x; Calli
+                                    |> parameterLessCall pv
+                                | _ ->
+                                    ``Error: Unexpected parameter`` |> ctx.NewMsg ident
+                                    ([], Some ctx.sysTypes.unknown)
+                            else
+                                [
+                                    yield! bc
+                                    yield! h
+                                    |> List.mapi (fun i p -> fst <| callParamToIl ctx p (Some(i, pv)))
+                                    |> List.concat
+                                    yield! ct
+                                    +Calli pv.raw
+                                ], pv.ResultType
+                        | _ ->
+                            ``Error: Cannot make call``() |> ctx.NewMsg ident
+                            [], Some ctx.sysTypes.unknown
+                    List.mapFold (
+                        fun sc h ->
+                            match sc with
+                            | VoidStep | ErrorStep -> ([], ErrorStep)
+                            | _ ->
+                                let r, t = callHead h sc
+                                match t with
+                                | Some ProcVarType ->
+                                    let _, v = ctx.EnsureVariable(t.Value)
+                                    r, (CallableStep ([+Stloc v], t, [+Ldloc v]))
+                                | Some _ -> r, StdStep t
+                                | None -> r, VoidStep)
+                        (CallableStep([], Some pvt, callTarget)) tailCalls
+                    |> fun(ils, r) ->
+                        let ils = List.concat ils
+                        match r with
+                        | ErrorStep ->
+                            ``Error: Cannot make call``() |> ctx.NewMsg ident
+                            [], Some ctx.sysTypes.unknown
+                        | StdStep t | CallableStep(_,t,_) ->
+                            (if popResult then ils @ [+Pop] else ils), t
+                        | VoidStep -> ils, None
                 // TODO more levels of call ?
             | _ ->
                 ``Error: %s expected`` "Only one parameter" |> ctx.NewMsg ident
@@ -962,6 +1010,14 @@ module EvalExpr =
         | VInteger i, Some FloatType -> [+Ldc_R4(single i)], ctx.sysTypes.single
         | VInteger i, _ -> [+Ldc_I4 i], ctx.sysTypes.int32
         | VFloat f, _ -> [+Ldc_R4 (single f)], ctx.sysTypes.single
+        | VIdent i, Some ({kind=TkProcVar mi} as et) when byRef = false ->
+            let _, pt as r = findSymbolAndLoad ctx i
+            match pt with
+            | {kind=TkProcVar rmi} when rmi = mi -> r
+            | _ ->
+                // TODO better messages (simplified procedure signature?)
+                ``Error: Incompatible types ('%O' and '%O')`` (pt.ToCompilerStr()) (et.ToCompilerStr()) |> ctx.NewMsg i
+                [], ctx.sysTypes.unknown
         | VIdent i, _ -> if byRef then findSymbolAndGetPtr ctx i else findSymbolAndLoad ctx i
         | VString s, _ ->
             let doChr() =
@@ -1067,20 +1123,18 @@ module EvalExpr =
         | _ -> failwith "cannot deref"
 
     let loadSymList (ctx: Ctx) rk (sl, t) =
-        let lastPoint = ref LTPNone
-        sl
-        |> List.collect (chainLoadToIl ctx lastPoint (chainReaderFactory { ctx = ctx; reader = ReadChain }))
-        |> fun l -> l @ (chainReaderFactory { ctx = ctx; reader = rk } !lastPoint)
+        let l, lastPoint = ctx.CollectChain sl
+        l @ (chainReaderFactory { ctx = ctx; reader = rk } !lastPoint)
         ,match t with | Some t -> t | _ -> failwith "IE"
 
     let findSymbolInternal rk (ctx: Ctx) ident =
         let sid = ctx.FindSymbol ident |> chainToSLList
-        match sid with
-        | _, Some _ -> sid |> loadSymList ctx rk
-        | [CallableLoad sl], None ->
-            // handle x := foo; where foo is procedured
+        match sid, rk with
+        | ([CallableLoad sl], None), ReadValue // handle x := foo; where foo is procedured
+        | ([CallableLoad sl], _), ReadAddr ->
             [+Ldftn sl.MethodInfo.raw], sl.MethodInfo.PasType
-        | _, None ->
+        | (_, Some _), _ -> sid |> loadSymList ctx rk
+        | (_, None), _ ->
             ``Error: %s expected`` "value" |> ctx.NewMsg ident
             [], ctx.sysTypes.unknown
 

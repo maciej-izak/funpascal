@@ -114,8 +114,8 @@ let keywords = [
     "initialization"
   ]
 
-let expr = opp.ExpressionParser
-let pexpr = popp.ExpressionParser
+let expr = +opp.ExpressionParser
+let pexpr = +popp.ExpressionParser
 
 let keywordsSet = HashSet<string>(keywords);
 
@@ -349,7 +349,7 @@ let callExpr =
 
 let exprCall = callExpr |>> VCallResult
 
-let basicExprAtom = choice[exprCall; exprIdent; attempt(exprInt); exprFloat; exprString; exprSet; exprNil] |>> Value
+let basicExprAtom = +(choice[exprCall; exprIdent; attempt(exprInt); exprFloat; exprString; exprSet; exprNil] |>> Value)
 let exprAtom =
     (sepEndBy basicExprAtom ``: ``)
       |>> function

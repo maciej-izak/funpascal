@@ -99,6 +99,15 @@ module Errors =
     let ``Cannot do deref of %s`` o =
         MsgError(Some 29, sprintf "Cannot do deref of %s" o)
         
+    let ``Error: Incompatible types ('%O' and '%O')`` o1 o2 =
+        MsgError(Some 30, sprintf "Incompatible types '%O' and '%O'" o1 o2)
+
+    let ``Error: Cannot make call`` () =
+        MsgError(Some 31, "Cannot make call")
+
+    let ``Error: Cannot get pointer to '%O'`` o1 =
+        MsgError(Some 32, sprintf "Cannot get pointer to '%O'" o1)
+
 [<AutoOpen>]
 module Warnings =
     let ``Warning: Cannot find enviroment variable '%s'`` s =
