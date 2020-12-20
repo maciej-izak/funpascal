@@ -67,9 +67,9 @@ type Ctx = {
         block: GlobalBlock
         symbols: (SymOwner * Dictionary<CompilerName, Symbol>) list
         forward: Dictionary<CompilerName, ReferencedDef * Dictionary<CompilerName,Symbol>>
-        localVariables: int ref
         lang: Ctx.LangCtx
         res: List<MetaInstruction>
+        tempVariables: List<DeclareLocal>
         details: Ctx.ModuleDetails
         loop: Stack<BranchLabel ref * BranchLabel ref>
         enumSet: Dictionary<PasType, PasType>
@@ -94,7 +94,7 @@ type Ctx = {
     member self.Next block =
         { self with
             block = block
-            localVariables = ref 0
+            tempVariables = List<_>()
             variables = List<_>()::self.variables
             res = List<MetaInstruction>()
             loop = Stack<_>()}
@@ -164,9 +164,7 @@ type Ctx = {
         self.TryFindTypeId t |> Option.defaultWith reportError
 
     member self.EnsureVariable ?kind =
-        let ikey = !self.localVariables
-        let key = string ikey
-        incr self.localVariables
+        let key = string self.tempVariables.Count
         // TODO manager of variables for reuse
 //        let result = match self.variables.TryGetValue key with
 //                     | true, value ->
@@ -175,7 +173,7 @@ type Ctx = {
         let varType = defaultArg kind self.sysTypes.int32
         let varDef = varType.Sig |> Local
         let varKind = varDef |> LocalVariable
-        self.res.Add(DeclareLocal(varDef))
+        self.tempVariables.Add(DeclareLocal(varDef))
         self.variables.Head.Add(varKind)
         (snd self.symbols.Head).Add(CompilerName.FromString key, VariableSym(varKind, varType))
         (key, varDef)
@@ -443,7 +441,7 @@ module Ctx =
             block = NormalBlock
             symbols = [owner,symbols]
             forward = Dictionary<_, _>(lang)
-            localVariables = ref 0
+            tempVariables = List<_>()
             lang = LangCtx()
             res = List<MetaInstruction>()
             details = details
@@ -853,95 +851,79 @@ module EvalExpr =
         | CallableStep of IlInstruction list * PasType option * IlInstruction list
     
     let doCall (ctx: Ctx) (CallExpr(ident, cp)) popResult =
-        
-        let veryfyCallParams mi cp def =
-            let length = (cp: CallParam list).Length
-            if mi.paramList.Length > length then
+        let parameterLessCall pv ct =
+            // TODO handle self parameter in the future
+            // cast to parameterless func/proc and call at once, but only for head (cpi)
+            if pv.paramList.Length = 0 then
+                (ct, pv.ResultType)
+            else // cant call proc with params expected
+                // TODO default params
                 ``Error: More parameters expected`` |> ctx.NewMsg ident
                 ([], Some ctx.sysTypes.unknown)
-            elif mi.paramList.Length < length then
-                match cp with // handle empty tuple param with unitop
-                | [ParamExpr UnitOp] when mi.paramList.Length + 1 = length -> def
-                | [ParamExpr UnitOp] -> raise (InternalError "2020120700")
-                | _ ->
-                    ``Error: Unexpected parameter`` |> ctx.NewMsg cp.[mi.paramList.Length]
+        
+        let callHead (h: CallParam list) = function
+            | CallableStep(bc, Some{kind=TkProcVar pv}, ct) ->
+                if pv.paramList.Length > h.Length then
+                    ``Error: More parameters expected`` |> ctx.NewMsg ident
                     ([], Some ctx.sysTypes.unknown)
-            else def
+                elif pv.paramList.Length < h.Length then
+                    match h with
+                    | [ParamExpr UnitOp] -> // handle TProc(foo)();
+                        if bc.IsEmpty then ct else [+Calli pv.raw] // optimization: don't generate Stloc x; Ldloc x; Calli
+                        |> parameterLessCall pv
+                    | _ ->
+                        ``Error: Unexpected parameter`` |> ctx.NewMsg ident
+                        ([], Some ctx.sysTypes.unknown)
+                else
+                    [
+                        yield! bc
+                        yield! h
+                        |> List.mapi (fun i p -> fst <| callParamToIl ctx p (Some(i, pv)))
+                        |> List.concat
+                        yield! ct
+                    ], pv.ResultType
+            | _ ->
+                ``Error: Cannot make call``() |> ctx.NewMsg ident
+                [], Some ctx.sysTypes.unknown
+                
+        // advanced calls like TFoo(x)(1,2); or TFoo(x)(); or TFoo(x)()();
+        let doCallChain pvt tailCalls callTarget =
+            match tailCalls, pvt with
+            | [], {kind=TkProcVar pv} -> // handle `TProc(foo);` or `foo;`
+                callTarget
+                |> parameterLessCall pv
+                |> fun (ils,r as res) -> if popResult && r.IsSome then ils@[+Pop],r else res
+            | [], _ -> raise (InternalError "2020121700")
+            | tailCalls, pvt ->    
+                let handleCall sc h =
+                    match sc with
+                    | VoidStep | ErrorStep -> ([], ErrorStep)
+                    | _ ->
+                        let r, t = callHead h sc
+                        match t with
+                        | Some {kind=TkProcVar pv} ->
+                            // TODO delete variables if not used, see callHead UnitOp
+                            let _, v = ctx.EnsureVariable(t.Value)
+                            r, (CallableStep ([+Stloc v], t, [+Ldloc v; +Calli pv.raw]))
+                        | Some _ -> r, StdStep t
+                        | None -> r, VoidStep
+                let initialState = (CallableStep([], Some pvt, callTarget))
+                let ilsList, r = List.mapFold handleCall initialState tailCalls
+                let ils = List.concat ilsList
+                match r with
+                | ErrorStep ->
+                    ``Error: Cannot make call``() |> ctx.NewMsg ident
+                    [], Some ctx.sysTypes.unknown
+                | StdStep t | CallableStep(_,t,_) ->
+                    (if popResult then ils @ [+Pop] else ils), t
+                | VoidStep -> ils, None
         
         match ctx.FindFunction ident with
         | SymSearch.TypeCast({kind=TkProcVar pv} as pvt) ->
-            let parameterLessCall pv ct =
-                // TODO handle self parameter in the future
-                // cast to parameterless func/proc and call at once, but only for head (cpi)
-                if pv.paramList.Length = 0 then
-                    ([
-                        yield! ct
-                        +Calli pv.raw
-                    ], pv.ResultType)
-                else // cant call proc with params expected
-                    // TODO default params
-                    ``Error: More parameters expected`` |> ctx.NewMsg ident
-                    ([], Some ctx.sysTypes.unknown)
-
             match cp with
             | [ParamIdent(cpi)]::tailCalls ->
-                let callTarget = fst (findSymbolAndLoad ctx cpi)
-                match tailCalls with
-                | [] -> // handle `TProc(foo);`
-                    callTarget
-                    |> parameterLessCall pv
-                    |> fun (ils,r as res) -> if popResult && r.IsSome then ils@[+Pop],r else res
-                | _ ->
-                    // advanced calls like TFoo(x)(1,2); or TFoo(x)(); or TFoo(x)()();
-                    let callTarget = fst (findSymbolAndLoad ctx cpi)
-                    let callHead (h: CallParam list) = function
-                        | CallableStep(bc, Some{kind=TkProcVar pv}, ct) ->
-                            if pv.paramList.Length > h.Length then
-                                ``Error: More parameters expected`` |> ctx.NewMsg ident
-                                ([], Some ctx.sysTypes.unknown)
-                            elif pv.paramList.Length < h.Length then
-                                match h with
-                                | [ParamExpr UnitOp] -> // handle TProc(foo)();
-                                    if bc.IsEmpty then ct else [] // optimization: don't generate Stloc x; Ldloc x; Calli
-                                    |> parameterLessCall pv
-                                | _ ->
-                                    ``Error: Unexpected parameter`` |> ctx.NewMsg ident
-                                    ([], Some ctx.sysTypes.unknown)
-                            else
-                                [
-                                    yield! bc
-                                    yield! h
-                                    |> List.mapi (fun i p -> fst <| callParamToIl ctx p (Some(i, pv)))
-                                    |> List.concat
-                                    yield! ct
-                                    +Calli pv.raw
-                                ], pv.ResultType
-                        | _ ->
-                            ``Error: Cannot make call``() |> ctx.NewMsg ident
-                            [], Some ctx.sysTypes.unknown
-                    List.mapFold (
-                        fun sc h ->
-                            match sc with
-                            | VoidStep | ErrorStep -> ([], ErrorStep)
-                            | _ ->
-                                let r, t = callHead h sc
-                                match t with
-                                | Some ProcVarType ->
-                                    let _, v = ctx.EnsureVariable(t.Value)
-                                    r, (CallableStep ([+Stloc v], t, [+Ldloc v]))
-                                | Some _ -> r, StdStep t
-                                | None -> r, VoidStep)
-                        (CallableStep([], Some pvt, callTarget)) tailCalls
-                    |> fun(ils, r) ->
-                        let ils = List.concat ils
-                        match r with
-                        | ErrorStep ->
-                            ``Error: Cannot make call``() |> ctx.NewMsg ident
-                            [], Some ctx.sysTypes.unknown
-                        | StdStep t | CallableStep(_,t,_) ->
-                            (if popResult then ils @ [+Pop] else ils), t
-                        | VoidStep -> ils, None
-                // TODO more levels of call ?
+                let callTarget = fst(findSymbolAndLoad ctx cpi)@[+Calli pv.raw]
+                doCallChain pvt tailCalls callTarget
             | _ ->
                 ``Error: %s expected`` "Only one parameter" |> ctx.NewMsg ident
                 ([], Some ctx.sysTypes.unknown)
@@ -961,40 +943,42 @@ module EvalExpr =
                     ``Error: %s expected`` "For typecast only one parameter is" |> ctx.NewMsg ident
                 ([], Some ctx.sysTypes.unknown)
         | SymSearch.RealFunction rf ->
-            let cp = if cp.IsEmpty then [] else cp.Head
             match rf with
-            | Referenced(mr,np) as rm, f ->
-                ([
-                    // do IlDelayed?
-                    IlInstruction.CreateDelayedCode(
-                        fun() ->
-                            [
-                                yield! cp
-                                |> List.mapi (fun i p -> fst <| callParamToIl ctx p (Some(i, mr)))
+            | Referenced(mr,np), f ->
+                // TODO can be optimized
+                let npCount() =
+                    match !np with
+                    | Some np ->
+                        np.Values
+                        |> Seq.map (fun v -> sprintf "_%d" v.Params.Count)
+                        |> Seq.fold (+) ""
+                    | _ -> ""    
+                let generateCall() =
+                    [
+                        yield! // Handle nested routines
+                            match !np with
+                            | Some np ->
+                                // rec call for nested method, load params instead of local etc.
+                                let nestedRec = match ctx.SymOwner with
+                                                | StandaloneMethod (mi,_) -> mr = mi
+                                                | _ -> false
+                                np.Values
+                                |> Seq.collect (fun v -> v.Params.Values)
+                                |> List.ofSeq
+                                |> List.map (fun (VariableSymLoad nestedRec vlt) -> loadSymList ctx ReadAddr vlt |> fst)
                                 |> List.concat
-                                // Handle nested routines
-                                yield!
-                                    match !np with
-                                    | Some np ->
-                                        // rec call for nested method, load params instead of local etc.
-                                        let nestedRec = match ctx.SymOwner with
-                                                        | StandaloneMethod (mi,_) -> mr = mi
-                                                        | _ -> false
-                                        np.Values
-                                        |> Seq.collect (fun v -> v.Params.Values)
-                                        |> List.ofSeq
-                                        |> List.map (fun (VariableSymLoad nestedRec vlt) -> loadSymList ctx ReadAddr vlt |> fst)
-                                        |> List.concat
-                                    | _ -> []
-                                yield! f
-                                // TODO error/IE ? for popResult && mr.result.IsNone
-                                if popResult && mr.result.IsSome then
-                                    yield +Pop
-                            ]
-                        )
-                 ], rm.ReturnType)
-                |> veryfyCallParams mr cp
-            | Intrinsic i, _ -> handleIntrinsic i {ctx=ctx;ident=ident;cp=cp;popResult=popResult}
+                            | _ -> []
+                        yield! f
+                    ]
+                    |> doCallChain mr.PasType cp
+                let ils, t = generateCall()
+                let originalNp = npCount()
+                ([
+                    IlInstruction.CreateDelayedCode (fun() -> if npCount() <> originalNp then generateCall() |> fst else ils)
+                 ], t)
+            | Intrinsic i, _ ->
+                // TODO raise exception for cp.Length > 1
+                handleIntrinsic i {ctx=ctx;ident=ident;cp=(if cp.IsEmpty then [] else cp.Head);popResult=popResult}
             | _ -> raise (InternalError "2020111600")
         | SymSearch.UnknownFunction ->
             ``Error: %s expected`` "callable ident" |> ctx.NewMsg ident

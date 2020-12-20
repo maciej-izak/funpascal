@@ -511,7 +511,7 @@ module LangDecl =
             // TODO better handle forward ?
             let scope = LocalScope(ctx.Inner (StandaloneMethod methodSym, newMethodSymbols))
             match Ctx.BuildDeclIl(decls,scope,("result",methodInfo.result)) |> Ctx.BuildStmtIl stmts with
-            | Ok(res, _) -> Ctx.CompileBlock methodBuilder ctx.details.UnitModule res |> ignore
+            | Ok (ctx: Ctx) -> ctx.CompileBlock methodBuilder ctx.details.UnitModule |> ignore
             | Error _ -> ()
         | ExternalDeclr (lib, procName) ->
             let libRef = ModuleRefUser(ctx.details.MainModule, UTF8String lib)
@@ -596,7 +596,7 @@ module LangBuilder =
             |> Seq.collect
                (function
                 | LocalVariable v ->
-                     ctx.res.Add(DeclareLocal(v))
+                     ctx.tempVariables.Add(DeclareLocal(v))
                      match v.Type with
                      //| t when t = ctx.sysTypes.string -> []//stmtListToIlList ctx (IfStm())
                      | _ -> []
@@ -632,7 +632,6 @@ module LangBuilder =
             | false, false, UserLabel -> ``Warning: Label '%O' declared but never set`` id |> ctx.NewMsg id
             | true, false, _ -> ``Warning: Label '%O' declared and set but never referenced`` id |> ctx.NewMsg id
             | _ -> ()
-        ctx.res
 
     let moduleTypeAttr =
         TypeAttributes.Public
@@ -654,12 +653,13 @@ module LangBuilder =
     let systemUnitName = DIdent.FromString "System" |> SystemModule
     
     type Ctx with
-        static member CompileBlock (methodBuilder: MethodDef) (typeBuilder : TypeDef) (instr: List<MetaInstruction>) =
+        member self.CompileBlock (methodBuilder: MethodDef) (typeBuilder : TypeDef) =
             let body = CilBody()
             methodBuilder.Body <- body
             let ilGenerator = body |> emit
             typeBuilder.Methods.Add(methodBuilder)
-            Seq.iter ilGenerator instr
+            Seq.iter ilGenerator self.res
+            Seq.iter (fun (DeclareLocal t) -> t |> body.Variables.Add |> ignore) self.tempVariables
             body.InitLocals <- true
             // https://github.com/jbevain/cecil/issues/365
             body.OptimizeMacros()
@@ -686,8 +686,8 @@ module LangBuilder =
             match ctx.messages.HasError with
             | true -> Error ctx
             | _ -> // after implementation analise, check for errors again
-                let res = stmtListToIl stmt ctx result
-                if ctx.messages.HasError then Error ctx else Ok (res, ctx)
+                stmtListToIl stmt ctx result
+                if ctx.messages.HasError then Error ctx else Ok ctx
 
         static member BuildUnit state moduleBuilder unit =
             let unitName, isSystem = match unit with
@@ -754,7 +754,7 @@ module LangBuilder =
                        )
             match Ctx.BuildStmtIl pasModule.block.stmt ctxvd with
             | Error _ -> None
-            | Ok (res, _) ->
+            | Ok ctx ->
                 // TODO finally should be done in different way
 //                res.Insert(res.Count - 1,
 //                           state.proj.Modules.Ordered
@@ -764,7 +764,7 @@ module LangBuilder =
 //                           |> List.map(fun m -> +Call m.Init)
 //                           |> InstructionList
 //                       )
-                let mainBlock = Ctx.CompileBlock (sysMethodBuilder "Main" moduleBuilder) typeBuilder res
+                let mainBlock = ctx.CompileBlock (sysMethodBuilder "Main" moduleBuilder) typeBuilder
                 moduleBuilder.EntryPoint <- mainBlock
                 if state.HasError then None
                 else Some moduleBuilder
@@ -797,10 +797,10 @@ module LangBuilder =
                 let (ctx, _) = Ctx.BuildDeclIl(pasModule.intf.decl, MainScope(sr, units))
                 let (ctx, vd) = Ctx.BuildDeclIl(pasModule.impl.decl, LocalScope ctx)
                 let init = match (ctx.Next InitializationBlock, vd) |> Ctx.BuildStmtIl pasModule.init with
-                           | Ok (res, _) -> Some <| Ctx.CompileBlock (sysMethodBuilder ("$module$init") moduleBuilder) typeBuilder res
+                           | Ok ctx -> Some <| ctx.CompileBlock (sysMethodBuilder ("$module$init") moduleBuilder) typeBuilder
                            | Error _ -> None
                 let fini = match (ctx.Next FinalizationBlock, vd) |> Ctx.BuildStmtIl pasModule.fini with
-                           | Ok (res, _) -> Some <| Ctx.CompileBlock (sysMethodBuilder ("$module$fini") moduleBuilder) typeBuilder res
+                           | Ok ctx -> Some <| ctx.CompileBlock (sysMethodBuilder ("$module$fini") moduleBuilder) typeBuilder
                            | Error _ -> None
                 match init, fini with
                 | Some init, Some fini -> Some(ctx, init, fini)

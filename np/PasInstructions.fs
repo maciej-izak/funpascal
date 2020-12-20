@@ -211,8 +211,8 @@ module Instructions =
 
     let ilToAtom ilList = ilList |> List.map (function | IlResolved(a,_) -> a | _ -> raise (InternalError "2020112900"))
 
+    type DeclareLocal = DeclareLocal of Local
     type MetaInstruction =
-        | DeclareLocal of Local
         | InstructionList of IlInstruction list
         | HandleFunction of IlInstruction list * IlInstruction list option * IlInstruction list
         
@@ -390,7 +390,6 @@ module IlEmit =
             ).GenerateCode fi
         
         match inst with
-        | DeclareLocal t -> t |> body.Variables.Add |> ignore
         | InstructionList p -> p |> List.collect (instr sdf) |> List.iter body.Instructions.Add
         | HandleFunction (instructionsBlock, finallyBlock, endOfAll) ->
             // return first instruction
@@ -402,14 +401,16 @@ module IlEmit =
             let appendAndReplaceRetGen (il: IlInstruction) =
                 il
                 |> instr delayFactory
-                |> (fun l -> List.iter body.Instructions.Add l; l.Head)
+                |> (fun l -> List.iter body.Instructions.Add l; if l.IsEmpty then ValueNone else ValueSome l.Head) // can be empty for errors
 
             
             let processList replaceFun = function
                 | head::tail ->
                     let result = head |> replaceFun
                     tail |> List.iter (replaceFun >> ignore)
-                    result
+                    match result with
+                    | ValueSome v -> v
+                    | _ -> beginOfEnd.Head
                 | [] -> beginOfEnd.Head
             let start = processList appendAndReplaceRetGen instructionsBlock
             if List.isEmpty finallyBlock = false then
