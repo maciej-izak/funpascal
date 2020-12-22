@@ -62,14 +62,13 @@ type SymOwner =
 type Ctx = {
         units: Ctx list
         messages: CompilerMessages
-        variables: List<VariableKind> list
+        variables: List<VariableDecl> list
         labels: List<DIdent * LabelRec> list
         block: GlobalBlock
         symbols: (SymOwner * Dictionary<CompilerName, Symbol>) list
         forward: Dictionary<CompilerName, ReferencedDef * Dictionary<CompilerName,Symbol>>
         lang: Ctx.LangCtx
         res: List<MetaInstruction>
-        tempVariables: List<DeclareLocal>
         details: Ctx.ModuleDetails
         loop: Stack<BranchLabel ref * BranchLabel ref>
         enumSet: Dictionary<PasType, PasType>
@@ -94,7 +93,6 @@ type Ctx = {
     member self.Next block =
         { self with
             block = block
-            tempVariables = List<_>()
             variables = List<_>()::self.variables
             res = List<MetaInstruction>()
             loop = Stack<_>()}
@@ -164,19 +162,19 @@ type Ctx = {
         self.TryFindTypeId t |> Option.defaultWith reportError
 
     member self.EnsureVariable ?kind =
-        let key = string self.tempVariables.Count
-        // TODO manager of variables for reuse
-//        let result = match self.variables.TryGetValue key with
-//                     | true, value ->
-//                         value
-//                     | _ ->
         let varType = defaultArg kind self.sysTypes.int32
-        let varDef = varType.Sig |> Local
-        let varKind = varDef |> LocalVariable
-        self.tempVariables.Add(DeclareLocal(varDef))
-        self.variables.Head.Add(varKind)
-        (snd self.symbols.Head).Add(CompilerName.FromString key, VariableSym(varKind, varType))
-        (key, varDef)
+        self.variables.Head
+        |> Seq.tryFind (fun i -> i.IsFreeTemp && i.varKind.Type() = varType.raw.Sig)
+        |> function
+        | Some v -> v.TempVar
+        | None ->
+            let key = string self.variables.Head.Count
+            let varDef = varType.Sig |> Local
+            let varKind = varDef |> LocalVariable
+            let tempDecl, disposable = VariableDecl.NewTemp(key, varKind)
+            self.variables.Head.Add tempDecl
+            (snd self.symbols.Head).Add(CompilerName.FromString key, VariableSym(varKind, varType))
+            disposable
 
     member self.FindLabel name =
         match self.PickSym (CompilerName.FromDIdent name) with
@@ -441,7 +439,6 @@ module Ctx =
             block = NormalBlock
             symbols = [owner,symbols]
             forward = Dictionary<_, _>(lang)
-            tempVariables = List<_>()
             lang = LangCtx()
             res = List<MetaInstruction>()
             details = details
@@ -692,13 +689,13 @@ module EvalExpr =
 
     type ValueKind = (IlInstruction list * PasType)
 
-    let useHelperOp ctx helperName valueType byRef =
-        let _,v = (ctx: Ctx).EnsureVariable(valueType)
+    let useHelperOp (ctx: Ctx) helperName valueType byRef =
+        using (ctx.EnsureVariable(valueType)) (fun v ->
         [
-            +Ldloca v
+            +Ldloca v.Local
             +Call(ctx.FindMethodReference helperName)
-            +(if byRef then Ldloca else Ldloc) v
-        ]
+            +(if byRef then Ldloca else Ldloc) v.Local
+        ])
 
     let handleOperator (ctx: Ctx) et byRef (op, (ils, at, bt)) =
         let convCmpOp = function | Cgt -> Clt | Clt -> Cgt | o -> o
@@ -732,13 +729,13 @@ module EvalExpr =
 
             let typeConvertTo op ((aVal, aTyp), (bVal, bTyp)) =
                 let convertChrToStr c t =
-                    let _,v = ctx.EnsureVariable t
+                    using (ctx.EnsureVariable t) (fun v ->
                     [
-                        +Ldloca v
+                        +Ldloca v.Local
                         yield! c
                         +Stind Ind_U1
-                        +Ldloc v
-                    ]
+                        +Ldloc v.Local
+                    ])
                 let strt = ctx.sysTypes.string
                 op,
                 match op, aTyp, bTyp with
@@ -903,8 +900,8 @@ module EvalExpr =
                         match t with
                         | Some {kind=TkProcVar pv} ->
                             // TODO delete variables if not used, see callHead UnitOp
-                            let _, v = ctx.EnsureVariable(t.Value)
-                            r, (CallableStep ([+Stloc v], t, [+Ldloc v; +Calli pv.raw]))
+                            using (ctx.EnsureVariable t.Value) (fun v -> 
+                            r, (CallableStep ([+Stloc v.Local], t, [+Ldloc v.Local; +Calli pv.raw])))
                         | Some _ -> r, StdStep t
                         | None -> r, VoidStep
                 let initialState = (CallableStep([], Some pvt, callTarget))

@@ -17,7 +17,6 @@
     <Compile Include="PasOperators.fs" />
     <Compile Include="PasParser.fs" />
     <Compile Include="PasInstructions.fs" />
-    <Compile Include="PasTypes.fs" />
     <Compile Include="PasSymbols.fs" />
     <Compile Include="PasCtx.fs" />
     <Compile Include="PasLang.fs" />

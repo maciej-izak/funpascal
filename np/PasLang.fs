@@ -56,12 +56,12 @@ module LangStmt =
                     // TODO check type of vt for with ?
                     match vt.kind with | TkRecord _ -> () | _ -> failwithf "IE bad type for with %A" vt.kind
                     let pvt = PasType.NewPtr(vt)
-                    let (_, vv) = ctx.EnsureVariable pvt
+                    using(ctx.EnsureVariable pvt) (fun v ->
                     Some([
                             yield! cl
                             yield! ctx.ChainReaderFactory EvalExpr.ReadAddr !ltp
-                            +Stloc vv
-                        ], (vv, vt.raw, pvt))
+                            +Stloc v.Local
+                        ], (v.Local, vt.raw, pvt)))
                 | None -> None
 
             match loadVarW with
@@ -108,7 +108,7 @@ module LangStmt =
         let (defBranch, defLabels) = stmtListToIlList ctx stmt
         // TODO reduce creation of new var if we want to just read variable
         let ilExpr, exprType = ctx.ExprToIl expr None
-        let _, var = ctx.EnsureVariable(exprType)
+        using(ctx.EnsureVariable(exprType)) (fun v ->
         let omitCase: BranchLabel ref option ref = ref None
         let ensureOmitCase i =
             match !omitCase with
@@ -124,7 +124,7 @@ module LangStmt =
                     (
                      [
                         for l in tocheck do
-                            let beginOfCase = +Ldloc var
+                            let beginOfCase = +Ldloc v.Local
                             // for ranges we need to skip
                             ensureOmitCase beginOfCase
                             yield beginOfCase
@@ -140,7 +140,7 @@ module LangStmt =
                                  yield! (fst <| ctx.ExprToIl ce1 None) // TODO type handle
                                  yield IlBranch(IlBlt, nextCase)
                                  // higher range
-                                 yield +Ldloc var
+                                 yield +Ldloc v.Local
                                  yield! (fst <| ctx.ExprToIl ce2 None) //TODO type handle
                                  yield IlBranch(IlBgt, nextCase)
                                  yield IlBranch(IlBr, ref(LazyLabel (caseBranch.[0], nullRef())))
@@ -158,11 +158,11 @@ module LangStmt =
         (
             [
              yield! ilExpr
-             +Stloc var
+             +Stloc v.Local
              yield! cases
              yield! casesbodies
             ]
-         , [yield! labels ; yield lastEndOfStm])
+         , [yield! labels ; yield lastEndOfStm]))
 
     let doWhileStm (expr, stmt) (ctx: Ctx) =
         let condition = fst <| ctx.ExprToIl expr (Some ctx.sysTypes.boolean)
@@ -207,27 +207,27 @@ module LangStmt =
                              | Some([VariableLoad(vs, vt)], _) -> vs, vt
                              | _ -> failwith "IE"
         // TODO allow only specified kind of variables for loops
-        let (varFinalName, varFinal) = ctx.EnsureVariable varType
+        using(ctx.EnsureVariable varType)(fun v ->
         // TODO optimization for simple values (dont store in var)
         let (loopInitializeVariables, _) =
-            [AssignStm(ident, initExpr);AssignStm(Utils.stdIdent varFinalName, finiExpr)] |> stmtListToIlList ctx
+            [AssignStm(ident, initExpr);AssignStm(Utils.stdIdent v.Name, finiExpr)] |> stmtListToIlList ctx
         let breakLabel = ref ForwardLabel
         // TODO method param?
         let varLoad = match var with | GlobalVariable vk -> +Ldsfld vk | LocalVariable vk -> +Ldloc vk
         let loopInitialize =
             [
                 varLoad
-                +Ldloc varFinal
+                +Ldloc v.Local
                 let doBranch(bgt, blt) = IlBranch((if delta = 1 then bgt else blt), breakLabel)
                 match varType.kind with
                 | TkOrd(_,ot) -> match ot with
                                  | OrdTypeS -> IlBgt, IlBlt
                                  | OrdTypeU -> IlBgt_Un, IlBlt_Un
                                  |> doBranch
-                +Ldloc varFinal
+                +Ldloc v.Local
                 +Ldc_I4 delta
                 +AddInst
-                +Stloc varFinal
+                +Stloc v.Local
             ]
         let (incLoopVar, _) = [AssignStm(ident, Add(Value(VIdent(ident)), Value(VInteger delta)))] |> stmtListToIlList ctx
         // push loop context between
@@ -239,7 +239,7 @@ module LangStmt =
             [
               // TODO move simple global loop variables into local void variable
               varLoad
-              +Ldloc varFinal
+              +Ldloc v.Local
               IlBranch(IlBne_Un, stmtLabel)
             ]
         resolveLabels incLoopVar forLabels
@@ -250,7 +250,7 @@ module LangStmt =
             yield! forBranch
             yield! incLoopVar
             yield! condition
-        ],[breakLabel])
+        ],[breakLabel]))
 
     let doCallStm ce (ctx: Ctx) = (fst (ctx.DoCall ce true), [])
     let doIdentStm i = doCallStm (CallExpr(i,[]))
@@ -392,7 +392,7 @@ module LangDecl =
     let declVar (ctx: Ctx) (vn, t: PasType) =
         let tryAddSymbol vk =
             match ctx.NewSymbols.TryAdd(CompilerName.FromDIdent vn, VariableSym(vk, t)) with
-            | true -> ctx.variables.Head.Add vk
+            | true -> ctx.variables.Head.Add (VariableDecl.New vk)
             | false -> ``Duplicated identifier of '%O'`` vn |> ctx.NewMsg vn
         match ctx.SymOwner with
         | StandaloneMethod _ -> Local t.Sig |> LocalVariable |> tryAddSymbol
@@ -595,12 +595,11 @@ module LangBuilder =
             ctx.variables.Head
             |> Seq.collect
                (function
-                | LocalVariable v ->
-                     ctx.tempVariables.Add(DeclareLocal(v))
+                | {varKind=LocalVariable v} ->
                      match v.Type with
                      //| t when t = ctx.sysTypes.string -> []//stmtListToIlList ctx (IfStm())
                      | _ -> []
-                | GlobalVariable v ->
+                | {varKind=GlobalVariable v} ->
                      match v.FieldType with
                      //| t when t = ctx.sysTypes.string ->
 //                         [
@@ -659,7 +658,10 @@ module LangBuilder =
             let ilGenerator = body |> emit
             typeBuilder.Methods.Add(methodBuilder)
             Seq.iter ilGenerator self.res
-            Seq.iter (fun (DeclareLocal t) -> t |> body.Variables.Add |> ignore) self.tempVariables
+            self.variables.Head
+            |> Seq.iter (function // TODO dont declare unused variables
+                | {varKind=LocalVariable t; usages=u} when u >= 0 -> t |> body.Variables.Add |> ignore
+                | _ -> ()) 
             body.InitLocals <- true
             // https://github.com/jbevain/cecil/issues/365
             body.OptimizeMacros()
@@ -671,7 +673,7 @@ module LangBuilder =
                       | LocalScope ctx -> ctx
             let result = match methodResult with
                          | Some (name, Some{var=Some v}) ->
-                            ctx.variables.Head.Add v
+                            ctx.variables.Head.Add (VariableDecl.New v)
                             match v with
                             | LocalVariable v -> v
                             | _ -> null
