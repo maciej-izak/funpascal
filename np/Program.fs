@@ -12,8 +12,8 @@ open Pas
 open Argu
 open NP
 
-let writeRuntimeConfig proj =
-    File.WriteAllText(proj.OutPath </> proj.Name + ".runtimeconfig.json",
+let writeRuntimeConfig (proj: PascalProject) =
+    File.WriteAllText(proj.OutName + ".runtimeconfig.json",
                                   """
 {
   "runtimeOptions": {
@@ -41,7 +41,7 @@ let handleTest proj testCase isError =
                 CreateProcess.fromRawCommand @"C:\_projects\newpascal\core32\dotnet.exe" ["exec"; proj.Exe.Value]
                 |> CreateProcess.redirectOutput
                 |> Proc.run
-            File.WriteAllText(proj.OutPath </> proj.Name + testCase.DefSuffix + ".elg", result.Result.Output)
+            File.WriteAllText(proj.OutName + ".elg", result.Result.Output)
             if result.ExitCode = testCase.Result then
                 Ok()
             else
@@ -55,7 +55,7 @@ let doFullCompilation proj (testCase: TestCase option) logh =
     let handleTest(proj, isError) =
         if testCase.IsSome then
             handleTest proj testCase.Value isError
-    
+    let proj = {proj with NameSuffix = if testCase.IsSome then testCase.Value.DefSuffix else ""}
     doPas proj proj.File
     |> function
        | Some outName ->

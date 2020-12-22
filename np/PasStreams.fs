@@ -14,7 +14,7 @@ let doPas proj =
     | Ok (_, us as res) ->
         match Ctx.BuildMainModule res with
         | Some asmDef ->
-            let outName = proj.OutPath </> proj.Name + ".dll"
+            let outName = proj.OutName + ".dll"
             asmDef.Write(outName)
             proj.AddModule proj.File (PascalModule.main us.messages)
             Some outName

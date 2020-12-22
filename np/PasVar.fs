@@ -152,12 +152,14 @@ type PascalProject = {
     OutPath: string
     Exe: string option
     Name: string
+    NameSuffix: string
     Defines: string list
     UnitFiles: string list
     IncludeFiles: string list
     Modules: PascalModules
 }
  with
+    member self.OutName = self.OutPath </> self.Name + self.NameSuffix
     static member Create(mainFile, unitFiles, includeFiles) =
         let file, filePath, fileName =
             let fileName = Path.GetFileName (mainFile: string)
@@ -174,6 +176,7 @@ type PascalProject = {
             OutPath = outPath
             Exe = None
             Name = Path.GetFileNameWithoutExtension mainFile
+            NameSuffix = ""
             Defines = []
             UnitFiles = ""::unitFiles |> List.rev |> mapDirectories // "" = search in module directory
             IncludeFiles = ""::includeFiles |> List.rev |> mapDirectories // "" = search in module directory
