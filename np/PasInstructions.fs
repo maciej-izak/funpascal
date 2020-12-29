@@ -435,7 +435,6 @@ module IlEmit =
                 |> instr delayFactory
                 |> (fun l -> List.iter body.Instructions.Add l; if l.IsEmpty then ValueNone else ValueSome l.Head) // can be empty for errors
 
-            
             let processList replaceFun = function
                 | head::tail ->
                     let result = head |> replaceFun

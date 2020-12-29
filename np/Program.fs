@@ -48,13 +48,14 @@ let handleTest proj testCase isError =
                 Error <| sprintf "exit code = %d (expected %d)" result.ExitCode testCase.Result
         | id -> id
     |>  function
-        | Ok() -> printfn "OK\t%s%s" proj.Name testCase.DefSuffix
-        | Error(msg) -> printfn "FAIL\t%s%s\t\t%s" proj.Name testCase.DefSuffix msg
+        | Ok() -> sprintf "OK\t%s%s" proj.Name testCase.DefSuffix
+        | Error(msg) -> sprintf "FAIL\t%s%s\t\t%s" proj.Name testCase.DefSuffix msg
 
 let doFullCompilation proj (testCase: TestCase option) logh =
     let handleTest(proj, isError) =
         if testCase.IsSome then
             handleTest proj testCase.Value isError
+        else ""
     let proj = {proj with NameSuffix = if testCase.IsSome then testCase.Value.DefSuffix else ""}
     doPas proj proj.File
     |> function
@@ -83,10 +84,16 @@ let tryCompileFile doTest mainFile =
             let proj = proj.NextIteration newDefs
             using (handle testCase.DefSuffix) (doFullCompilation proj (Some testCase))
         match prepareTest proj with
-        | Ok(Some cases) -> cases |> List.iter (doCompile >> ignore) // first defines has meaning see handleTest
-        | Ok None -> () // ignore, probably unit
-        | _ -> printfn "TEST ERROR : %s" proj.Name
-    else doFullCompilation proj None stdout
+        | Ok(Some cases) ->
+            cases
+            |> List.map doCompile // first defines has meaning see handleTest
+            |> List.filter String.isNotNullOrEmpty
+        | Ok None -> [] // ignore, probably unit
+        | _ -> [sprintf "TEST ERROR : %s" proj.Name]
+    else doFullCompilation proj None stdout |> ignore; []
+    
+module Async =
+    let ParallelThrottle throttle workflows = Async.Parallel(workflows, throttle)
 
 [<EntryPoint>]
 let main argv =
@@ -102,16 +109,29 @@ let main argv =
         match pasFiles with
         | [f] -> f
         | _ -> failwith "Multiply files not supported"
-        |> tryCompileFile false
+        |> tryCompileFile false |> ignore
     | None ->
         // only proper for tests
         if results.Contains(TestAll) then
+            let asyncTest t = async {
+                let res = tryCompileFile true t
+                lock System.Console.Out (fun() -> List.iter (printfn "%s") res)
+            }
             match results.TryGetResult(TestAll) with
-            | Some testDir -> !! (testDir </> "*.pas") ++ (testDir </> "*.pp") |> Seq.iter (tryCompileFile true)
+            | Some testDir ->
+                let sw = System.Diagnostics.Stopwatch()
+                sw.Start()
+                !! (testDir </> "*.pas") ++ (testDir </> "*.pp")
+                |> Seq.map asyncTest
+                |> Async.ParallelThrottle Environment.ProcessorCount
+                |> Async.Ignore
+                |> Async.RunSynchronously
+                sw.Stop()
+                printfn "[TIME ELAPSED '%O']" (sw.Elapsed) 
             | _ -> failwith "No proper command found"
         else if results.Contains(Test) then
             match results.TryGetResult(Test) with
-            | Some testFile -> tryCompileFile true testFile
+            | Some testFile -> tryCompileFile true testFile |> ignore
             | _ -> failwith "No proper command found"
         else if results.Contains(TestParser) then
             let proj = PascalProject.Create("test.pas", [], [])
