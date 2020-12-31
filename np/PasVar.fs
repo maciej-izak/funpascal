@@ -160,7 +160,7 @@ type PascalProject = {
 }
  with
     member self.OutName = self.OutPath </> self.Name + self.NameSuffix
-    static member Create(mainFile, unitFiles, includeFiles) =
+    static member Create(mainFile, unitFiles, includeFiles, define) =
         let file, filePath, fileName =
             let fileName = Path.GetFileName (mainFile: string)
             let p = Path.GetDirectoryName mainFile
@@ -177,7 +177,7 @@ type PascalProject = {
             Exe = None
             Name = Path.GetFileNameWithoutExtension mainFile
             NameSuffix = ""
-            Defines = []
+            Defines = Option.toList define
             UnitFiles = ""::unitFiles |> List.rev |> mapDirectories // "" = search in module directory
             IncludeFiles = ""::includeFiles |> List.rev |> mapDirectories // "" = search in module directory
             Modules = PascalModules.Create()
@@ -198,10 +198,6 @@ type PascalProject = {
         | _ -> UnitNotFound
         
     member self.AddModule f m = self.Modules.Add f m
-        
-    member self.NextIteration newDefs =
-        self.Modules.Clear()
-        { self with Defines = newDefs }
         
     member self.Warnings = self.Modules.Warnings
     member self.Errors = self.Modules.Errors

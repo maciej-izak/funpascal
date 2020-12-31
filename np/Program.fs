@@ -72,7 +72,9 @@ let doFullCompilation proj (testCase: TestCase option) logh =
     |> handleTest
 
 let tryCompileFile doTest mainFile =
-    let proj = PascalProject.Create(mainFile, [@"C:\_projects\newpascal\np\npcli\rtl"], [@"C:\_projects\newpascal\np\npcli\test\xdpw"])
+    let rtl = [@"C:\_projects\newpascal\np\npcli\rtl"]
+    let inc = [@"C:\_projects\newpascal\np\npcli\test\xdpw"]
+    let proj = PascalProject.Create(mainFile, rtl, inc, None)
     let handle defSuffix =
         if doTest then
             let logFile = proj.OutPath </> sprintf "%s%s.log" proj.Name defSuffix
@@ -80,17 +82,16 @@ let tryCompileFile doTest mainFile =
         else stdout
     if doTest then
         let doCompile testCase =
-            let newDefs = if testCase.Define.IsSome then testCase.Define.Value::proj.Defines else proj.Defines
-            let proj = proj.NextIteration newDefs
-            using (handle testCase.DefSuffix) (doFullCompilation proj (Some testCase))
+            let proj = PascalProject.Create(mainFile, rtl, inc, testCase.Define)
+            lazy using (handle testCase.DefSuffix) (doFullCompilation proj (Some testCase))
         match prepareTest proj with
         | Ok(Some cases) ->
             cases
             |> List.map doCompile // first defines has meaning see handleTest
-            |> List.filter String.isNotNullOrEmpty
-        | Ok None -> [] // ignore, probably unit
-        | _ -> [sprintf "TEST ERROR : %s" proj.Name]
-    else doFullCompilation proj None stdout |> ignore; []
+            |> Some
+        | Ok None -> None // ignore, probably unit
+        | _ -> Some [lazy sprintf "TEST ERROR : %s" proj.Name]
+    else doFullCompilation proj None stdout |> ignore; None
     
 module Async =
     let ParallelThrottle throttle workflows = Async.Parallel(workflows, throttle)
@@ -113,19 +114,30 @@ let main argv =
     | None ->
         // only proper for tests
         if results.Contains(TestAll) then
-            let asyncTest t = async {
-                let res = tryCompileFile true t
-                lock System.Console.Out (fun() -> List.iter (printfn "%s") res)
-            }
             match results.TryGetResult(TestAll) with
             | Some testDir ->
                 let sw = System.Diagnostics.Stopwatch()
                 sw.Start()
                 !! (testDir </> "*.pas") ++ (testDir </> "*.pp")
-                |> Seq.map asyncTest
+                |> Seq.map (fun t -> async { return tryCompileFile true t })
                 |> Async.ParallelThrottle Environment.ProcessorCount
-                |> Async.Ignore
                 |> Async.RunSynchronously
+                |> Array.choose id
+                |> List.ofArray
+                |> List.concat
+                |> List.map (fun l -> async { return l.Value })
+                |> Async.ParallelThrottle Environment.ProcessorCount
+                |> Async.RunSynchronously
+                |> Array.filter String.isNotNullOrEmpty // possible for modules
+                |> Array.sort
+                |> Array.partition (String.startsWith "OK")
+                |> fun(ok, fails) ->
+                    let logDir = testDir </> ".."
+                    File.WriteAllLines(logDir </> "OK.log", ok)
+                    match fails.Length with
+                    | 0 -> printfn "No regression found! Yay :D"
+                    | _ -> fails |> Array.iter (printfn "%s")
+                    File.WriteAllLines(logDir </> "ERROR.log", fails)
                 sw.Stop()
                 printfn "[TIME ELAPSED '%O']" (sw.Elapsed) 
             | _ -> failwith "No proper command found"
@@ -134,7 +146,7 @@ let main argv =
             | Some testFile -> tryCompileFile true testFile |> ignore
             | _ -> failwith "No proper command found"
         else if results.Contains(TestParser) then
-            let proj = PascalProject.Create("test.pas", [], [])
+            let proj = PascalProject.Create("test.pas", [], [], None)
             FParsec.CharParsers.runParserOnString statement (PasState.Create (TestPass(proj)) null proj "test.pas") "test"
                 "TFoo(pp)()(10)('fooo',9.0);"
 //                """
