@@ -6,11 +6,11 @@ open System.Collections.Generic
 open Fake.Core
 open Fake.IO.FileSystemOperators
 open Fake.IO.Globbing.Operators
-open NP.CommandLineHandle
-open NP.PasStreams
+open FNP.CommandLineHandle
+open FNP.PasStreams
 open Pas
 open Argu
-open NP
+open FNP
 
 let writeRuntimeConfig (proj: PascalProject) =
     File.WriteAllText(proj.OutName + ".runtimeconfig.json",

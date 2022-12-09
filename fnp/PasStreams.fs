@@ -1,4 +1,4 @@
-module NP.PasStreams
+module FNP.PasStreams
 
 open System.Text
 open System.IO
