@@ -1629,7 +1629,7 @@ module Intrinsics =
             Option.bind (paramSpecialize f1 f2) p
 
         [<CustomOperation("doOptional", MaintainsVariableSpaceUsingBind=true)>]
-        member _.OptionalParamSpecialize (p: ParamBuilder option option, [<ProjectionParameter>] f1, [<ProjectionParameter>] f2,
+        member _.ParamSpecialize (p: ParamBuilder option option, [<ProjectionParameter>] f1, [<ProjectionParameter>] f2,
                                   [<ProjectionParameter>] f3) =
             Option.bind (optionalParamSpecialize f1 f2 f3) p
 
@@ -1857,7 +1857,12 @@ module Intrinsics =
             ]            
         pb {
             parameter into variable
-            doParameter ( variable { byRef; float; var; OR; byRef; ord; var } ) [
+            doParameter
+                ( variable {
+                    byRef; float; var
+                    OR
+                    byRef; ord; var
+                } ) [
                 variableIsFloat := variable.Typ.IsFloat
                 variableType := variable.Type
                 yield! variable.Instructions
@@ -1872,19 +1877,19 @@ module Intrinsics =
         }
 
     let private deltaAdd delta ci =
-        let variableIsFloat = ref false
+        let mutable variableIsFloat = false
         let pb = ParamsBuilder(ci, if ci.InBlock then None else Some ci.ctx.sysTypes.unknown)
         pb {
             inExpr
             parameter into value
             doParameter ( value { float; OR; ord }) (
-                    variableIsFloat := value.Typ.IsFloat
+                    variableIsFloat <- value.Typ.IsFloat
                     pb.ReturnType <- Some value.Type
                     value.Instructions
                 )
             optional into deltaValue
             doOptional
-                (deltaValue { IF !variableIsFloat; float; OR; ord })
+                (deltaValue { IF variableIsFloat; float; OR; ord })
                 (deltaToIl (Some deltaValue.Instructions) delta)
                 (deltaToIl None delta)
             doIl [+AddInst]
@@ -1967,7 +1972,12 @@ module Intrinsics =
         ParamsBuilder(ci, Some ci.ctx.sysTypes.int64) {
             inExpr
             parameter into param
-            doParameter (param { float; OR; int })
+            doParameter
+                (param { 
+                       float
+                       OR
+                       int
+                     })
                 [
                     yield! param.Instructions
                     if (f: IMethod voption).IsSome then +Call f.Value
@@ -1982,7 +1992,12 @@ module Intrinsics =
         ParamsBuilder(ci, Some ci.ctx.sysTypes.int32) {
             inExpr
             parameter into ident
-            doParameter (ident { pasType; OR; varType }) [+Ldc_I4 ident.Type.SizeOf]
+            doParameter
+                (ident {
+                    pasType
+                    OR
+                    varType
+            }) [+Ldc_I4 ident.Type.SizeOf]
         }
 
     let handleIntrinsic intrinsicSym =

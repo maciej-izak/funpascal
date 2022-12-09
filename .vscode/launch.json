@@ -8,8 +8,9 @@
             "name": "Launch np CLI",
             "type": "coreclr",
             "request": "launch",
-            "program": "${workspaceFolder}/np/bin/Debug/netcoreapp3.0/np.dll",
-            "cwd": "${workspaceFolder}"
+            "program": "${workspaceFolder}/np/bin/Debug/net7/np.dll",
+            "cwd": "${workspaceFolder}",
+            "args":"--testparser"
         }
     ]
 }

@@ -38,7 +38,7 @@ let handleTest proj testCase isError =
         | Ok() ->
             if proj.Exe.IsNone then raise (InternalError "2020061301")
             let result =
-                CreateProcess.fromRawCommand @"C:\_projects\newpascal\core32\dotnet.exe" ["exec"; proj.Exe.Value]
+                CreateProcess.fromRawCommand @"C:\_projects\funpascal\core32\dotnet.exe" ["exec"; proj.Exe.Value]
                 |> CreateProcess.redirectOutput
                 |> Proc.run
             File.WriteAllText(proj.OutName + ".elg", result.Result.Output)
@@ -72,8 +72,8 @@ let doFullCompilation proj (testCase: TestCase option) logh =
     |> handleTest
 
 let tryCompileFile doTest mainFile =
-    let rtl = [@"C:\_projects\newpascal\np\npcli\rtl"]
-    let inc = [@"C:\_projects\newpascal\np\npcli\test\xdpw"]
+    let rtl = [@"C:\_projects\funpascal\np\npcli\rtl"]
+    let inc = [@"C:\_projects\funpascal\np\npcli\test\xdpw"]
     let proj = PascalProject.Create(mainFile, rtl, inc, None)
     let handle defSuffix =
         if doTest then
@@ -102,7 +102,7 @@ let main argv =
     let results =
         let errorHandler = ProcessExiter(colorizer = function ErrorCode.HelpText -> None | _ -> Some ConsoleColor.Red)
         ArgumentParser
-            .Create<CLIArguments>(programName="NewPascal", errorHandler=errorHandler)
+            .Create<CLIArguments>(programName="funpascal", errorHandler=errorHandler)
             .ParseCommandLine(inputs = argv, raiseOnUsage = true)
 
     match results.TryGetResult(Files) with

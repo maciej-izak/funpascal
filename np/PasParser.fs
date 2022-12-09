@@ -189,7 +189,7 @@ let constType =
     identifier |>> DimensionType
 
 let arrayIndex =
-    choice[constType;constRangeExpression |>> DimensionExpr ]
+    choice [constType;constRangeExpression |>> DimensionExpr ]
 
 let arrayIndexes =
     ``[ `` >>. (sepEndBy1 arrayIndex ``, ``) .>> ``] ``
@@ -198,7 +198,7 @@ let designator =
     let identifier_p = +(identifier |>> Ident)
     pipe2   identifier_p
             (manyTill
-                +(choice[
+                +(choice [
                         ``^ `` |>> fun _ -> Deref();
                         (``[ `` >>. (sepEndBy1 expr ``, ``) .>> ``] ``)
                         |>> Designator.Array;
@@ -227,7 +227,7 @@ let typePtrDef =
 
 let arrayDecl =
     tuple3
-        (``?packed ``)
+        ``?packed ``
         (``array `` >>. arrayIndexes)
         (``of `` >>. typeIdentifier)
 
@@ -235,7 +235,7 @@ let typeSetDef =
   ``?packed `` .>>.? (``set `` >>. ``of `` >>. typeIdentifier)
 
 typeIdentifierRef :=
-    +choice[
+    +choice [
             typePtrDef |>> TIdPointer
             designator |>> TIdIdent
             ``string `` |>> fun _ -> TIdString() // unique instance for position support
@@ -305,7 +305,7 @@ let typeDeclarations =
     (``type `` >>.
         many1 (
             (identifierIdent .>> ``= ``)
-            .>>. ((choice[structType;attempt(arrayType);typePtr;attempt(typeRange);attempt(typeSet);attempt(typeProc);typeAlias;attempt(typeEnum)]).>> ``; ``)
+            .>>. ((choice [structType;attempt(arrayType);typePtr;attempt(typeRange);attempt(typeSet);attempt(typeProc);typeAlias;attempt(typeEnum)]).>> ``; ``)
             |>> Type))
     |>> Types
 
@@ -349,7 +349,7 @@ let callExpr =
 
 let exprCall = callExpr |>> VCallResult
 
-let basicExprAtom = +(choice[exprCall; exprIdent; attempt(exprInt); exprFloat; exprString; exprSet; exprNil] |>> Value)
+let basicExprAtom = +(choice [exprCall; exprIdent; attempt(exprInt); exprFloat; exprString; exprSet; exprNil] |>> Value)
 let exprAtom =
     (sepEndBy basicExprAtom ``: ``)
       |>> function
@@ -373,7 +373,7 @@ let varDeclarations =
 let typedConstConstr, typedConstConstrRef = createParserForwardedToRef()
 
 let constConstr =
-    choice[
+    choice [
         attempt( expr |>> ConstExpr)
         attempt(``( `` >>. (sepEndBy typedConstConstr ``, ``) .>> ``) `` |>> ConstConstr)
         attempt(``( `` >>. (sepEndBy ((identifier .>> ``: ``) .>>. typedConstConstr) ``; ``) .>> ``) `` |>> ConstStructConstr)
@@ -478,7 +478,7 @@ let labels = many(labelIdentifier .>>? (lookAhead(notFollowedBy (pstring ":=")) 
 let statement =
     labels
     .>>.
-    choice[
+    choice [
             simpleStatement
             callStatement
             designatorStatement
@@ -492,16 +492,16 @@ let statement =
             emptyStatement
         ]
     |>> function
-        | ([], s) -> [s]
-        | (l, s) -> l @ [s]
+        | [], s -> [s]
+        | l, s -> l @ [s]
 
 let procFuncDeclarations, procFuncDeclarationsRef = createParserForwardedToRef()
 
 let declarations =
-    many (choice[typeDeclarations; varDeclarations; constDeclarations; labelDeclarations; procFuncDeclarations])
+    many (choice [typeDeclarations; varDeclarations; constDeclarations; labelDeclarations; procFuncDeclarations])
 
 let intfDeclarations =
-    many (choice[typeDeclarations; varDeclarations; constDeclarations; procFuncDeclarations])
+    many (choice [typeDeclarations; varDeclarations; constDeclarations; procFuncDeclarations])
 
 let statements = statementList |>> List.concat
 
