@@ -1,0 +1,32 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net7</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="CommandLineHandle.fs" />
+    <Compile Include="PasMessages.fs" />
+    <Compile Include="PasAst.fs" />
+    <Compile Include="PasVar.fs" />
+    <Compile Include="PasBasicParsers.fs" />
+    <Compile Include="PasOperators.fs" />
+    <Compile Include="PasParser.fs" />
+    <Compile Include="PasInstructions.fs" />
+    <Compile Include="PasSymbols.fs" />
+    <Compile Include="PasCtx.fs" />
+    <Compile Include="PasLang.fs" />
+    <Compile Include="PasStreams.fs" />
+    <Compile Include="PasTest.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Argu" Version="6.1.1" />
+    <PackageReference Include="dnlib" Version="3.5.0" />
+    <PackageReference Include="Fake.Core.Process" Version="5.22.0" />
+    <PackageReference Include="Fake.IO.FileSystem" Version="5.22.0" />
+    <PackageReference Include="Fake.Runtime" Version="5.22.0" />
+    <PackageReference Include="FParsec" Version="1.1.1" />
+    <PackageReference Update="FSharp.Core" Version="6.0.4" />
+  </ItemGroup>
+
+</Project>
