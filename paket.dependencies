@@ -1,0 +1,13 @@
+redirects: force
+framework: net7
+
+source https://api.nuget.org/v3/index.json
+
+nuget Argu
+nuget dnlib
+nuget Fake.Core.Process
+nuget Fake.IO.FileSystem
+nuget Fake.Runtime
+nuget FParsec
+
+http https://download.visualstudio.microsoft.com/download/pr/c45d50f1-c3f6-47cd-b9c9-861d095f8cb7/5a5ed9fb5e4b40fa4d4131cbe79d6a36/dotnet-sdk-7.0.100-win-x86.zip dotnet32/dotnet32.zip

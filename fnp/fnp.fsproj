@@ -1,7 +1,9 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net7</TargetFramework>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="CommandLineHandle.fs" />
@@ -18,15 +20,7 @@
     <Compile Include="PasStreams.fs" />
     <Compile Include="PasTest.fs" />
     <Compile Include="Program.fs" />
+    <Content Include="app.config" />
   </ItemGroup>
-  <ItemGroup>
-    <PackageReference Include="Argu" Version="6.1.1" />
-    <PackageReference Include="dnlib" Version="3.5.0" />
-    <PackageReference Include="Fake.Core.Process" Version="5.22.0" />
-    <PackageReference Include="Fake.IO.FileSystem" Version="5.22.0" />
-    <PackageReference Include="Fake.Runtime" Version="5.22.0" />
-    <PackageReference Include="FParsec" Version="1.1.1" />
-    <PackageReference Update="FSharp.Core" Version="6.0.4" />
-  </ItemGroup>
-
+  <Import Project="..\.paket\Paket.Restore.targets" />
 </Project>
