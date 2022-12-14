@@ -17,15 +17,25 @@ let writeRuntimeConfig (proj: PascalProject) =
                                   """
 {
   "runtimeOptions": {
-    "tfm": "netcoreapp3.1",
+    "tfm": "net7.0",
+    "rollForward": "LatestMinor",
     "framework": {
       "name": "Microsoft.NETCore.App",
-      "version": "3.1.3"
+      "version": "7.0.0"
     }
   }
 }
                                   """)
 
+[<Literal>]
+// TODO move to config
+let ROOT_PATH = @"..\..\..\..\"
+[<Literal>]
+let DOTNET32_FILENAME = ROOT_PATH + @"paket-files\download.visualstudio.microsoft.com\dotnet32\dotnet.exe"
+[<Literal>]
+let RTL_DIR = ROOT_PATH + @"rtl"
+[<Literal>]
+let INC_DIR = ROOT_PATH + @"test\xdpw"
 
 let handleTest proj testCase isError =
     match isError, testCase.FailExpected with
@@ -38,7 +48,7 @@ let handleTest proj testCase isError =
         | Ok() ->
             if proj.Exe.IsNone then raise (InternalError "2020061301")
             let result =
-                CreateProcess.fromRawCommand @"C:\_projects\funpascal\core32\dotnet.exe" ["exec"; proj.Exe.Value]
+                CreateProcess.fromRawCommand DOTNET32_FILENAME ["exec"; proj.Exe.Value]
                 |> CreateProcess.redirectOutput
                 |> Proc.run
             File.WriteAllText(proj.OutName + ".elg", result.Result.Output)
@@ -72,8 +82,8 @@ let doFullCompilation proj (testCase: TestCase option) logh =
     |> handleTest
 
 let tryCompileFile doTest mainFile =
-    let rtl = [@"C:\_projects\funpascal\np\npcli\rtl"]
-    let inc = [@"C:\_projects\funpascal\np\npcli\test\xdpw"]
+    let rtl = [Path.GetFullPath RTL_DIR]
+    let inc = [Path.GetFullPath INC_DIR]
     let proj = PascalProject.Create(mainFile, rtl, inc, None)
     let handle defSuffix =
         if doTest then
