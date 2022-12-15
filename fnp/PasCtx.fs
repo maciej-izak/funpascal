@@ -1022,7 +1022,7 @@ module EvalExpr =
             | _ ->
                 ``Error: %s expected`` "function" |> ctx.NewMsg ident
                 [], ctx.sysTypes.unknown
-        | VNil, _ -> [+Ldnull], ctx.sysTypes.pointer
+        | VNil, _ -> [+Ldnil], ctx.sysTypes.pointer
         | VSet al, _ ->
             let bytes, ft = match setValueToCER ctx expectedType al with
                             | CEROrdSet(b,t) -> b, t
@@ -1685,9 +1685,7 @@ module Intrinsics =
                 | Some subWrite ->
                     [
                         yield! file()
-                        // Use Ldc for 32 bit ptr instead of Ldnull. Ldnull is invalid for .NET7
-                        // (CLR detected an invalid program / Expected I, but got O).
-                        +Ldc(LdcI4 0)
+                        +Ldnil
                         yield! valParam
                         yield! w
                         yield! p
@@ -1725,9 +1723,7 @@ module Intrinsics =
                                |> ctx.FindMethodReference
                 [
                     yield! file()
-                    // Use Ldc for 32 bit ptr instead of Ldnull. Ldnull is invalid for .NET7
-                    // (CLR detected an invalid program / Expected I, but got O).
-                    +Ldc(LdcI4 0)
+                    +Ldnil
                     yield! valParam
                     +Call subWrite
                 ]
@@ -1748,9 +1744,7 @@ module Intrinsics =
         ([
             yield! writeParams
             yield! file()
-            // Use Ldc for 32 bit ptr instead of Ldnull. Ldnull is invalid for .NET7
-            // (CLR detected an invalid program / Expected I, but got O).
-            +Ldc(LdcI4 0) 
+            +Ldnil 
             +Call(ci.ctx.FindMethodReference "WRITENEWLINE")
          ], None)
 
@@ -1763,7 +1757,7 @@ module Intrinsics =
         ([
             yield! readParams
             yield! file()
-            +Ldnull
+            +Ldnil
             +Call(ci.ctx.FindMethodReference "READNEWLINE")
          ], None)
 

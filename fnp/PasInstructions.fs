@@ -135,6 +135,10 @@ module Instructions =
         | Blt_Un of Instruction
         | InInst
 
+    // Use Ldc for 32 bit ptr instead of Ldnull. Ldnull is invalid for .NET7
+    // (CLR detected an invalid program / Expected I, but got O).
+    let Ldnil = Ldc(LdcI4 0)
+    
     let nullRef() = ref Unchecked.defaultof<Instruction>
 
     type BranchLabel =
