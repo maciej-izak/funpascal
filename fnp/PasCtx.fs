@@ -1685,7 +1685,9 @@ module Intrinsics =
                 | Some subWrite ->
                     [
                         yield! file()
-                        +Ldnull
+                        // Use Ldc for 32 bit ptr instead of Ldnull. Ldnull is invalid for .NET7
+                        // (CLR detected an invalid program / Expected I, but got O).
+                        +Ldc(LdcI4 0)
                         yield! valParam
                         yield! w
                         yield! p
@@ -1723,7 +1725,9 @@ module Intrinsics =
                                |> ctx.FindMethodReference
                 [
                     yield! file()
-                    +Ldnull
+                    // Use Ldc for 32 bit ptr instead of Ldnull. Ldnull is invalid for .NET7
+                    // (CLR detected an invalid program / Expected I, but got O).
+                    +Ldc(LdcI4 0)
                     yield! valParam
                     +Call subWrite
                 ]
@@ -1744,7 +1748,9 @@ module Intrinsics =
         ([
             yield! writeParams
             yield! file()
-            +Ldnull
+            // Use Ldc for 32 bit ptr instead of Ldnull. Ldnull is invalid for .NET7
+            // (CLR detected an invalid program / Expected I, but got O).
+            +Ldc(LdcI4 0) 
             +Call(ci.ctx.FindMethodReference "WRITENEWLINE")
          ], None)
 
