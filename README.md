@@ -1,4 +1,22 @@
-This repository contains an experimental, very simple Pascal compiler created in F# called FunPascal (short name : fnp). FunPascal in its current stage is very limited but it works and it can compile another Pascal compiler called XDPW (and this compiled compiler in FunPascal compiler works well). I was very interested how will looks like simple compiler created by using existing libraries like FParsec and dnlib in F#. The result IMO is not bad. Main purpose of this project was learning F#, which was an amazing experience. When I started, I had an extreme problem compiling even simple functional F# code just to print some values on the screen (sic!), but with a lot of patience and "unlearning" imperative/OO programming skills, the real fun with F# started. I feel much more free. Thanks to F# I am a better C# programmer, much more open minded. 
+This repository contains an experimental, very simple Pascal compiler created in F#, called FunPascal (short name : fnp). 
+
+Here is simple guide how to compile compiler and run tests (current version is available only for Windows):
+
+1. install the latest .NET SDK
+2. start terminal
+3. `cd` to root folder of this funpascal repository
+4. run `dotnet tool restore`
+5. run `dotnet paket install`
+6. run `dotet build`
+7. run `cd fnp\bin\Debug\net7`
+8. run `./fnp.exe --testall`
+9. for detailed output you can check the directory `test\intrinsics\out` for `*.elg` and `*.log` files
+
+if you want to test specific case then you can run `./fnp.exe --test testfile.pas` or `./fnp.exe --testall <someDirWithSetOfTests>`
+
+How to create tests is explained in [test readme.md](test\readme.md)
+
+FunPascal in its current stage is very limited but it works and it can compile another Pascal compiler called XDPW (and this compiled compiler in FunPascal compiler works well). I was very interested how will looks like simple compiler created by using existing libraries like FParsec and dnlib in F#. The result IMO is not bad. Main purpose of this project was learning F#, which was an amazing experience. When I started, I had an extreme problem compiling even simple functional F# code just to print some values on the screen (sic!), but with a lot of patience and "unlearning" imperative/OO programming skills, the real fun with F# started. I feel much more free. Thanks to F# I am a better C# programmer, much more open minded. 
 
 Some notes:
 
@@ -9,7 +27,3 @@ Some notes:
 * At some point I want to implement mselang dialect, but priority is Delphi mode from FreePascal
 * This is a long term never ending project, for now the main problem is time. If you like my idea you can sponsor me (or not).
 * License of this project is GPL v3 but probably will be changed to more liberal MIT
-
-The run of the compiler may be real pain, it has no build scripts yet, and source code has few hardcoded paths. This was created as a pure hobby project for fun. I decided to make it public to get more self motivation. "running compiler" experience should improve in time.
-
-If you want to have an adventure, and you want to test compiler you need to download win-x86 .NET runtime, but probably a better idea is to wait a bit for building scripts (see issue #1) and generic version of project (issue #2).
