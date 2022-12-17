@@ -36,6 +36,8 @@ let DOTNET32_FILENAME = ROOT_PATH + @"paket-files\download.visualstudio.microsof
 let RTL_DIR = ROOT_PATH + @"rtl"
 [<Literal>]
 let INC_DIR = ROOT_PATH + @"test\xdpw"
+[<Literal>]
+let TEST_DIR = ROOT_PATH + @"test\intrinsics"
 
 let handleTest proj testCase isError =
     match isError, testCase.FailExpected with
@@ -125,7 +127,8 @@ let main argv =
         // only proper for tests
         if results.Contains(TestAll) then
             match results.TryGetResult(TestAll) with
-            | Some testDir ->
+            | Some(td) ->
+                let testDir = if td.IsSome then td.Value else Path.GetFullPath TEST_DIR
                 let sw = System.Diagnostics.Stopwatch()
                 sw.Start()
                 !! (testDir </> "*.pas") ++ (testDir </> "*.pp")

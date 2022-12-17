@@ -4,7 +4,7 @@ open Argu
 
 type CLIArguments =
     | [<MainCommand>] Files of FILES:string list
-    | TestAll of string
+    | [<EqualsAssignment>] TestAll of PATH: string option
     | Test of string
     | TestParser
 with
