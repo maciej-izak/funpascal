@@ -14,7 +14,7 @@ Here is simple guide how to compile compiler and run tests (current version is a
 
 if you want to test specific case then you can run `./fnp.exe --test testfile.pas` or `./fnp.exe --testall <someDirWithSetOfTests>`
 
-How to create tests is explained in [test readme.md](test\readme.md)
+How to create tests is explained in [test readme.md](test/readme.md)
 
 FunPascal in its current stage is very limited but it works and it can compile another Pascal compiler called XDPW (and this compiled compiler in FunPascal compiler works well). I was very interested how will looks like simple compiler created by using existing libraries like FParsec and dnlib in F#. The result IMO is not bad. Main purpose of this project was learning F#, which was an amazing experience. When I started, I had an extreme problem compiling even simple functional F# code just to print some values on the screen (sic!), but with a lot of patience and "unlearning" imperative/OO programming skills, the real fun with F# started. I feel much more free. Thanks to F# I am a better C# programmer, much more open minded. 
 
