@@ -156,7 +156,10 @@ let main argv =
             | _ -> failwith "No proper command found"
         else if results.Contains(Test) then
             match results.TryGetResult(Test) with
-            | Some testFile -> tryCompileFile true testFile |> ignore
+            | Some testFile ->
+                match (tryCompileFile true testFile) with
+                | Some ls -> ls |> List.iter (fun i -> i.Value |> ignore)
+                | _ -> failwith "Cannot compile module"
             | _ -> failwith "No proper command found"
         else if results.Contains(TestParser) then
             let proj = PascalProject.Create("test.pas", [], [], None)
